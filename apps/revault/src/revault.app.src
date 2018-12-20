@@ -11,6 +11,6 @@
   {modules, []},
 
   {maintainers, ["Fred Hebert"]},
-  {licenses, ["GPL 3.0"]},
+  {licenses, ["LGPL 3.0"]},
   {links, []}
  ]}.

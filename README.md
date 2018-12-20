@@ -8,7 +8,7 @@ The main goal of the project is to allow seemless, mostly-offline, and transpare
 Rationale
 ---
 
-This is a side project done for fun and because I find it useful. It's non-trivial to get right, but I do not want to turn this into a business or a full-time job, and I am interested in getting collaboration from all kinds of interested parties (hence the GPL 3.0 license).
+This is a side project done for fun and because I find it useful. It's non-trivial to get right, but I do not want to turn this into a business or a full-time job, and I am interested in getting collaboration from all kinds of interested parties without limiting who can use it too much (hence the LGPL 3.0 license).
 
 Currently, there's little code written. I've had various sample apps where I tried to build the same thing and mostly focused on the synchronization mechanism but had nothing available. For this project, I decided to take an open approach over GitHub, using projects and boards to have an entirely open process to see how it goes.
 
