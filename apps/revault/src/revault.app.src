@@ -1,0 +1,16 @@
+{application, revault,
+ [{description, "A p2p file synchronization application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {revault_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, ["Fred Hebert"]},
+  {licenses, ["GPL 3.0"]},
+  {links, []}
+ ]}.
