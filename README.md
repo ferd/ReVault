@@ -1,6 +1,8 @@
 ReVault
 =====
 
+[![CircleCI](https://circleci.com/gh/ferd/ReVault.svg?style=svg)](https://circleci.com/gh/ferd/ReVault)
+
 ReVault is a peer-to-peer self-hosted file synchronization project.
 
 The main goal of the project is to allow seemless, mostly-offline, and transparent update of directories and files whenever possible. Basically, provide something that could be a bit of a DropBox alternative where you don't actually have to set anything up with a third party to work, and that could work as well between all-local computers, or using a laptop and a VPS.
