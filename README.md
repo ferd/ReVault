@@ -43,7 +43,7 @@ Invariants to Maintain
 Roadmap
 ---
 
-See the [https://github.com/ferd/ReVault/projects](Project boards)
+See the [Project boards](https://github.com/ferd/ReVault/projects)
 
 Why the ReVault name?
 ---
