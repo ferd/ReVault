@@ -29,6 +29,15 @@ Move slow and don't break things. Backward compatibility is going to be a possib
 - Operable: layered and structured logs, with a clear concern and distinction between what the user wants to know when debugging, and what developers want to know when debugging
 - Respectfully: there is a code of conduct which I (@ferd) will enforce strictly. I will obviously not kick myself out of my repository, but will expect call-outs when/if misbehaving, and will accept forks without a complaint on my part
 
+Invariants to Maintain
+---
+
+- Never modify a file that a user created other than by synchronization
+- a "dry run" mode cannot touch the tracked directory's filesystem
+- security is critical (ensure to lock down EPMD, do proper SSH validation, etc.)
+- correctness over performance
+- be portable across Linux, OSX, and Windows (at various efficiency costs)
+
 Roadmap
 ---
 
