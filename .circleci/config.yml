@@ -16,10 +16,10 @@ workflows:
               - rebar3/compile
       - rebar3/dialyzer:
           requires:
-            - rebar3/compile
+              - rebar3/compile
       - rebar3/ct:
           requires:
-            - rebar3/compile
-        - rebar3/cover:
-            requires:
-                - rebar3/ct
+              - rebar3/compile
+      - rebar3/cover:
+          requires:
+              - rebar3/ct
