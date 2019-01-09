@@ -1,6 +1,10 @@
 -module(revault_dirmon_poll).
 -export([scan/1, rescan/2]).
 
+-type hash() :: binary().
+-type set() :: [{file:filename(), hash()}].
+-export_type([set/0]).
+
 -ifdef(TEST).
 -export([diff_set/2]).
 -endif.
@@ -11,7 +15,7 @@
 
 %% @doc Initial scan of a directory. Returns all the found filenames
 %% along with their SHA256 value. The returned value is sorted.
--spec scan(file:filename()) -> [{file:filename(), binary()}].
+-spec scan(file:filename()) -> set().
 scan(Dir) ->
     lists:sort(filelib:fold_files(
       Dir, ".*", true,
@@ -27,12 +31,12 @@ scan(Dir) ->
 %% `{DeletedFiles, AddedFiles, ModifiedFiles}', and the second element
 %% is the new set of all found filenames along with their SHA256 value.
 %% Assumes the input set is sorted, and similarly returns sorted lists.
--spec rescan(file:filename(), [{file:filename(), binary()}]) ->
+-spec rescan(file:filename(), set()) ->
     {{Deleted, Added, Modified}, HashSet} when
       Deleted :: HashSet,
       Added :: HashSet,
       Modified :: HashSet,
-      HashSet :: [{file:filename(), binary()}].
+      HashSet :: set().
 rescan(Dir, OldSet) ->
     NewSet = scan(Dir),
     {diff_set(OldSet, NewSet), NewSet}.
