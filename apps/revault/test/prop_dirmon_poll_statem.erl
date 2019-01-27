@@ -53,7 +53,7 @@ command(State) ->
 %% @doc Determines whether a command should be valid under the
 %% current state.
 precondition(State, {call, _, add_file, [Filename, _Contents]}) ->
-    not maps:is_key(Filename, State);
+    not maps:is_key(Filename, State) andalso not_is_dir(Filename, State);
 precondition(State, {call, _, change_file, [Filename, Contents]}) ->
     case maps:find(Filename, State) of
         error ->
@@ -127,15 +127,18 @@ new_filename(Map) ->
        Path,
        ?LET(Base, revault_test_utils:gen_path(),
             filename:split(filename:join(?DIR, Base))),
-       lists:all(
-         fun(ExistingDir) -> not lists:prefix(Path, ExistingDir) end,
-         maps:get(dirs, Map)
-       )
-       andalso
-       lists:all(
-         fun(Existing) -> not lists:prefix(Existing, Path) end,
-         [K || K <- maps:keys(Map), not is_atom(K)]
-       )
+       not_is_dir(Path, Map)
+    ).
+
+not_is_dir(Path, Map) ->
+    lists:all(
+        fun(ExistingDir) -> not lists:prefix(Path, ExistingDir) end,
+        maps:get(dirs, Map)
+    )
+    andalso
+    lists:all(
+        fun(Existing) -> not lists:prefix(Existing, Path) end,
+        [K || K <- maps:keys(Map), not is_atom(K)]
     ).
 
 filename(Map) ->
