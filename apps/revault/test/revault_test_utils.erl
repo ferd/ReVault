@@ -17,17 +17,22 @@ setup_scratch_dir(Dir) ->
     Dir.
 
 teardown_scratch_dir(Dir) ->
-    AllDirs = filelib:fold_files(
-        Dir, ".*", true,
-        fun(File, Acc) ->
-            file:delete(File),
-            [filename:dirname(File) | Acc]
-        end, []),
-    Dirs = lists:usort(lists:append(
-        [all_paths(drop_file_prefix(Dir, D)) || D <- lists:usort(AllDirs)]
-    )),
-    _ = [file:del_dir(filename:join(Dir, D)) || D <- lists:reverse(Dirs)],
-    file:del_dir(Dir),
+    case os:type() of
+        {unix, _} ->
+            os:cmd("rm -rf '"++Dir++"'");
+        {win32, _} ->
+            AllDirs = filelib:fold_files(
+                Dir, ".*", true,
+                fun(File, Acc) ->
+                    ok = file:delete(File),
+                    [filename:dirname(File) | Acc]
+                end, []),
+            Dirs = lists:usort(lists:append(
+                [all_paths(drop_file_prefix(Dir, D)) || D <- lists:usort(AllDirs)]
+            )),
+            _ = [file:del_dir(filename:join(Dir, D)) || D <- lists:reverse(Dirs)],
+            file:del_dir(Dir)
+    end,
     ok.
 
 %%%%%%%%%%%%%%%%%%
@@ -48,10 +53,12 @@ gen_filename_part() ->
     ?LET(B, non_empty(path_chars()), unicode:characters_to_list(B)).
 
 path_chars() ->
-    list(oneof([
-        range($0,$9), range($a,$z), range($A, $Z),
-        oneof(" &%!'\":;^"),
-        range(16#1F600, 16#1F64F)
+    list(frequency([
+        {1, range($0, $9)},
+        {5, range($a, $z)},
+        {5, range($A, $Z)},
+        {1, oneof(" &%!'\":;^")},
+        {1, range(16#1F600, 16#1F64F)}
     ])).
 
 %%%%%%%%%%%%%%%
