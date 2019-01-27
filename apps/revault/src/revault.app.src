@@ -5,7 +5,8 @@
   {mod, {revault_app, []}},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+    gproc
    ]},
   {env,[]},
   {modules, []},
