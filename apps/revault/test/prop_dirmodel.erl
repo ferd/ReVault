@@ -16,7 +16,7 @@ prop_added_file_found() ->
             ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
                  {M, dirmodel:file_add(?DIR, M)}),
       begin
-        {call, file, write_file, [Path|_]} = Op,
+        {call, _, write_file, [Path|_]} = Op,
         NewModel = dirmodel:apply_call(?DIR, Model, Op),
         Parts = normalize(?DIR, Path),
         dirmodel:at(Model, Parts) =:= undefined
@@ -33,7 +33,7 @@ prop_deleted_file_gone() ->
             ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
                  {M, dirmodel:file_delete(?DIR, M)}),
       begin
-        {call, file, delete, [Path|_]} = Op,
+        {call, _, delete_file, [Path|_]} = Op,
         NewModel = dirmodel:apply_call(?DIR, Model, Op),
         Parts = normalize(?DIR, Path),
         is_tuple(dirmodel:at(Model, Parts))
@@ -50,7 +50,7 @@ prop_changed_file() ->
             ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
                  {M, dirmodel:file_change(?DIR, M)}),
       begin
-        {call, file, write_file, [Path|_]} = Op,
+        {call, _, change_file, [Path|_]} = Op,
         NewModel = dirmodel:apply_call(?DIR, Model, Op),
         Parts = normalize(?DIR, Path),
         {ok, F1} = dirmodel:at(Model, Parts),

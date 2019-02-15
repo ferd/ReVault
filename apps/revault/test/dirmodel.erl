@@ -65,7 +65,7 @@
 -module(dirmodel).
 -include_lib("proper/include/proper.hrl").
          %% meta calls for property writers
--export([new/0, apply_call/3,
+-export([new/0, apply_call/3, has_files/1, type/3, hashes/2,
          %% mutation calls for propery writers
          file_add/2, file_change/2, file_delete/2,
          %% stateless helper
@@ -108,8 +108,8 @@ file_add(Dir, T) ->
     PathNameGen = ?SUCHTHAT({P,N}, {path(), dirgen:path_chars()},
                             at(T, P++[N]) =:= undefined),
     ?LET({{Path, Name}, Content}, {PathNameGen, binary()},
-          {call, file, write_file, [filename:join([Dir, filename:join(Path), Name]),
-                                     Content, [sync]]}).
+          {call, dirgen, write_file, [filename:join([Dir, filename:join(Path), Name]),
+                                     Content, [sync, raw]]}).
 
 -spec file_change(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
@@ -119,32 +119,40 @@ file_change(Dir, T) ->
         {ok, #file{content = C}} = at(T, Path),
         ContentGen = ?SUCHTHAT(B, binary(), B =/= C),
         ?LET(Content, ContentGen,
-             {call, file, write_file, [filename:join([Dir, filename:join(Path)]),
-                                         Content, [sync]]})
+             {call, dirgen, change_file, [filename:join([Dir, filename:join(Path)]),
+                                         Content, [sync, raw]]})
       end).
 
 -spec file_delete(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
 file_delete(Dir, T) ->
     ?LET(Path, oneof(file_paths(T)),
-         {call, file, delete, [filename:join([Dir, filename:join(Path)])]}).
+         {call, dirgen, delete_file,
+          [filename:join([Dir, filename:join(Path)])]}).
 
--spec apply_call(file:filename(), tree(), {call, file, atom(), list()}) ->
+-spec apply_call(file:filename(), tree(), {call, dirgen, atom(), list()}) ->
     tree().
-apply_call(Dir, T, {call, file, delete, [Path]}) ->
+apply_call(Dir, T, {call, dirgen, delete_file, [Path]}) ->
     Parts = suffix(filename:split(Dir), filename:split(Path)),
     delete_at(T, Parts);
-apply_call(Dir, T, {call, file, write_file, [Path, Contents | _]}) ->
+apply_call(Dir, T, {call, dirgen, write_file, [Path, Contents | _]}) ->
     Parts = suffix(filename:split(Dir), filename:split(Path)),
     Root = lists:droplast(Parts),
     Name = lists:last(Parts),
-    case at(T, Parts) of
-        undefined -> % new file
-            insert_at(T, Root, file(Name, Contents));
-        _ ->
-            insert_at(delete_at(T, Parts), Root, file(Name, Contents))
-    end.
+    undefined = at(T, Parts), % new file
+    insert_at(T, Root, file(Name, Contents));
+apply_call(Dir, T, {call, dirgen, change_file, [Path, Contents | _]}) ->
+    Parts = suffix(filename:split(Dir), filename:split(Path)),
+    Root = lists:droplast(Parts),
+    Name = lists:last(Parts),
+    insert_at(delete_at(T, Parts), Root, file(Name, Contents)).
 
+%% @doc Returns `true' if the model contains any file, and `false'
+%% otherwise; subdirectories do not count towards files.
+-spec has_files(tree()) -> boolean().
+has_files(#file{}) -> true;
+has_files(#dir{nodes=[]}) -> false;
+has_files(#dir{nodes=Nodes}) -> lists:any(fun has_files/1, Nodes).
 
 %% @doc Create a new file node. To be inserted within the model tree
 %% with the help of `insert_at/3'.
@@ -160,8 +168,37 @@ file(Name, Content) when is_list(Name), is_binary(Content) ->
 dir(Path) ->
     #dir{path=Path}.
 
+
+%% @doc Extract the node type out of the model tree
+%% according to its path. If the node is a file, also
+%% return its content and hash.
+-spec type(file:filename(), tree(), file:filename()) ->
+    dir | {file, binary(), binary()} | undefined.
+type(Dir, Tree, Path) ->
+    NodeRes = at(
+        Tree,
+        suffix(filename:split(Dir), filename:split(Path))
+    ),
+    case NodeRes of
+        {ok, #file{content=C, hash=H}} -> {file, H, C};
+        {ok, #dir{}} -> dir;
+        undefined -> undefined
+    end.
+
+hashes(Dir, Tree) ->
+    Paths = file_paths(Tree),
+    lists:sort(
+      [{filename:join([Dir, filename:join(Path)]), Hash}
+       || Path <- Paths,
+          {ok, #file{hash=Hash}} <- [at(Tree, Path)]]
+     ).
+
 %% @doc Extract the node of the model tree according to its path.
 %% Useful for mutations or comparing tree internals.
+%%
+%% This function relies on the internal `dirmodel' defintion
+%% of a path, which is a list of the form
+%% `[".", "subdir", "subsubdir", "file"]'
 -spec at(tree(), path()) -> {ok, [tnode()] | file()} | undefined.
 at(File = #file{path=Name}, [Name]) ->
     {ok, File};

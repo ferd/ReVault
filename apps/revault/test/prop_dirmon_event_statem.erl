@@ -47,47 +47,46 @@ prop_test() ->
 %%%%%%%%%%%%%
 %% @doc Initial model value at system start. Should be deterministic.
 initial_state() ->
-    #{set => #{},
-      ops => [],
-      dirs => []}.
+    #{ops => [],
+      snapshot => dirmodel:new(),
+      model => dirmodel:new()}.
 
 %% @doc List of possible commands to run against the system
-command(State) ->
+command(#{model := T}) ->
     Calls = [
-        {call, ?MODULE, add_file, [new_filename(State), contents()]},
+        ?LAZY(dirmodel:file_add(?DIR, T)),
         {call, ?MODULE, wait_events, []}
     ]
-    ++ case maps:size(State) of
-        3 -> % the two static atom keys
+    ++ case dirmodel:has_files(T) of
+        false ->
             [];
-        _ ->
-            [{call, ?MODULE, change_file, [filename(State), contents()]},
-             {call, ?MODULE, delete_file, [filename(State)]}]
+        true ->
+            [?LAZY(dirmodel:file_change(?DIR, T)),
+             ?LAZY(dirmodel:file_delete(?DIR, T))]
     end,
     oneof(Calls).
 
 %% @doc Determines whether a command should be valid under the
 %% current state.
-precondition(State, {call, _, add_file, [Filename, _Contents]}) ->
-    not maps:is_key(Filename, State) andalso not_is_dir(Filename, State);
-precondition(State, {call, _, change_file, [Filename, Contents]}) ->
-    case maps:find(Filename, State) of
-        error ->
-            false;
-        {ok, {_Hash, Contents}} ->
-            false;
-        {ok, {_Hash, _OldContents}} ->
-            true
+precondition(#{model := T}, {call, _, write_file, [Filename, _Contents | _]}) ->
+    dirmodel:type(?DIR, T, Filename) =:= undefined;
+precondition(#{model := T}, {call, _, change_file, [Filename, Contents | _]}) ->
+    Type = dirmodel:type(?DIR, T, Filename),
+    is_tuple(Type) andalso
+    element(1, Type) =:= file andalso
+    element(3, Type) =/= Contents;
+precondition(#{model := T}, {call, _, delete_file, [Filename | _]}) ->
+    case dirmodel:type(?DIR, T, Filename) of
+        {file, _, _} -> true;
+        _ -> false
     end;
-precondition(State, {call, _, delete_file, [Filename]}) ->
-    maps:is_key(Filename, State);
 precondition(_State, {call, _Mod, _Fun, _Args}) ->
     true.
 
 %% @doc Given the state `State' *prior* to the call
 %% `{call, Mod, Fun, Args}', determine whether the result
 %% `Res' (coming from the actual system) makes sense.
-postcondition(_State, {call, _, add_file, _}, ok) ->
+postcondition(_State, {call, _, write_file, _}, ok) ->
     true;
 postcondition(_State, {call, _, change_file, _}, ok) ->
     true;
@@ -95,10 +94,10 @@ postcondition(_State, {call, _, delete_file, _}, ok) ->
     true;
 postcondition(State, {call, _, wait_events, []}, Ret) ->
     {ExpDel, ExpAdd, ExpMod} = merge_ops(
-        [{Op, {filename:join(F),H}} || {Op, {F,H}} <- maps:get(ops, State)],
-        maps:get(set, State)
+        [{Op, {F,C}} || {Op, {F,C}} <- maps:get(ops, State)],
+        maps:get(snapshot, State)
     ),
-    Res = {ExpDel, ExpAdd, ExpMod} =:= Ret,
+    Res = hash({ExpDel, ExpAdd, ExpMod}) =:= Ret,
     Res orelse io:format("===~n~p~n---~n~p~n===~n",
                          [{ExpDel, ExpAdd, ExpMod}, Ret]),
     Res;
@@ -107,74 +106,26 @@ postcondition(_State, {call, _Mod, _Fun, _Args}, _Res) ->
 
 %% @doc Assuming the postcondition for a call was true, update the model
 %% accordingly for the test to proceed.
-next_state(State, _Res, {call, _, add_file, [FileName, Contents]}) ->
-    Hash = crypto:hash(sha256, Contents),
-    Dirs = maps:get(dirs, State),
-    Path = lists:droplast(FileName),
-    State#{FileName => {Hash, Contents},
-           dirs => lists:usort([Path|Dirs])--[[]],
-           ops => [{add, {FileName, Hash}} | maps:get(ops, State)]};
-next_state(State, _Res, {call, _, change_file, [FileName, Contents]}) ->
-    Hash = crypto:hash(sha256, Contents),
-    State#{FileName => {Hash, Contents},
-           ops => [{change, {FileName, Hash}} | maps:get(ops, State)]};
-next_state(State, _Res, {call, _, delete_file, [FileName]}) ->
-    {Hash, _} = maps:get(FileName, State),
-    NewState = maps:remove(FileName, State),
-    NewState#{ops => [{delete, {FileName, Hash}} | maps:get(ops, State)]};
+next_state(State, _Res, Op = {call, _, write_file, [FileName, Contents | _]}) ->
+    State#{ops => [{add, {FileName, Contents}} | maps:get(ops, State)],
+           model => dirmodel:apply_call(?DIR, maps:get(model, State), Op)};
+next_state(State, _Res, Op = {call, _, change_file, [FileName, Contents | _]}) ->
+    State#{ops => [{change, {FileName, Contents}} | maps:get(ops, State)],
+           model => dirmodel:apply_call(?DIR, maps:get(model, State), Op)};
+next_state(State, _Res, Op = {call, _, delete_file, [FileName | _]}) ->
+    {file, _, Val} = dirmodel:type(?DIR, maps:get(model, State), FileName),
+    State#{ops => [{delete, {FileName, Val}} | maps:get(ops, State)],
+           model => dirmodel:apply_call(?DIR, maps:get(model, State), Op)};
 next_state(State, _Res, {call, _, wait_events, []}) ->
-    #{set := OldSet, ops := Ops} = State,
-    MergedOps = merge_ops([{Op, {filename:join(F),H}} || {Op, {F,H}} <- Ops],
-                          OldSet),
-    State#{set := apply_ops(MergedOps, OldSet),
-           ops => []};
-next_state(State, _Res, {call, _Mod, _Fun, _Args}) ->
+    State#{ops := [],
+           snapshot := maps:get(model, State)};
+next_state(State, _Res, _Op = {call, _Mod, _Fun, _Args}) ->
     NewState = State,
     NewState.
-
-%%%%%%%%%%%%%%%%%%
-%%% GENERATORS %%%
-%%%%%%%%%%%%%%%%%%
-new_filename(Map) ->
-    ?SUCHTHAT(
-       Path,
-       ?LET(Base, revault_test_utils:gen_path(),
-            filename:split(filename:join(?DIR, Base))),
-       not_is_dir(Path, Map)
-    ).
-
-filename(Map) ->
-    oneof([P || P <- maps:keys(Map), not is_atom(P)]).
-
-not_is_dir(Path, Map) ->
-    lists:all(
-      fun(ExistingDir) -> not lists:prefix(Path, ExistingDir) end,
-      maps:get(dirs, Map)
-     )
-    andalso
-    lists:all(
-      fun(Existing) -> not lists:prefix(Existing, Path) end,
-      [K || K <- maps:keys(Map), not is_atom(K)]
-     ).
-
-
-contents() ->
-    binary().
 
 %%%%%%%%%%%%%%%%%%%
 %%% MODEL CALLS %%%
 %%%%%%%%%%%%%%%%%%%
-add_file(FileName, Contents) ->
-    Path = filename:join(FileName),
-    filelib:ensure_dir(Path),
-    file:write_file(Path, Contents, [sync, raw]).
-
-change_file(FileName, Contents) ->
-    file:write_file(filename:join(FileName), Contents, [sync, raw]).
-
-delete_file(FileName) ->
-    file:delete(filename:join(FileName)).
-
 wait_events() ->
     ok = revault_dirmon_event:force_scan(?LISTENER_NAME, 5000), % sync call
     Ref = make_ref(),
@@ -186,31 +137,31 @@ wait_events() ->
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
 %%%%%%%%%%%%%%%
-merge_ops(Ops, InitSet) ->
-    Map = maps:from_list([{File, {Op, Hash}}
-                          || {Op, {File, Hash}} <- lists:reverse(Ops)]),
-    process_ops(Map, InitSet).
+merge_ops(Ops, Snapshot) ->
+    Map = maps:from_list([{File, {Op, Content}}
+                          || {Op, {File, Content}} <- lists:reverse(Ops)]),
+    process_ops(Map, Snapshot).
 
-process_ops(Map, InitSet) ->
+process_ops(Map, Snapshot) ->
     {Del, Add, Mod} = maps:fold(
         fun(File, Ops, {Del, Add, Mod}) ->
-            Init = maps:get(File, InitSet, undefined),
+            Init = dirmodel:type(?DIR, Snapshot, File),
             case {Ops, Init} of
                 %% unchanged over both polls
-                {{delete, _Hash}, undefined} ->
+                {{delete, _Content}, undefined} ->
                     {Del, Add, Mod};
                 %% deleted file
-                {{delete, _Hash}, OldHash} ->
-                    {[{File, OldHash}|Del], Add, Mod};
+                {{delete, _Content}, {file, _, OldContent}} ->
+                    {[{File, OldContent}|Del], Add, Mod};
                 %% sequence ended in added file
-                {{_, Hash}, undefined} ->
-                    {Del, [{File, Hash}|Add], Mod};
+                {{_, Content}, undefined} ->
+                    {Del, [{File, Content}|Add], Mod};
                 %% changes had no impact
-                {{_, Hash}, Hash} ->
+                {{_, Content}, {file, _, Content}} ->
                     {Del, Add, Mod};
                 %% sequence ended in changed file
-                {{_, Hash}, _} ->
-                    {Del, Add, [{File, Hash}|Mod]}
+                {{_, Content}, _} ->
+                    {Del, Add, [{File, Content}|Mod]}
             end
         end,
         {[], [], []},
@@ -218,11 +169,9 @@ process_ops(Map, InitSet) ->
     ),
     {lists:sort(Del), lists:sort(Add), lists:sort(Mod)}.
 
-apply_ops({Del, Add, Mod}, Map) ->
-    maps:merge(
-      lists:foldl(fun({K,_V}, M) -> maps:remove(K, M) end, Map, Del),
-      maps:merge(maps:from_list(Add), maps:from_list(Mod))
-    ).
+hash({Del, Add, Mod}) ->
+    F = fun({F, Content}) -> {F, crypto:hash(sha256, Content)} end,
+    {lists:map(F, Del), lists:map(F, Add), lists:map(F, Mod)}.
 
 listener() ->
     register(?MODULE, self()),
