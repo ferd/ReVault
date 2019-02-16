@@ -137,6 +137,11 @@ wait_events() ->
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
 %%%%%%%%%%%%%%%
+
+%% take all operations that have run since a snapshot, and
+%% reduce them down to the view since then. For example, a
+%% file that is deleted, then created, might just be a "change"
+%% when detected.
 merge_ops(Ops, Snapshot) ->
     Map = maps:from_list([{File, {Op, Content}}
                           || {Op, {File, Content}} <- lists:reverse(Ops)]),

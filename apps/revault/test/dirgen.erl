@@ -15,6 +15,11 @@ write_file(Path, Contents, Opts) ->
 change_file(Path, Contents, Opts) ->
     write_file(Path, Contents, Opts).
 
+%% @doc Equivalent to {@link write_file/3}. Named differently
+%% to help with predictable models.
+path_conflict_file(Path, Contents, Opts) ->
+    write_file(Path, Contents, Opts).
+
 %% @doc wrapper for file operations as used by dirmodel
 delete_file(Path) ->
     file:delete(Path).

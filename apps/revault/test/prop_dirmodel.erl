@@ -7,13 +7,16 @@
 -compile(export_all).
 -define(DIR, "/tmp/fake/"). % should not write there for real
 
+%%%%%%%%%%%%%%%%%%
+%%% PROPERTIES %%%
+%%%%%%%%%%%%%%%%%%
 prop_added_file_found(doc) ->
     "Any file added to the model can be found back in it";
 prop_added_file_found(opts) ->
     [{numtests, 10}].
 prop_added_file_found() ->
     ?FORALL({Model, Op},
-            ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
+            ?LET({M, _Ops}, dirmodel:populate_dir(?DIR),
                  {M, dirmodel:file_add(?DIR, M)}),
       begin
         {call, _, write_file, [Path|_]} = Op,
@@ -22,6 +25,8 @@ prop_added_file_found() ->
         dirmodel:at(Model, Parts) =:= undefined
         andalso
         is_tuple(dirmodel:at(NewModel, Parts))
+        andalso
+        is_tuple(dirmodel:sensitive_at(NewModel, Parts))
       end).
 
 prop_deleted_file_gone(doc) ->
@@ -55,7 +60,31 @@ prop_changed_file() ->
         Parts = normalize(?DIR, Path),
         {ok, F1} = dirmodel:at(Model, Parts),
         {ok, F2} = dirmodel:at(NewModel, Parts),
-        F1 =/= F2
+        {ok, F3} = dirmodel:sensitive_at(Model, Parts),
+        {ok, F4} = dirmodel:sensitive_at(NewModel, Parts),
+        F1 =/= F2 andalso F3 =/= F4
+      end).
+
+prop_add_insensitive_conflict(doc) ->
+    "Adds a file that has a similar path to an existing "
+    "one, only using alternative casing for path names.";
+prop_add_insensitive_conflict(opts) ->
+    [{numtests, 10}].
+prop_add_insensitive_conflict() ->
+    ?FORALL({Model, Op},
+            ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
+                 {M, dirmodel:file_add_insensitive_conflict(?DIR, M)}),
+      begin
+        {call, _, path_conflict_file, [Path|_]} = Op,
+        NewModel = dirmodel:apply_call(?DIR, Model, Op),
+        Parts = normalize(?DIR, Path),
+        {ok, F1} = dirmodel:at(Model, Parts),
+        {ok, F2} = dirmodel:at(NewModel, Parts),
+        F1 =:= F2
+        andalso
+        dirmodel:sensitive_at(Model, Parts) =:= undefined
+        andalso
+        dirmodel:sensitive_at(NewModel, Parts) =:= undefined
       end).
 
 normalize(Base, Path) ->

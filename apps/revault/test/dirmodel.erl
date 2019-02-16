@@ -1,4 +1,5 @@
 %%% @doc
+%%% === Model Design ===
 %%% How to generate files and ensure we don't have duplicates,
 %%% nor that we try to name files after directories.
 %%%
@@ -61,21 +62,50 @@
 %%% function `populate_dir(Dir) -> {Model, SymbolicCalls}' that provides
 %%% both a model and an `eval()'-friendly list of calls to actualize it in
 %%% stateless properties.
+%%%
+%%% === Further model considerations ===
+%%%
+%%% Filesystems vary in their rules and limitations. This model works on the
+%%% following constraints that are considered the most limiting ones:
+%%%
+%%% <ul>
+%%%   <li>260 character limit in paths, based on Windows' constraints</li>
+%%%   <li>Case insensitive paths, based on both Windows' and OSX' default
+%%%       parameters and values</li>
+%%% </ul>
+%%%
+%%% Those are expected to clash with other filesystems (namely ext3,
+%%% ext4, ufs, etc.) which all have higher limits (OSX' filesystem
+%%% seems to have path length limits at about 1kb), or can support
+%%% both case sensitive and insensitive names.
+%%%
+%%% By default, calls such as `populate_dir' and `file_add' will
+%%% not create path conflicts to play nice, and `file_change' won't try
+%%% to play with either overt limits nor path sensitiviy clashes; they
+%%% are well-behaved.
+%%%
+%%% Additional calls such as `file_add_insensitive_conflict' and
+%%% `file_add_too_long' will allow users of the model to willingly
+%%% write file operations that <em>might</em> fail depending on the
+%%% filesystem, and ensure consistent behaviour in all scenarios.
 %%% @end
 -module(dirmodel).
 -include_lib("proper/include/proper.hrl").
          %% meta calls for property writers
 -export([new/0, apply_call/3, has_files/1, type/3, hashes/2,
          %% mutation calls for propery writers
-         file_add/2, file_change/2, file_delete/2,
+         file_add/2, file_add_insensitive_conflict/2,
+         file_change/2, file_delete/2,
          %% stateless helper
          populate_dir/1]).
 %% private exports for testing and extending the model itself
--export([at/2, insert_at/3, delete_at/2, file/2, dir/1]).
+-export([at/2, sensitive_at/2, insert_at/3, delete_at/2, file/2, dir/1]).
 
 -record(dir, {path :: string(),
+              normpath :: string(),
               nodes = [] :: [dir() | file()]}).
 -record(file, {path :: string(),
+               normpath :: string(),
                content :: binary(),
                hash :: binary()}).
 -type dir() :: #dir{}. % internal representation of a directory
@@ -90,27 +120,40 @@
 new() ->
     dir(".").
 
+%% @doc Create a populated model tree, along with a list of
+%% all the symbolic calls required to make it work, as a
+%% PropEr generator.
 -spec populate_dir(file:filename()) ->
     proper_gen:generator(). % {tree(), [{call, _, _, _}]}
 populate_dir(Dir) ->
     ?SIZED(Size, populate_dir(Dir, new(), [], Size)).
 
-populate_dir(_Dir, T, Ops, Size) when Size =< 0 ->
-    {T, Ops};
-populate_dir(Dir, T, Ops, Size) ->
-    ?LET(EvalT, T,
-         ?LET(Op, file_add(Dir, EvalT),
-              populate_dir(Dir, apply_call(Dir, EvalT, Op), [Op|Ops], Size-1))).
-
+%% @doc Generate a symbolic call that will create a new
+%% non-conflicting file in the directory tree.
 -spec file_add(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
 file_add(Dir, T) ->
-    PathNameGen = ?SUCHTHAT({P,N}, {path(), dirgen:path_chars()},
-                            at(T, P++[N]) =:= undefined),
+    PathNameGen = ?SUCHTHAT({P,N}, {path(Dir), dirgen:path_chars()},
+                            not is_conflict(T, P++[N])),
     ?LET({{Path, Name}, Content}, {PathNameGen, binary()},
-          {call, dirgen, write_file, [filename:join([Dir, filename:join(Path), Name]),
-                                     Content, [sync, raw]]}).
+          {call, dirgen, write_file,
+           [filename:join([Dir, filename:join(Path), Name]),
+            Content, [sync, raw]]}).
 
+%% @doc Generate a symbolic call that will create a new
+%% file that "conflicts" with an existing file in a case-insensitive
+%% file system, but wouldn't otherwise.
+-spec file_add_insensitive_conflict(file:filename(), tree()) ->
+    proper_gen:generator(). % {call, _, _, _}
+file_add_insensitive_conflict(Dir, T) ->
+    PathNameGen = oneof(file_paths(T)),
+    ?LET({Path, Content}, {mutate(PathNameGen, T), binary()},
+          {call, dirgen, path_conflict_file,
+           [filename:join([Dir, filename:join(Path)]),
+            Content, [sync, raw]]}).
+
+%% @doc Generate a symbolic call that will take an existing file in the
+%% model and change its content.
 -spec file_change(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
 file_change(Dir, T) ->
@@ -119,10 +162,13 @@ file_change(Dir, T) ->
         {ok, #file{content = C}} = at(T, Path),
         ContentGen = ?SUCHTHAT(B, binary(), B =/= C),
         ?LET(Content, ContentGen,
-             {call, dirgen, change_file, [filename:join([Dir, filename:join(Path)]),
-                                         Content, [sync, raw]]})
+             {call, dirgen, change_file,
+              [filename:join([Dir, filename:join(Path)]),
+               Content, [sync, raw]]})
       end).
 
+%% @doc Generate a symbolic call that will take an existing file in the
+%% model and remove it from the filesystem.
 -spec file_delete(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
 file_delete(Dir, T) ->
@@ -130,6 +176,9 @@ file_delete(Dir, T) ->
          {call, dirgen, delete_file,
           [filename:join([Dir, filename:join(Path)])]}).
 
+%% @doc Take a symbolic call generated from this module and
+%% then apply it to the model tree. The symbolic call must be
+%% an actuall term, not in the form of a PropEr generator.
 -spec apply_call(file:filename(), tree(), {call, dirgen, atom(), list()}) ->
     tree().
 apply_call(Dir, T, {call, dirgen, delete_file, [Path]}) ->
@@ -145,29 +194,24 @@ apply_call(Dir, T, {call, dirgen, change_file, [Path, Contents | _]}) ->
     Parts = suffix(filename:split(Dir), filename:split(Path)),
     Root = lists:droplast(Parts),
     Name = lists:last(Parts),
-    insert_at(delete_at(T, Parts), Root, file(Name, Contents)).
+    insert_at(delete_at(T, Parts), Root, file(Name, Contents));
+apply_call(Dir, T, {call, dirgen, path_conflict_file, [Path | _]}) ->
+    %% MAJOR GOTCHA HERE:
+    %%  We assume the system should block this operation
+    %%  as invalid.
+    Parts = suffix(filename:split(Dir), filename:split(Path)),
+    {ok, _} = at(T, Parts),
+    undefined = sensitive_at(T, Parts),
+    T.
 
 %% @doc Returns `true' if the model contains any file, and `false'
 %% otherwise; subdirectories do not count towards files.
+%% Useful for preconditions checking whether deletions or changes
+%% are legal to enact at this point.
 -spec has_files(tree()) -> boolean().
 has_files(#file{}) -> true;
 has_files(#dir{nodes=[]}) -> false;
 has_files(#dir{nodes=Nodes}) -> lists:any(fun has_files/1, Nodes).
-
-%% @doc Create a new file node. To be inserted within the model tree
-%% with the help of `insert_at/3'.
--spec file(name(), binary()) -> file().
-file(Name, Content) when is_list(Name), is_binary(Content) ->
-    #file{path=Name,
-          content=Content,
-          hash = crypto:hash(sha256, Content)}.
-
-%% @doc Create a new directory node. To be inserted within the model
-%% tree with the help of `insert_at/3'.
--spec dir(name()) -> dir().
-dir(Path) ->
-    #dir{path=Path}.
-
 
 %% @doc Extract the node type out of the model tree
 %% according to its path. If the node is a file, also
@@ -185,6 +229,10 @@ type(Dir, Tree, Path) ->
         undefined -> undefined
     end.
 
+%% @doc Returns a list of all files paths in `Tree' (prefixed
+%% with `Dir') along with their hashes.
+%% Designed to be compatible with the "polling set" of
+%% directory monitoring modules.
 hashes(Dir, Tree) ->
     Paths = file_paths(Tree),
     lists:sort(
@@ -193,6 +241,26 @@ hashes(Dir, Tree) ->
           {ok, #file{hash=Hash}} <- [at(Tree, Path)]]
      ).
 
+%%%%%%%%%%%%%%%%%%%%%%%
+%%% PRIVATE EXPORTS %%%
+%%%%%%%%%%%%%%%%%%%%%%%
+%% @doc Create a new file node. To be inserted within the model tree
+%% with the help of `insert_at/3'.
+-spec file(name(), binary()) -> file().
+file(Name, Content) when is_list(Name), is_binary(Content) ->
+    #file{path=Name,
+          normpath=normalize(Name),
+          content=Content,
+          hash=crypto:hash(sha256, Content)}.
+
+%% @doc Create a new directory node. To be inserted within the model
+%% tree with the help of `insert_at/3'.
+-spec dir(name()) -> dir().
+dir(Path) ->
+    #dir{path=Path,
+         normpath=normalize(Path)}.
+
+
 %% @doc Extract the node of the model tree according to its path.
 %% Useful for mutations or comparing tree internals.
 %%
@@ -200,16 +268,39 @@ hashes(Dir, Tree) ->
 %% of a path, which is a list of the form
 %% `[".", "subdir", "subsubdir", "file"]'
 -spec at(tree(), path()) -> {ok, [tnode()] | file()} | undefined.
-at(File = #file{path=Name}, [Name]) ->
+at(File, Name) ->
+    at_(File, normalize_all(Name)).
+
+%% @private helper for `at/2' that handles case insensitive paths
+at_(File = #file{normpath=Name}, [Name]) ->
     {ok, File};
-at(Dir = #dir{path=Name}, [Name]) ->
+at_(Dir = #dir{normpath=Name}, [Name]) ->
     {ok, Dir};
-at(#dir{path=Name, nodes=Nodes}, [Name, Next | Rest]) ->
+at_(#dir{normpath=Name, nodes=Nodes}, [Name, Next | Rest]) ->
     case find_node_by_name(Nodes, Next) of
         undefined -> undefined;
-        Node -> at(Node, [Next|Rest])
+        Node -> at_(Node, [Next|Rest])
     end;
-at(_, _) ->
+at_(_, _) ->
+    undefined.
+
+%% @doc Extract the node of the model tree according to its path.
+%% Useful for mutations or comparing tree internals.
+%%
+%% This function relies on the internal `dirmodel' defintion
+%% of a path, which is a list of the form
+%% `[".", "subdir", "subsubdir", "file"]'
+-spec sensitive_at(tree(), path()) -> {ok, [tnode()] | file()} | undefined.
+sensitive_at(File = #file{path=Name}, [Name]) ->
+    {ok, File};
+sensitive_at(Dir = #dir{path=Name}, [Name]) ->
+    {ok, Dir};
+sensitive_at(#dir{path=Name, nodes=Nodes}, [Name, Next | Rest]) ->
+    case find_node_by_sensitive_name(Nodes, Next) of
+        undefined -> undefined;
+        Node -> sensitive_at(Node, [Next|Rest])
+    end;
+sensitive_at(_, _) ->
     undefined.
 
 %% @doc allows the insertion of a new node within a model tree
@@ -220,16 +311,37 @@ at(_, _) ->
 %% If a path is given such as `[A,B,C]' and `B' does not exist in
 %% the model, it gets implicitly created as a directory node.
 -spec insert_at(tree(), path(), tnode()) -> tree().
-insert_at(D=#dir{path=Name, nodes=Nodes}, [Name], Node) ->
+insert_at(Tree, Path, Node) ->
+    insert_at_(Tree, normalize_all(Path), Path, Node).
+
+%% @private we carry both regular normalized names and raw
+%% names (unnormalized) through the process so that if we ever
+%% have to create an intermediate directory (we add `/a/b/c/d' but
+%% `c/' does not exist yet), we create it with the same casing as
+%% intended.
+insert_at_(D=#dir{normpath=Name, nodes=Nodes}, [Name], [_], Node) ->
     NextName = find_name(Node),
     undefined = find_node_by_name(Nodes, NextName),
     D#dir{nodes=[Node|Nodes]};
-insert_at(D=#dir{path=Name, nodes=Nodes}, [Name, Next | Rest], NewNode) ->
+insert_at_(D=#dir{normpath=Name, nodes=Nodes},
+           [Name, Next | Rest], [_, RawNext | RawRest], NewNode) ->
     case find_node_by_name(Nodes, Next) of
         undefined ->
-            D#dir{nodes=[insert_at(dir(Next), [Next | Rest], NewNode) | Nodes]};
+            NewDir = insert_at_(
+                dir(RawNext),
+                [Next | Rest],
+                [RawNext | RawRest],
+                NewNode
+            ),
+            D#dir{nodes=[NewDir | Nodes]};
         Node ->
-            D#dir{nodes=[insert_at(Node, [Next | Rest], NewNode) | Nodes -- [Node]]}
+            NewDir = insert_at_(
+                Node,
+                [Next | Rest],
+                [RawNext | RawRest],
+                NewNode
+            ),
+            D#dir{nodes=[NewDir | Nodes -- [Node]]}
     end.
 
 %% @doc allows the removal of a node within a model tree
@@ -239,29 +351,57 @@ insert_at(D=#dir{path=Name, nodes=Nodes}, [Name, Next | Rest], NewNode) ->
 %% It is also illegal to remove the root from the tree, since
 %% this would result in an undefined model.
 -spec delete_at(tree(), path()) -> tree().
-delete_at(D=#dir{path=Name, nodes=Nodes}, [Name, Next | Rest]) ->
+delete_at(Tree, Path) ->
+    delete_at_(Tree, normalize_all(Path)).
+
+%% @private helper for `delete_at/2' that handles path case
+%% insensitivity
+delete_at_(D=#dir{normpath=Name, nodes=Nodes}, [Name, Next | Rest]) ->
     case find_node_by_name(Nodes, Next) of
         undefined ->
             error(bad_delete);
         Node when Rest =:= [] ->
             D#dir{nodes=Nodes -- [Node]};
         Node when Rest =/= [] ->
-            D#dir{nodes=[delete_at(Node, [Next|Rest]) | Nodes -- [Node]]}
+            D#dir{nodes=[delete_at_(Node, [Next|Rest]) | Nodes -- [Node]]}
     end.
+
+%%%%%%%%%%%%%%%
+%%% PRIVATE %%%
+%%%%%%%%%%%%%%%
+%% @private utility function to create the generator for
+%% `populate_dir/1'.
+populate_dir(_Dir, T, Ops, Size) when Size =< 0 ->
+    {T, Ops};
+populate_dir(Dir, T, Ops, Size) ->
+    ?LET(EvalT, T,
+         ?LET(Op, file_add(Dir, EvalT),
+              populate_dir(Dir, apply_call(Dir, EvalT, Op), [Op|Ops], Size-1))).
 
 %% @private
 %% used during directory traversal to find the right entry
 %% in a directory.
+%% Assumes `Name' is already normalized.
 -spec find_node_by_name([dir()|file()], name()) -> undefined | dir() | file().
 find_node_by_name([], _) -> undefined;
-find_node_by_name([F=#file{path=Name} | _], Name) -> F;
-find_node_by_name([D=#dir{path=Name} | _], Name) -> D;
+find_node_by_name([F=#file{normpath=Name} | _], Name) -> F;
+find_node_by_name([D=#dir{normpath=Name} | _], Name) -> D;
 find_node_by_name([_ | Rest], Name) -> find_node_by_name(Rest, Name).
 
 %% @private
+%% used during directory traversal to find the right entry
+%% in a directory.
+-spec find_node_by_sensitive_name([dir()|file()], name()) ->
+    undefined | dir() | file().
+find_node_by_sensitive_name([], _) -> undefined;
+find_node_by_sensitive_name([F=#file{path=Name} | _], Name) -> F;
+find_node_by_sensitive_name([D=#dir{path=Name} | _], Name) -> D;
+find_node_by_sensitive_name([_ | Rest], Name) -> find_node_by_sensitive_name(Rest, Name).
+
+%% @private
 %% utility function to get the name of any node type
-find_name(F = #file{}) -> F#file.path;
-find_name(D = #dir{}) -> D#dir.path.
+find_name(F = #file{}) -> F#file.normpath;
+find_name(D = #dir{}) -> D#dir.normpath.
 
 %% @private
 %% Return all paths leading to files
@@ -295,7 +435,88 @@ suffix([], Bs) -> ["."|Bs];
 suffix([A|As], [A|Bs]) -> suffix(As, Bs);
 suffix(_, Bs) -> ["."|Bs].
 
+
+%% @private
+%% Normalize all strings in a path for case-insensitive comparisons.
+normalize_all(List) -> [normalize(Str) || Str <- List].
+
+%% @private
+%% Normalize strings for case-insensitive comparisons
+normalize(Str) -> string:casefold(Str).
+
 %% @private
 %% Generator for dirmodel full paths
-path() ->
-    ?LET(P, dirgen:path(), ["." | P]). % always a ./ in dirmodel
+%% Max length is 249:
+%%  - 260 for windows
+%%  - planned conflict files as '.conflict.N' for 11 chars
+%%  - 260 - 11 = 249
+path(Dir) ->
+    PathGen = ?SUCHTHAT(
+        P, dirgen:path(),
+        string:length(filename:join([Dir, filename:join(P)])) < 249
+    ),
+    ?LET(P, PathGen, ["." | P]). % always a ./ in dirmodel
+
+%% @private Take an existing path generator, and create a variation
+%% of it that compares equal in terms of case insensitivity, but is
+%% different when being case sensitive.
+mutate(PathGen, T) ->
+    ?LET(
+       {_, Mutated},
+       ?SUCHTHAT(
+          {Orig, Path},
+          ?LET(P, PathGen, {P, mutate_part(P)}),
+          Path =/= Orig andalso
+          sensitive_at(T, Path) =:= undefined
+       ),
+       Mutated
+    ).
+
+%% @private mutate a single portion of a path
+mutate_part(L) ->
+    mutate_part(rand:uniform(length(L)), L).
+
+mutate_part(1, [H|T]) ->
+    case string:titlecase(H) of
+        H ->
+            case string:uppercase(H) of
+                H -> [string:lowercase(H)|T];
+                New -> [New|T]
+            end;
+        New ->
+            [New|T]
+    end;
+mutate_part(N, [H|T]) ->
+    [H | mutate_part(N-1, T)].
+
+%% @private
+%% Returns whether a file path is conflicting (in terms
+%% of case sensitivity) with an existing one.
+%%
+%% - A directory with `/a/B/' and path `/a/b/c' conflicts
+%% - A directory with `/a/b/' and path `/a/b/c' has no conflict
+%% - A directory with `/a/b/C' and path `/a/b/c' conflicts
+%% - A directory with `/a/b/c' and path `/a/b/c' conflicts
+%% - A directory with `/a/B/c/' and path `/a/b/c/d' conflicts
+%% - A directory with `/a/b/' and path `/a/b/c' has no conflict
+-spec is_conflict(tree(), path()) -> boolean().
+is_conflict(Tree, Name) ->
+    is_conflict_(Tree, normalize_all(Name), Name).
+
+is_conflict_(#file{normpath=Name}, [Name], [_]) ->
+    true;
+is_conflict_(#dir{normpath=Name}, [Name], [_]) ->
+    true;
+is_conflict_(#dir{normpath=Name, nodes=Nodes},
+    [Name, Next | Rest], [_, RawNext | RawRest]) ->
+    case find_node_by_name(Nodes, Next) of
+        undefined ->
+            false;
+        Node ->
+            case find_node_by_sensitive_name(Nodes, RawNext) of
+                undefined -> true;
+                Node -> is_conflict_(Node, [Next|Rest], [RawNext|RawRest])
+            end
+    end;
+is_conflict_(_, _, _) ->
+    false.
