@@ -85,7 +85,7 @@
 %%% are well-behaved.
 %%%
 %%% Additional calls such as `file_add_insensitive_conflict' and
-%%% `file_add_too_long' will allow users of the model to willingly
+%%% `file_add_long_path' will allow users of the model to willingly
 %%% write file operations that <em>might</em> fail depending on the
 %%% filesystem, and ensure consistent behaviour in all scenarios.
 %%% @end
@@ -95,6 +95,7 @@
 -export([new/0, apply_call/3, has_files/1, type/3, hashes/2,
          %% mutation calls for propery writers
          file_add/2, file_add_insensitive_conflict/2,
+         file_add_long_path/2,
          file_change/2, file_delete/2,
          %% stateless helper
          populate_dir/1]).
@@ -133,7 +134,7 @@ populate_dir(Dir) ->
 -spec file_add(file:filename(), tree()) ->
     proper_gen:generator(). % {call, _, _, _}
 file_add(Dir, T) ->
-    PathNameGen = ?SUCHTHAT({P,N}, {path(Dir), dirgen:path_chars()},
+    PathNameGen = ?SUCHTHAT({P,N}, path(Dir),
                             not is_conflict(T, P++[N])),
     ?LET({{Path, Name}, Content}, {PathNameGen, binary()},
           {call, dirgen, write_file,
@@ -150,6 +151,18 @@ file_add_insensitive_conflict(Dir, T) ->
     ?LET({Path, Content}, {mutate(PathNameGen, T), binary()},
           {call, dirgen, path_conflict_file,
            [filename:join([Dir, filename:join(Path)]),
+            Content, [sync, raw]]}).
+
+%% @doc Generate a symbolic call that will create a new
+%% file that "conflicts" by virtue of having too long of a path
+-spec file_add_long_path(file:filename(), tree()) ->
+    proper_gen:generator(). % {call, _, _, _}
+file_add_long_path(Dir, _) ->
+    %% long_path assumes none of the paths are in the model
+    %% so any name is a potential name.
+    ?LET({{Path, Name}, Content}, {long_path(Dir), binary()},
+          {call, dirgen, write_long_path,
+           [filename:join([Dir, filename:join(Path), Name]),
             Content, [sync, raw]]}).
 
 %% @doc Generate a symbolic call that will take an existing file in the
@@ -202,6 +215,11 @@ apply_call(Dir, T, {call, dirgen, path_conflict_file, [Path | _]}) ->
     Parts = suffix(filename:split(Dir), filename:split(Path)),
     {ok, _} = at(T, Parts),
     undefined = sensitive_at(T, Parts),
+    T;
+apply_call(_Dir, T, {call, dirgen, write_long_path, _}) ->
+    %% MAJOR GOTCHA HERE:
+    %%  We assume the system should block this operation
+    %%  as invalid.
     T.
 
 %% @doc Returns `true' if the model contains any file, and `false'
@@ -452,10 +470,19 @@ normalize(Str) -> string:casefold(Str).
 %%  - 260 - 11 = 249
 path(Dir) ->
     PathGen = ?SUCHTHAT(
-        P, dirgen:path(),
-        string:length(filename:join([Dir, filename:join(P)])) < 249
+        {P, N}, {dirgen:path(), dirgen:path_chars()},
+        string:length(filename:join([Dir, filename:join(P), N])) < 250
     ),
-    ?LET(P, PathGen, ["." | P]). % always a ./ in dirmodel
+    ?LET({P, N}, PathGen, {["." | P], N}). % always a ./ in dirmodel
+
+%% @private
+%% Generator for dirmodel full path, min length is 250.
+long_path(Dir) ->
+    PathGen = ?SUCHTHAT(
+        {P, N}, {vector(150, dirgen:path_chars()), dirgen:path_chars()},
+        string:length(filename:join([Dir, filename:join(P), N])) > 249
+    ),
+    ?LET({P, N}, PathGen, {["." | P], N}). % always a ./ in dirmodel
 
 %% @private Take an existing path generator, and create a variation
 %% of it that compares equal in terms of case insensitivity, but is

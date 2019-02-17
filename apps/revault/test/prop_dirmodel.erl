@@ -87,5 +87,22 @@ prop_add_insensitive_conflict() ->
         dirmodel:sensitive_at(NewModel, Parts) =:= undefined
       end).
 
+prop_add_long_path(doc) ->
+    "Adds a file that has a long path above limits";
+prop_add_long_path(opts) ->
+    [{numtests, 10}].
+prop_add_long_path() ->
+    ?FORALL({Model, Op},
+            ?LET({M,_Ops}, dirmodel:populate_dir(?DIR),
+                 {M, dirmodel:file_add_long_path(?DIR, M)}),
+      begin
+        {call, _, write_long_path, [Path|_]} = Op,
+        NewModel = dirmodel:apply_call(?DIR, Model, Op),
+        Parts = normalize(?DIR, Path),
+        dirmodel:at(Model, Parts) =:= undefined
+        andalso
+        dirmodel:at(NewModel, Parts) =:= undefined
+      end).
+
 normalize(Base, Path) ->
     ["." | filename:split(string:prefix(Path, Base))].
