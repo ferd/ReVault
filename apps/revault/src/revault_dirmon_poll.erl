@@ -1,9 +1,13 @@
+%%% @doc
+%%% Basic polling mechanism used to scan directories and find
+%%% all the file hashes and fetch the changes they might contain
+%%% @end
 -module(revault_dirmon_poll).
 -export([scan/1, rescan/2]).
 
 -type hash() :: binary().
 -type set() :: [{file:filename(), hash()}].
--export_type([set/0]).
+-export_type([set/0, hash/0]).
 
 -ifdef(TEST).
 -export([diff_set/2]).

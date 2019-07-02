@@ -1,3 +1,9 @@
+%%% @doc
+%%% Module in charge of running a server that monitors a given directory
+%%% and forwards events related to all detected changes.
+%%% The events are sent over the `gproc' property `{p, l, Name}', where
+%%% `Name' is the name given to the server.
+%%% @end
 -module(revault_dirmon_event).
 -export([start_link/2, force_scan/2, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
