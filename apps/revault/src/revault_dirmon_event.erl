@@ -30,13 +30,14 @@ stop(Name) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% GEN_SERVER CALLBACKS %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
-init(#{directory := Dir, poll_interval := Time, name := Name}) ->
+init(#{directory := Dir, poll_interval := Time,
+       name := Name, initial_sync := Mode}) ->
     Ref = erlang:start_timer(Time, self(), poll),
     {ok, #state{name = Name,
                 directory = Dir,
                 poll_delay = Time,
                 poll_ref = Ref,
-                set = revault_dirmon_poll:scan(Dir)}}.
+                set = initial_sync(Mode, Name, Dir)}}.
 
 handle_call(force_scan, _From, S=#state{name=Name, directory=Dir, set=Set}) ->
     {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Set),
@@ -70,3 +71,9 @@ send_events(Name, {Del, Add, Mod}) ->
     ok.
 
 make_event(Name, Event) -> {dirmon, Name, Event}.
+
+initial_sync(scan, _Name, Dir) ->
+    revault_dirmon_poll:scan(Dir);
+initial_sync(tracker, Name, _Dir) ->
+    AllFiles = revault_dirmon_tracker:files(Name),
+    lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]).
