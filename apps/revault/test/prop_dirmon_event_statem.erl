@@ -30,6 +30,7 @@ prop_test() ->
                 {ok, _} = revault_dirmon_event:start_link(
                     ?LISTENER_NAME,
                     #{directory => ?DIR,
+                      initial_sync => scan,
                       poll_interval => 6000000} % too long to interfere
                 ),
                 Listener = spawn_link(fun listener/0),

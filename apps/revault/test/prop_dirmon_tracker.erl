@@ -1,6 +1,7 @@
 -module(prop_dirmon_tracker).
 -include_lib("proper/include/proper.hrl").
 -define(DIR, "_build/test/scratch").
+-define(STORE, "_build/test/scratchstore").
 -define(LISTENER_NAME, {?MODULE, ?DIR}).
 -compile(export_all).
 
@@ -21,6 +22,7 @@ prop_test() ->
         {ok, Apps} = application:ensure_all_started(gproc),
         fun() ->
              [application:stop(App) || App <- Apps],
+             file:delete(?STORE),
              revault_test_utils:teardown_scratch_dir(?DIR) % safety
         end
     end,
@@ -28,15 +30,20 @@ prop_test() ->
             begin
                 revault_test_utils:teardown_scratch_dir(?DIR),
                 revault_test_utils:setup_scratch_dir(?DIR),
+                {ok, _Listener} = revault_dirmon_tracker:start_link(
+                    ?LISTENER_NAME,
+                    ?STORE
+                ),
                 {ok, _} = revault_dirmon_event:start_link(
                     ?LISTENER_NAME,
                     #{directory => ?DIR,
+                      initial_sync => tracker,
                       poll_interval => 6000000} % too long to interfere
                 ),
-                {ok, _Listener} = revault_dirmon_tracker:start_link(?LISTENER_NAME),
                 {History, State, Result} = run_commands(?MODULE, Cmds),
-                revault_dirmon_tracker:stop(?LISTENER_NAME),
                 revault_dirmon_event:stop(?LISTENER_NAME),
+                revault_dirmon_tracker:stop(?LISTENER_NAME),
+                file:delete(?STORE),
                 revault_test_utils:teardown_scratch_dir(?DIR),
                 ?WHENFAIL(io:format("History: ~p\nState: ~p\nResult: ~p\n",
                                     [History,State,Result]),
@@ -56,7 +63,9 @@ initial_state() ->
 command(#{model := T, ops := Ops}) ->
     Calls = [
         ?LAZY(dirmodel:file_add(?DIR, T)),
-        {call, ?MODULE, check_files, [?DIR, T, Ops]}
+        {call, ?MODULE, check_files, [?DIR, T, Ops]},
+        {call, ?MODULE, restart_tracker, []},
+        {call, ?MODULE, restart_event, []}
     ]
     ++ case dirmodel:has_files(T) of
         false ->
@@ -103,6 +112,10 @@ postcondition(State, {call, _, check_files, _}, {Exist, Deleted, Unknown}) ->
           andalso lists:all(fun(Entry) -> Entry == undefined end, Unknown),
     Res orelse io:format("BAD CHECK: ~p~n~p", [{Exist, Deleted, Unknown}, ModelExist]),
     Res;
+postcondition(_State, {call, _, restart_tracker, _}, {ok, _}) ->
+    true;
+postcondition(_State, {call, _, restart_event, _}, {ok, _}) ->
+    true;
 postcondition(_State, {call, _Mod, _Fun, _Args}, _Res) ->
     false.
 
@@ -171,3 +184,16 @@ file_deleted(File, Dir, Model, Ops) ->
     andalso 
     [] == [Op || Op = {add, {Name, _}} <- Ops,
                          Name =:= File].
+
+restart_tracker() ->
+    revault_dirmon_tracker:stop(?LISTENER_NAME),
+    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?STORE).
+
+restart_event() ->
+    revault_dirmon_event:stop(?LISTENER_NAME),
+    revault_dirmon_event:start_link(
+        ?LISTENER_NAME,
+        #{directory => ?DIR,
+          initial_sync => tracker,
+          poll_interval => 6000000} % too long to interfere
+    ).
