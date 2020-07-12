@@ -40,6 +40,55 @@ Invariants to Maintain
 - correctness over performance
 - be portable across Linux, OSX, and Windows (at various efficiency costs)
 
+Using
+-----
+
+```
+[dirs]
+  [dirs.music]
+  interval = 60
+  path = "~/Music"
+  
+  [dirs.images]
+  interval = 60
+  path = "/Users/ferd/images/"
+  ignore = [] # regexes on full path
+
+[peers]
+  # VPS copy running
+  [peers.vps]
+  sync = ["images"]
+  url = "leetzone.ca:8022"
+    [peers.vps.auth]
+    type = "ssh"
+    cert = "~/.ssh/id_rsa"
+
+  # Localhost copy running
+  [peers.local]
+  url = "localhost:8888"
+    [peers.local.auth]
+    type = "none"
+
+[server]
+    [server.auth.none]
+    port = 9999
+    sync = ["images", "music"]
+    mode = "read/write"
+
+    [server.auth.ssh]
+    status = "disabled"
+    port = 8022
+    [server.auth.ssh.authorized_keys]
+        [server.auth.ssh.authorized_keys.vps]
+        public_key = "...."
+        sync = ["images", "music"]
+
+        [server.auth.ssh.authorized_keys.friendo]
+        public_key = "...."
+        sync = ["music"]
+        mode = "read"
+```
+
 Roadmap
 ---
 
