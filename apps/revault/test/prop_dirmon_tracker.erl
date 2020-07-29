@@ -3,6 +3,7 @@
 -define(DIR, "_build/test/scratch").
 -define(STORE, "_build/test/scratchstore").
 -define(LISTENER_NAME, {?MODULE, ?DIR}).
+-define(ITC_SEED, element(1, itc:explode(itc:seed()))).
 -compile(export_all).
 
 %% Model Callbacks
@@ -32,7 +33,8 @@ prop_test() ->
                 revault_test_utils:setup_scratch_dir(?DIR),
                 {ok, _Listener} = revault_dirmon_tracker:start_link(
                     ?LISTENER_NAME,
-                    ?STORE
+                    ?STORE,
+                    ?ITC_SEED
                 ),
                 {ok, _} = revault_dirmon_event:start_link(
                     ?LISTENER_NAME,
@@ -49,6 +51,46 @@ prop_test() ->
                                     [History,State,Result]),
                           aggregate(command_names(Cmds), Result =:= ok))
             end)).
+
+prop_monotonic(doc) ->
+   "Do a sequence of random operations on a file and make sure that all "
+   "operations (even deletions and recreations) end in a logical clock "
+   "always increasing, showing data is properly tracked.".
+prop_monotonic() ->
+    ?SETUP(fun() ->
+        {ok, Apps} = application:ensure_all_started(gproc),
+        fun() ->
+             [application:stop(App) || App <- Apps],
+             ok
+        end
+    end,
+    ?FORALL(Events, change_events("test-file"),
+      ?TRAPEXIT(
+        begin
+            {Id, _} = itc:explode(itc:seed()),
+            {ok, Listener} = revault_dirmon_tracker:start_link(
+                ?LISTENER_NAME,
+                undefined,
+                Id
+            ),
+            Hashes = lists:map(
+                fun(Event) ->
+                    Listener ! Event,
+                    revault_dirmon_tracker:file(?LISTENER_NAME, "test-file")
+                end,
+                Events
+            ),
+            revault_dirmon_tracker:stop(?LISTENER_NAME),
+            Sorter = fun(A, B) ->
+                itc:leq(itc:rebuild(Id, A), itc:rebuild(Id, B))
+            end,
+            Sorted = lists:usort(Sorter, Hashes),
+            ?WHENFAIL(io:format("Sorted: ~p~nObtained: ~p~n",
+                                [Sorted, Hashes]),
+                      Sorted =:= Hashes andalso
+                      not lists:member(undefined, Hashes))
+        end))).
+
 
 %%%%%%%%%%%%%
 %%% MODEL %%%
@@ -171,7 +213,7 @@ check_files(Dir, Model, Ops) ->
                                   "this file has got to be bad")]}.
 
 drop_vsn({_Vsn, Hash}) -> Hash;
-drop_vsn(NoVsn) -> NoVsn.
+drop_vsn(undefined) -> undefined.
 
 %% @private check that the file is deleted, but also that it was deleted
 %% only *after* a prior check. Otherwise, we're checking between two scans
@@ -181,13 +223,13 @@ drop_vsn(NoVsn) -> NoVsn.
 file_deleted(File, Dir, Model, Ops) ->
     Type = dirmodel:type(Dir, Model, File),
     (Type =:= dir orelse Type =:= undefined)
-    andalso 
+    andalso
     [] == [Op || Op = {add, {Name, _}} <- Ops,
                          Name =:= File].
 
 restart_tracker() ->
     revault_dirmon_tracker:stop(?LISTENER_NAME),
-    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?STORE).
+    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?STORE, ?ITC_SEED).
 
 restart_event() ->
     revault_dirmon_event:stop(?LISTENER_NAME),
@@ -196,4 +238,14 @@ restart_event() ->
         #{directory => ?DIR,
           initial_sync => tracker,
           poll_interval => 6000000} % too long to interfere
+    ).
+
+%%%%%%%%%%%%%%%%%%
+%%% GENERATORS %%%
+%%%%%%%%%%%%%%%%%%
+change_events(FileName) ->
+    Transform = oneof([added, deleted, changed]),
+    Event = fun(Op) -> {dirmon, ?LISTENER_NAME, Op} end,
+    ?LET(List, list(Event({Transform, {FileName, binary(8)}})),
+         [Event({added, {FileName, binary(8)}}) | List]
     ).

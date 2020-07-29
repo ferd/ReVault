@@ -43,6 +43,9 @@ Invariants to Maintain
 Using
 -----
 
+Specify some configuration. By default, we look into your home directory for
+a `ReVault/config.toml` file (using the XDG standard of `~/.config/ReVault/config.toml` on both Linux and OSX). The format of the config file is:
+
 ```
 [dirs]
   [dirs.music]
@@ -89,6 +92,14 @@ Using
         mode = "read"
 ```
 
+The file path can be overridden by using environment variables, calling the release with arguments such as:
+
+```
+./_build/default/rel/revault/bin/revault console -revault config '"some/path"'
+```
+
+Note the nested quoting around the path. A helper script hiding this implementation detail should eventually be added.
+
 Roadmap
 ---
 
@@ -108,3 +119,4 @@ Tests
 ---
 
     $ rebar3 check
+
