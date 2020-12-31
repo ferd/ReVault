@@ -1,11 +1,14 @@
 %%% @doc high-level convenience wrapper around the ITC
 %%% library for Revault's internal use cases.
 -module(revault_id).
--export([new/0, fork/1]).
+-export([new/0, undefined/0, fork/1]).
 
 new() ->
     {Id, _} = itc:explode(itc:seed()),
     Id.
+
+undefined() ->
+    undefined.
 
 fork(Id) ->
     {_, Event} = itc:explode(itc:seed()),

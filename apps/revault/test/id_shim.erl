@@ -1,6 +1,6 @@
 %%% @doc Shim module for ID-handling at the protocol level.
 -module(id_shim).
--export([start_link/0, stop/0,
+-export([start_link/0, stop/1,
          id_ask/2, id_reply/3, inspect_id/1]).
 -export([init/1, handle_call/3]).
 
@@ -9,19 +9,26 @@
 start_link() ->
     {ok, _Client} = gen_server:start_link({local, client}, ?MODULE, [], []),
     {ok, _Server} = gen_server:start_link({local, server}, ?MODULE, [], []),
-    gen_server:call(client, {set, id, undefined}),
+    gen_server:call(client, {set, id, revault_id:undefined()}),
     gen_server:call(server, {set, id, revault_id:new()}),
     {ok, many_pids}.
 
-stop() ->
+stop(_) ->
     gen_server:stop(client),
     gen_server:stop(server),
     ok.
 
-id_ask(_From, _To) ->
+id_ask(From, To) ->
+    Msg = revault_id_sync:ask(),
+    gen_server:call(From, {set, id_ask, Msg}),
     ok.
 
 id_reply(From, To, Id) ->
+    Msg = gen_server:call(To, {get, id_ask}),
+    {Keep, Resp} = revault_id_sync:reply(Msg, gen_server:call(From, {get, id})),
+    gen_server:call(From, {set, id, Keep}),
+    {reply, Id} = Resp,
+    gen_server:call(To, {set, id, Id}),
     ok.
 
 inspect_id(Name) ->

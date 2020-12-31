@@ -6,18 +6,25 @@ prop_local(doc) ->
     "Test the ID forking mechanism locally; the logic of all calls being "
     "put in place and assumes a healthy and correct network".
 prop_local() ->
+    ?SETUP(fun() ->
+            {ok, Apps} = application:ensure_all_started(gproc),
+            fun() ->
+                [application:stop(App) || App <- lists:reverse(Apps)],
+                ok
+            end
+        end,
     ?FORALL(Cmds, proper_fsm:commands(?MODULE),
       ?TRAPEXIT(
         begin
-            id_shim:start_link(),
+            ShimState = id_shim:start_link(),
             {History,State,Result} = proper_fsm:run_commands(?MODULE, Cmds),
-            id_shim:stop(),
+            id_shim:stop(ShimState),
             ?WHENFAIL(io:format("History: ~p\nState: ~p\nResult: ~p\n",
                                 [History,State,Result]),
                       aggregate(zip(proper_fsm:state_names(History),
                                     command_names(Cmds)), 
                                 Result =:= ok))
-        end)).
+        end))).
 
 -record(data, {
          client = #{id => undefined,
