@@ -21,7 +21,10 @@ literal(Config) ->
     {ok, Bin} = file:read_file(CfgFile),
     {ok, Cfg} = maestro_cfg:parse(Bin),
     ?assertMatch(
-       #{<<"dirs">> := #{
+       #{<<"db">> := #{
+             <<"path">> := <<"/Users/ferd/.config/ReVault/db/">>
+         },
+         <<"dirs">> := #{
             <<"music">> := #{
                 <<"interval">> := 60,
                 <<"path">> := <<"~/Music">>,
@@ -85,7 +88,8 @@ from_file(Config) ->
     CfgFile = filename:join(?config(data_dir, Config), "sample.toml"),
     {ok, Cfg} = maestro_cfg:parse_file(CfgFile),
     ?assertMatch(
-       #{<<"dirs">> := _,
+       #{<<"db">> := _,
+         <<"dirs">> := _,
          <<"peers">> := _,
          <<"server">> := _
        },
@@ -96,7 +100,8 @@ from_file(Config) ->
 from_default_file(_Config) ->
     {ok, Cfg} = maestro_cfg:parse_file(),
     ?assertMatch(
-       #{<<"dirs">> := _,
+       #{<<"db">> := _,
+         <<"dirs">> := _,
          <<"peers">> := _,
          <<"server">> := _
        },

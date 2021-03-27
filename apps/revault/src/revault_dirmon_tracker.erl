@@ -62,6 +62,7 @@ handle_info({dirmon, _Name, {Transform, _} = Op},
              Transform == added;
              Transform == changed ->
     NewState = State#state{snapshot = apply_operation(Op, Map, ITC)},
+    %% TODO: save a snapshot on inactivity rather than each change?
     save_snapshot(NewState),
     {noreply, NewState};
 handle_info(_Msg, State) ->

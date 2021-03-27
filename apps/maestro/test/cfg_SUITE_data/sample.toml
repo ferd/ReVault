@@ -1,3 +1,6 @@
+[db]
+  path = "/Users/ferd/.config/ReVault/db/"
+
 [dirs]
   [dirs.music]
   interval = 60

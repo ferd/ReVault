@@ -21,12 +21,14 @@ parse_file(FileName) ->
 
 normalize(Cfg) ->
     try
+        Db = normalize_db(Cfg),
         {ok, Dirs} = tomerl:get(Cfg, [<<"dirs">>]),
         {ok, Peers} = tomerl:get(Cfg, [<<"peers">>]),
         {ok, Server} = tomerl:get(Cfg, [<<"server">>]),
         NormDirs = normalize_dirs(Dirs),
         DirNames = dirnames(NormDirs),
-        {ok, Cfg#{<<"dirs">> := NormDirs,
+        {ok, Cfg#{<<"db">> => Db,
+                  <<"dirs">> := NormDirs,
                   <<"peers">> := normalize_peers(Peers, DirNames),
                   <<"server">> := normalize_server(Server, DirNames)}}
     catch
@@ -34,6 +36,14 @@ normalize(Cfg) ->
         error:{badkey, K}:S -> {error, {missing_key, K, S}};
         throw:Reason -> {error, Reason}
     end.
+
+normalize_db(Cfg) ->
+    Map = case tomerl:get(Cfg, [<<"db">>]) of
+        {ok, DbMap} -> DbMap;
+        {error, not_found} -> #{}
+    end,
+    Path = maps:get(<<"path">>, Map, default_db_path()),
+    #{<<"path">> => Path}.
 
 normalize_dirs(Map) ->
     maps:fold(fun normalize_dir/3, #{}, Map).
@@ -113,11 +123,16 @@ mode(<<"read/write">>) -> read_write;
 mode(<<"read">>) -> read.
 
 config_path() ->
+    filename:join(config_dir(), "config.toml").
+
+default_db_path() ->
+    filename:join(config_dir(), "db").
+
+config_dir() ->
     Opts = case os:type() of
         {unix, darwin} -> % OSX, use XDG format
             #{os => linux};
         _ ->
             #{}
     end,
-    filename:join(filename:basedir(user_config, "ReVault", Opts),
-                  "config.toml").
+    filename:basedir(user_config, "ReVault", Opts).

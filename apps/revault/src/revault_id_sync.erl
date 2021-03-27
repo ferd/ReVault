@@ -19,6 +19,8 @@
 -export([ask/0, reply/2]).
 -define(VSN, 1).
 %-define(name(N), {via, gproc, {n,l,{?MODULE,N}}}).
+new() ->
+    revault_id:new().
 
 ask() ->
     {ask, ?VSN}.
@@ -26,3 +28,19 @@ ask() ->
 reply({ask, ?VSN}, Id) ->
     {Keep, Send} = revault_id:fork(Id),
     {Keep, {reply, Send}}.
+
+send({Name, Node}, Payload) ->
+    Ref = make_ref(),
+    From = self(),
+    ok = erpc:cast(Node, fun() ->
+        gproc:send(Name, {revault, {?MODULE, From, Ref}, Payload})
+    end),
+    Ref.
+
+send_back({?MODULE, From, Ref}, Payload) ->
+    From ! {revault, {self(), Ref}, Payload},
+    ok.
+
+%% For this module, we just use raw erlang terms.
+unpack({ask, ?VSN}) -> ask;
+unpack(Term) -> Term.

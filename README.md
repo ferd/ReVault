@@ -47,6 +47,9 @@ Specify some configuration. By default, we look into your home directory for
 a `ReVault/config.toml` file (using the XDG standard of `~/.config/ReVault/config.toml` on both Linux and OSX). The format of the config file is:
 
 ```
+[db]
+  path = "/Users/ferd/.config/ReVault/db/"
+
 [dirs]
   [dirs.music]
   interval = 60

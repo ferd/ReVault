@@ -1,9 +1,9 @@
 %%%-------------------------------------------------------------------
-%% @doc revault top level supervisor.
+%% @doc revault sync fsm supervisor.
 %% @end
 %%%-------------------------------------------------------------------
 
--module(revault_sup).
+-module(revault_fsm_sup).
 
 -behaviour(supervisor).
 
@@ -31,15 +31,9 @@ start_link() ->
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, {{one_for_all, 0, 1}, [
-        #{id => trackers_sup,
-          start => {revault_trackers_sup, start_link, []},
-          type => supervisor},
-        #{id => fsm_sup,
-          start => {revault_fsm_sup, start_link, []},
-          type => supervisor}
-    ]}}.
+    {ok, {{one_for_all, 0, 1}, []}}.
 
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
