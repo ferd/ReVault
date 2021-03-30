@@ -16,16 +16,17 @@
 %%% This implies that the ID will be stored somewhere stateful, but the
 %%% protocol here does not need to know where or how.
 -module(revault_id_sync).
--export([ask/0, reply/2]).
+-export([new/0, ask/0, fork/2]).
+-export([send/2, reply/2, unpack/1]).
 -define(VSN, 1).
-%-define(name(N), {via, gproc, {n,l,{?MODULE,N}}}).
+
 new() ->
     revault_id:new().
 
 ask() ->
     {ask, ?VSN}.
 
-reply({ask, ?VSN}, Id) ->
+fork({ask, ?VSN}, Id) ->
     {Keep, Send} = revault_id:fork(Id),
     {Keep, {reply, Send}}.
 
@@ -33,11 +34,12 @@ send({Name, Node}, Payload) ->
     Ref = make_ref(),
     From = self(),
     ok = erpc:cast(Node, fun() ->
-        gproc:send(Name, {revault, {?MODULE, From, Ref}, Payload})
+        gproc:send({n, l, {revault_sync_fsm, Name}},
+                   {revault, {?MODULE, From, Ref}, Payload})
     end),
     Ref.
 
-send_back({?MODULE, From, Ref}, Payload) ->
+reply({?MODULE, From, Ref}, Payload) ->
     From ! {revault, {self(), Ref}, Payload},
     ok.
 
