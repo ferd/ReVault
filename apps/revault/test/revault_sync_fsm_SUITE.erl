@@ -4,9 +4,10 @@
 -compile(export_all).
 
 all() ->
-    [start_hierarchy, client_id].
+    [start_hierarchy, client_id, client_no_server, client_uninit_server].
 
-init_per_testcase(Case=start_hierarchy, Config) ->
+init_per_testcase(Case, Config) when Case =:= start_hierarchy;
+                                     Case =:= client_no_server ->
     {ok, Apps} = application:ensure_all_started(gproc),
     Priv = ?config(priv_dir, Config),
     DbDir = filename:join([Priv, "db"]),
@@ -21,6 +22,8 @@ init_per_testcase(Case=start_hierarchy, Config) ->
      {name, Name},
      {interval, Interval},
      {apps, Apps} | Config];
+init_per_testcase(client_uninit_server, Config) ->
+    init_per_testcase(client_deferred_uninit_server, [{init_server, false} | Config]);
 init_per_testcase(Case, Config) ->
     {ok, Apps} = application:ensure_all_started(gproc),
     Priv = ?config(priv_dir, Config),
@@ -38,7 +41,8 @@ init_per_testcase(Case, Config) ->
     {ok, Sup} = revault_sup:start_link(),
     {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Interval),
     ok = revault_sync_fsm:server(ServerName),
-    _ = revault_sync_fsm:id(ServerName), % set up ID if not done
+    %% set up ID if not done, and if allowed
+    ?config(init_server, Config) =/= false andalso revault_sync_fsm:id(ServerName),
     [{db_dir, DbDir},
      {path, Path},
      {name, Name},
@@ -48,6 +52,9 @@ init_per_testcase(Case, Config) ->
      {apps, Apps} | Config].
 
 end_per_testcase(start_hierarchy, Config) ->
+    [application:stop(App) || App <- ?config(apps, Config)],
+    Config;
+end_per_testcase(client_no_server, Config) ->
     [application:stop(App) || App <- ?config(apps, Config)],
     Config;
 end_per_testcase(_, Config) ->
@@ -90,12 +97,11 @@ start_hierarchy(Config) ->
     ok.
 
 client_id() ->
-    %% TODO: test offline server
     [{doc, "Starting a client means it can get its ID from an online server."}].
 client_id(Config) ->
     Name = ?config(name, Config),
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
-    ServId1 = revault_sync_fsm:id(Server),
+    {ok, ServId1} = revault_sync_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Name,
@@ -107,10 +113,63 @@ client_id(Config) ->
     ?assertEqual({error, busy}, revault_sync_fsm:client(Name)),
     ?assertEqual({error, busy}, revault_sync_fsm:server(Name)),
     ?assertEqual(undefined, revault_sync_fsm:id(Name)),
-    ClientId = revault_sync_fsm:id(Name, Remote),
-    ServId2 = revault_sync_fsm:id(Server),
+    {ok, ClientId} = revault_sync_fsm:id(Name, Remote),
+    {ok, ServId2} = revault_sync_fsm:id(Server),
     ?assertNotEqual(undefined, ClientId),
     ?assertNotEqual(ServId1, ServId2),
     ?assertNotEqual(ServId2, ClientId),
     ?assertNotEqual(ServId1, ClientId),
+    %% Now shut down the client and restart it and make sure it works
+    gen_server:stop(revault_fsm_sup, normal, 5000),
+    {ok, Pid} = revault_sync_fsm:start_link(
+        ?config(db_dir, Config),
+        Name,
+        ?config(path, Config),
+        ?config(interval, Config)
+    ),
+    ok = revault_sync_fsm:client(Name),
+    ?assertEqual({ok, ClientId}, revault_sync_fsm:id(Name)),
+    unlink(Pid),
+    gen_statem:stop(Pid, normal, 5000),
+    ok.
+
+client_no_server() ->
+    %% TODO: Check remote server that isn't initialized
+    [{doc, "A server not being available makes the ID fetching error out"}].
+client_no_server(Config) ->
+    Name = ?config(name, Config),
+    Remote = {"does not exist", node()}, % using distributed erlang
+    {ok, Sup} = revault_sup:start_link(),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Name,
+        ?config(path, Config),
+        ?config(interval, Config)
+    ),
+    %% How to specify what sort of client we are? to which server?
+    ok = revault_sync_fsm:client(Name),
+    ?assertEqual({error, busy}, revault_sync_fsm:client(Name)),
+    ?assertEqual({error, busy}, revault_sync_fsm:server(Name)),
+    ?assertEqual(undefined, revault_sync_fsm:id(Name)),
+    ?assertEqual({error, sync_failed}, revault_sync_fsm:id(Name, Remote)),
+    unlink(Sup),
+    gen_server:stop(Sup),
+    ok.
+
+client_uninit_server() ->
+    [{doc, "If the server is started but not initialized, we fail to set "
+           "a client id"}].
+client_uninit_server(Config) ->
+    Name = ?config(name, Config),
+    Remote = {?config(server, Config), node()}, % using distributed erlang
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Name,
+        ?config(path, Config),
+        ?config(interval, Config)
+    ),
+    %% How to specify what sort of client we are? to which server?
+    ok = revault_sync_fsm:client(Name),
+    ?assertEqual(undefined, revault_sync_fsm:id(Name)),
+    ?assertEqual({error, sync_failed}, revault_sync_fsm:id(Name, Remote)),
     ok.

@@ -16,7 +16,7 @@
          init/1, handle_event/4, terminate/3]).
 -define(registry(M, N), {via, gproc, {n, l, {M, N}}}).
 -define(registry(N), ?registry(?MODULE, N)).
-
+-type name() :: string().
 -record(data, {
           db_dir,
           id,
@@ -37,18 +37,25 @@ start_link(DbDir, Name, Path, Interval) ->
 start_link(DbDir, Name, Path, Interval, Callback) ->
     gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, []).
 
+-spec server(name()) -> ok | {error, busy}.
 server(Name) ->
     gen_statem:call(?registry(Name), {role, server}).
 
+-spec client(name()) -> ok | {error, busy}.
 client(Name) ->
     gen_statem:call(?registry(Name), {role, client}).
 
+-spec id(name()) -> {ok, itc:id()} | undefined | {error, _}.
 id(Name) ->
     gen_statem:call(?registry(Name), id).
 
+-spec id(name(), term()) -> {ok, itc:id()} | undefined | {error, _}.
 id(Name, Remote) ->
     gen_statem:call(?registry(Name), {id, Remote}).
 
+%%%%%%%%%%%%%%%%%
+%%% CALLBACKS %%%
+%%%%%%%%%%%%%%%%%
 callback_mode() ->
     [handle_event_function].
 
@@ -74,8 +81,10 @@ handle_event({call, From}, {role, server}, idle, Data) ->
     {next_state, server, Data, [{reply, From, ok}]};
 
 %% Client Mode
+handle_event({call, From}, id, client, Data=#data{id=undefined}) ->
+    {next_state, client, Data, [{reply, From, undefined}]};
 handle_event({call, From}, id, client, Data=#data{id=Id}) ->
-    {next_state, client, Data, [{reply, From, Id}]};
+    {next_state, client, Data, [{reply, From, {ok, Id}}]};
 handle_event({call, _From}, {id, Remote}, client, Data = #data{id = undefined}) ->
     {next_state, {client, sync_id}, Data#data{remote=Remote},
       % get an ID from a server
@@ -91,15 +100,26 @@ handle_event({call, _From}, {id, _Remote}, {client, sync_id}, Data) ->
 handle_event(internal, sync_id, {client, sync_id},
              Data = #data{id=undefined, remote=Remote, callback=Cb}) ->
     {AskPayload, NewCb} = apply_cb(Cb, ask, []),
-    {_Ref, FinalCb} = apply_cb(NewCb, send, [Remote, AskPayload]),
-    {keep_state, Data#data{callback=FinalCb}};
+    {Res, FinalCb} = apply_cb(NewCb, send, [Remote, AskPayload]),
+    case Res of
+        {ok, _Ref} ->
+            {keep_state, Data#data{callback=FinalCb}};
+        {error, _R} -> %% TODO: report error
+            {next_state, {client, sync_failed}, Data#data{callback=FinalCb}}
+    end;
 handle_event(info, {revault, _From, Payload}, {client, sync_id},
              Data=#data{name=Name, callback=Cb, db_dir=Dir}) ->
-    {{reply, NewId}, NewCb} = apply_cb(Cb, unpack, [Payload]),
-    ok = store_id(Dir, Name, NewId),
-    %% TODO: forward the ID to handlers (or callers) to let them
-    %%       start.
-    {next_state, client, Data#data{id=NewId, callback=NewCb}};
+    case apply_cb(Cb, unpack, [Payload]) of
+        {{error, _R}, NewCb} ->
+            {next_state, {client, sync_failed}, Data#data{callback=NewCb}};
+        {{reply, NewId}, NewCb} ->
+            ok = store_id(Dir, Name, NewId),
+            %% TODO: forward the ID to handlers (or callers) to let them
+            %%       start.
+            {next_state, client, Data#data{id=NewId, callback=NewCb}}
+    end;
+handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
+    {next_state, client, Data, [{reply, From, {error, sync_failed}}]};
 
 %% Server Mode
 handle_event({call, From}, id, server,
@@ -109,12 +129,11 @@ handle_event({call, From}, id, server,
     ok = store_id(DbDir, Name, Id),
     {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
     {next_state, server, Data#data{id=Id, callback=NewCb},
-     [{reply, From, Id}]};
+     [{reply, From, {ok, Id}}]};
 handle_event({call, From}, id, server, #data{id=Id}) ->
-    {keep_state_and_data, [{reply, From, Id}]};
+    {keep_state_and_data, [{reply, From, {ok, Id}}]};
 handle_event(info, {revault, From, Payload}, server,
-             Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir}) ->
-    io:format("~p ~n", [{received, From, Payload}]),
+             Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir}) when Id =/= undefined ->
     {ask, Cb1} = apply_cb(Cb, unpack, [Payload]),
     {{NewId, NewPayload}, Cb2} = apply_cb(Cb1, fork, [Payload, Id]),
     %% Save NewId to disk before replying to avoid issues
@@ -126,7 +145,12 @@ handle_event(info, {revault, From, Payload}, server,
 
 %% All-state
 handle_event({call, From}, {role, _}, State, Data) when State =/= idle ->
-    {next_state, State, Data, [{reply, From, {error, busy}}]}.
+    {next_state, State, Data, [{reply, From, {error, busy}}]};
+handle_event(info, {revault, From, _Payload}, State, Data=#data{callback=Cb}) ->
+    {NewPayload, Cb1} = apply_cb(Cb, error, [bad_state]),
+    %% Save NewId to disk before replying to avoid issues
+    {_, Cb2} = apply_cb(Cb1, reply, [From, NewPayload]),
+    {next_state, State, Data#data{callback=Cb2}}.
 
 terminate(_State, _Data, _Reason) ->
     % end session

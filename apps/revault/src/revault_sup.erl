@@ -31,7 +31,7 @@ start_link() ->
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, {{one_for_all, 0, 1}, [
+    {ok, {{one_for_all, 1, 60}, [
         #{id => trackers_sup,
           start => {revault_trackers_sup, start_link, []},
           type => supervisor},
