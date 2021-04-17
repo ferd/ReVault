@@ -5,7 +5,7 @@
 
 all() ->
     [start_hierarchy, client_id, client_no_server, client_uninit_server,
-     fork_server_save].
+     fork_server_save, basic_sync].
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
                                      Case =:= client_no_server ->
@@ -46,6 +46,7 @@ init_per_testcase(Case, Config) ->
     ?config(init_server, Config) =/= false andalso revault_sync_fsm:id(ServerName),
     [{db_dir, DbDir},
      {path, Path},
+     {server_path, ServerPath},
      {name, Name},
      {interval, Interval},
      {sup, Sup}, {fsm, Fsm},
@@ -199,3 +200,63 @@ fork_server_save(Config) ->
     State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
     ?assertEqual(ServId2, element(4, State)),
     ok.
+
+basic_sync() ->
+    [{doc, "Basic file synchronization works"}].
+basic_sync(Config) ->
+    Client = ?config(name, Config),
+    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, ServId1} = revault_sync_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config)
+    ),
+    ok = revault_sync_fsm:client(Client),
+    {ok, _ClientId} = revault_sync_fsm:id(Client, Remote),
+    %% Write files
+    ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
+    ok = file:write_file(filename:join([ServerPath, "server-only"]), "s1"),
+    ok = file:write_file(filename:join([ServerPath, "shared"]), "sh1"),
+    ok = file:write_file(filename:join([ClientPath, "shared"]), "sh2"),
+    %% Track em
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Sync em
+    ok = revault_sync_fsm:sync(Client, Remote),
+    %% See the result
+    %% 1. all unmodified files are left in place
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    %% 2. conflicting files are marked
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared.conflict.1"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ServerPath, "shared.conflict.2"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared.conflict.1"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared.conflict.2"]))),
+    %% Resolve em and add a file
+    ok = file:delete(filename:join([ClientPath, "shared.conflict.1"])),
+    ok = file:move(filename:join([ClientPath, "shared.conflict.2"]),
+                   filename:join([ClientPath, "shared"])),
+    ok = file:write_file(filename:join([ClientPath, "client-2"]), "c2"),
+    %% Sync again, but only track on the client side
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_sync_fsm:sync(Client, Remote),
+    %% Check again
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"c2">>}, file:read_file(filename:join([ClientPath, "client-2"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual({ok, <<"c2">>}, file:read_file(filename:join([ServerPath, "client-2"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict.1"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict.2"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict.1"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict.2"]))),
+    ok.
+
+%% TODO: test overwrite sync

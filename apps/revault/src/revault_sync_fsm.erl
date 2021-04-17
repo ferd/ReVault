@@ -11,7 +11,7 @@
 -module(revault_sync_fsm).
 -behaviour(gen_statem).
 -export([start_link/4, start_link/5,
-         server/1, client/1, id/1, id/2]).
+         server/1, client/1, id/1, id/2, sync/2]).
 -export([callback_mode/0,
          init/1, handle_event/4, terminate/3]).
 -define(registry(M, N), {via, gproc, {n, l, {M, N}}}).
@@ -52,6 +52,10 @@ id(Name) ->
 -spec id(name(), term()) -> {ok, itc:id()} | undefined | {error, _}.
 id(Name, Remote) ->
     gen_statem:call(?registry(Name), {id, Remote}).
+
+-spec sync(name(), term()) -> ok | {error, _}.
+sync(Name, Remote) ->
+    gen_statem:call(?registry(Name), {sync, Remote}).
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -121,6 +125,12 @@ handle_event(info, {revault, _From, Payload}, {client, sync_id},
     end;
 handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
     {next_state, client, Data, [{reply, From, {error, sync_failed}}]};
+handle_event({call, From}, {sync, _Remote}, client, Data = #data{id = Id}) when Id =/= undefined ->
+    %% Ask the server for its manifest
+    %% Stream the manifest back
+    %% push and pull files..
+    {next_state, client, Data,
+     [{reply, From, ok}]};
 
 %% Server Mode
 handle_event({call, From}, id, server,
