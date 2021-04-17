@@ -6,6 +6,7 @@
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 -export([start_link/3, stop/1, file/2, files/1]).
+-export([update_id/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -opaque stamp() :: itc:event().
@@ -32,6 +33,9 @@ files(Name) ->
 stop(Name) ->
     gen_server:stop(?VIA_GPROC(Name), normal, 5000).
 
+update_id(Name, Id) ->
+    gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
+
 init([Name, VsnSeed, File]) ->
     Snapshot = restore_snapshot(File),
     true = gproc:reg({p, l, Name}),
@@ -50,6 +54,12 @@ handle_call({file, Name}, _From, State = #state{snapshot=Map}) ->
     end;
 handle_call(files, _From, State = #state{snapshot=Map}) ->
     {reply, Map, State};
+handle_call({update_id, ITC}, _From, State = #state{}) ->
+    NewState = State#state{itc_id = ITC},
+    %% The snapshot currently does not contain ITCs, but do save anyway
+    %% in case we eventually do; can't hurt anything but perf.
+    save_snapshot(NewState),
+    {reply, ok, NewState};
 handle_call(_Call, _From, State) ->
     {noreply, State}.
 

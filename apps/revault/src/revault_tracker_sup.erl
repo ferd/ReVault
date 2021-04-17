@@ -29,6 +29,11 @@ start_link(Name, Id, Path, Interval, DbDir) ->
 %% Optional keys are restart, shutdown, type, modules.
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
+init([_Name, undefined, _Path, _Interval, _DbDir]) ->
+    %% If there isn't an ID we're in client mode without
+    %% one even existing yet. Can't actually start, because
+    %% we can't track and stamp content.
+    exit(undefined_itc);
 init([Name, Id, Path, Interval, DbDir]) ->
     TrackFile = filename:join(DbDir, "tracker.snapshot"),
     {ok, {{rest_for_one, 1, 60}, [

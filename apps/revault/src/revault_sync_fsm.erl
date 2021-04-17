@@ -108,14 +108,15 @@ handle_event(internal, sync_id, {client, sync_id},
             {next_state, {client, sync_failed}, Data#data{callback=FinalCb}}
     end;
 handle_event(info, {revault, _From, Payload}, {client, sync_id},
-             Data=#data{name=Name, callback=Cb, db_dir=Dir}) ->
+             Data=#data{name=Name, path=Path, interval=Interval,
+                        callback=Cb, db_dir=Dir}) ->
     case apply_cb(Cb, unpack, [Payload]) of
         {{error, _R}, NewCb} ->
             {next_state, {client, sync_failed}, Data#data{callback=NewCb}};
         {{reply, NewId}, NewCb} ->
             ok = store_id(Dir, Name, NewId),
-            %% TODO: forward the ID to handlers (or callers) to let them
-            %%       start.
+            %% tracker couldn't have been booted yet
+            {ok, _} = start_tracker(Name, NewId, Path, Interval, Dir),
             {next_state, client, Data#data{id=NewId, callback=NewCb}}
     end;
 handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
@@ -127,6 +128,7 @@ handle_event({call, From}, id, server,
                         callback=Cb, db_dir=DbDir}) ->
     {Id, NewCb} = apply_cb(Cb, new, []),
     ok = store_id(DbDir, Name, Id),
+    %% tracker couldn't have been booted yet
     {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
     {next_state, server, Data#data{id=Id, callback=NewCb},
      [{reply, From, {ok, Id}}]};
@@ -137,9 +139,10 @@ handle_event(info, {revault, From, Payload}, server,
     {ask, Cb1} = apply_cb(Cb, unpack, [Payload]),
     {{NewId, NewPayload}, Cb2} = apply_cb(Cb1, fork, [Payload, Id]),
     %% Save NewId to disk before replying to avoid issues
-    ok = store_id(Dir, Name, Id),
-    %% TODO: Inject the new ID into all the local handlers before replying
-    %%       to avoid concurrency issues
+    ok = store_id(Dir, Name, NewId),
+    %% Inject the new ID into all the local handlers before replying
+    %% to avoid concurrency issues
+    ok = revault_dirmon_tracker:update_id(Name, NewId),
     {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
     {next_state, server, Data#data{id=NewId, callback=Cb3}};
 

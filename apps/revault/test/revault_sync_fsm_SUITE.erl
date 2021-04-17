@@ -4,7 +4,8 @@
 -compile(export_all).
 
 all() ->
-    [start_hierarchy, client_id, client_no_server, client_uninit_server].
+    [start_hierarchy, client_id, client_no_server, client_uninit_server,
+     fork_server_save].
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
                                      Case =:= client_no_server ->
@@ -134,7 +135,6 @@ client_id(Config) ->
     ok.
 
 client_no_server() ->
-    %% TODO: Check remote server that isn't initialized
     [{doc, "A server not being available makes the ID fetching error out"}].
 client_no_server(Config) ->
     Name = ?config(name, Config),
@@ -172,4 +172,30 @@ client_uninit_server(Config) ->
     ok = revault_sync_fsm:client(Name),
     ?assertEqual(undefined, revault_sync_fsm:id(Name)),
     ?assertEqual({error, sync_failed}, revault_sync_fsm:id(Name, Remote)),
+    ok.
+
+fork_server_save() ->
+    [{doc, "A server forking its ID saves it to disk and its workers "
+           "have it live-updated."}].
+fork_server_save(Config) ->
+    Name = ?config(name, Config),
+    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    {ok, ServId1} = revault_sync_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Name,
+        ?config(path, Config),
+        ?config(interval, Config)
+    ),
+    ok = revault_sync_fsm:client(Name),
+    {ok, _ClientId} = revault_sync_fsm:id(Name, Remote),
+    {ok, ServId2} = revault_sync_fsm:id(Server),
+    ?assertNotEqual(ServId2, ServId1),
+    %% Check ID on disk
+    IDFile = filename:join([?config(db_dir, Config), Server, "id"]),
+    {ok, BinId} = file:read_file(IDFile),
+    ?assertEqual(ServId2, binary_to_term(BinId)),
+    %% Check worker ID, peek into internal state even if brittle.
+    State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
+    ?assertEqual(ServId2, element(4, State)),
     ok.
