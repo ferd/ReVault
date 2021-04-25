@@ -24,7 +24,8 @@
           path,
           interval,
           callback :: module() | {module(), term()},
-          remote
+          remote,
+          caller
         }).
 
 %  [dirs.images]
@@ -125,9 +126,39 @@ handle_event(info, {revault, _From, Payload}, {client, sync_id},
     end;
 handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
     {next_state, client, Data, [{reply, From, {error, sync_failed}}]};
-handle_event({call, From}, {sync, _Remote}, client, Data = #data{id = Id}) when Id =/= undefined ->
+handle_event({call, From}, {sync, Remote}, client,
+             Data = #data{id = Id, callback=Cb0}) when Id =/= undefined ->
     %% Ask the server for its manifest
-    %% Stream the manifest back
+    {ManifestPayload, Cb1} = apply_cb(Cb0, manifest, []),
+    {{ok, Marker}, Cb2} = apply_cb(Cb1, send, [Remote, ManifestPayload]),
+    {next_state, {sync_manifest, Marker},
+     Data#data{callback=Cb2, remote = Remote, caller=From}};
+%% TODO: improve that Ref format
+handle_event(info, {revault, _From={_,_,Ref}, Payload}, {sync_manifest, Ref},
+             Data = #data{callback=Cb0, name=Name}) ->
+    {{manifest, RManifest}, Cb1} = apply_cb(Cb0, unpack, [Payload]),
+    LManifest = revault_dirmon_tracker:files(Name),
+    {Local, Remote} = diff_manifests(LManifest, RManifest),
+    Actions = schedule_file_transfers(Local, Remote),
+    {next_state, client_sync, Data#data{callback=Cb1},
+     Actions ++ [{next_event, internal, sync_complete}]};
+handle_event(internal, {send, F}, client_sync,
+             Data=#data{name=Name, remote=R, callback=Cb0}) ->
+    {Vsn, Hash} = revault_dirmon_tracker:file(Name, F),
+    %% just inefficiently read the whole freaking thing at once
+    %% TODO: optimize to better read and send file parts
+    {ok, Bin} = file:read_file(F),
+    {Payload, Cb1} = apply_cb(Cb0, send_file, [F, Vsn, Hash, Bin]),
+    %% TODO: track failing or succeeding transfers?
+    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
+    {next_state, client_sync, Data#data{callback=Cb2}};
+handle_event(internal, {fetch, F}, client_sync,
+             Data=#data{remote=R, callback=Cb0}) ->
+    {Payload, Cb1} = apply_cb(Cb0, fetch_file, [F]),
+    %% TODO: track incoming transfers?
+    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
+    {next_state, client_sync, Data#data{callback=Cb2}};
+handle_event(internal, sync_complete, client_sync, Data=#data{caller=From}) ->
     %% push and pull files..
     {next_state, client, Data,
      [{reply, From, ok}]};
@@ -146,15 +177,42 @@ handle_event({call, From}, id, server, #data{id=Id}) ->
     {keep_state_and_data, [{reply, From, {ok, Id}}]};
 handle_event(info, {revault, From, Payload}, server,
              Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir}) when Id =/= undefined ->
-    {ask, Cb1} = apply_cb(Cb, unpack, [Payload]),
-    {{NewId, NewPayload}, Cb2} = apply_cb(Cb1, fork, [Payload, Id]),
-    %% Save NewId to disk before replying to avoid issues
-    ok = store_id(Dir, Name, NewId),
-    %% Inject the new ID into all the local handlers before replying
-    %% to avoid concurrency issues
-    ok = revault_dirmon_tracker:update_id(Name, NewId),
-    {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-    {next_state, server, Data#data{id=NewId, callback=Cb3}};
+    {Demand, Cb1} = apply_cb(Cb, unpack, [Payload]),
+    case Demand of
+        ask ->
+            {{NewId, NewPayload}, Cb2} = apply_cb(Cb1, fork, [Payload, Id]),
+            %% Save NewId to disk before replying to avoid issues
+            ok = store_id(Dir, Name, NewId),
+            %% Inject the new ID into all the local handlers before replying
+            %% to avoid concurrency issues
+            ok = revault_dirmon_tracker:update_id(Name, NewId),
+            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+            {next_state, server, Data#data{id=NewId, callback=Cb3}};
+        manifest ->
+            Manifest = revault_dirmon_tracker:files(Name),
+            {NewPayload, Cb2} = apply_cb(Cb1, manifest, [Manifest]),
+            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+            {next_state, server_sync, Data#data{callback=Cb3}}
+    end;
+handle_event(info, {revault, From, Payload}, server_sync,
+             Data=#data{name=Name, callback=Cb0}) ->
+    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
+    case Demand of
+        {file, _F, _Meta, _Bin} ->
+            %% TODO: sync the file? find conflicts?
+            %% 
+            error(not_implemented);
+        {fetch, F} ->
+            {Vsn, Hash} = revault_dirmon_tracker:file(Name, F),
+            %% just inefficiently read the whole freaking thing at once
+            %% TODO: optimize to better read and send file parts
+            {ok, Bin} = file:read_file(F),
+            {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
+            %% TODO: track failing or succeeding transfers?
+            {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+            {next_state, server_sync, Data#data{callback=Cb3}}
+    end;
+
 
 %% All-state
 handle_event({call, From}, {role, _}, State, Data) when State =/= idle ->
@@ -192,3 +250,43 @@ store_id(Dir, Name, Id) ->
 
 start_tracker(Name, Id, Path, Interval, DbDir) ->
     revault_trackers_sup:start_tracker(Name, Id, Path, Interval, DbDir).
+
+diff_manifests(LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
+    diff_manifests(lists:sort(maps:to_list(LocalMap)),
+                   lists:sort(maps:to_list(RemoteMap)),
+                   [], []).
+
+diff_manifests([H|Loc], [H|Rem], LAcc, RAcc) ->
+    diff_manifests(Loc, Rem, LAcc, RAcc);
+diff_manifests([{F, {LVsn, LHash}}|Loc], [{F, {RVsn, RHash}}|Rem], LAcc, RAcc) ->
+    case {itc:leq(LVsn, RVsn), itc:leq(LVsn, RVsn)} of
+        {true, true} when LHash =:= RHash ->
+            %% We can skip this, even though bumping versions could be nice since
+            %% they differ but compare equal
+            diff_manifests(Loc, Rem, LAcc, RAcc);
+        {false, false} ->
+            %% Conflict! Fetch & Push in both cases
+            diff_manifests(Loc, Rem,
+                           [{send, F}|LAcc],
+                           [{fetch, F}|RAcc]);
+        {false, true} ->
+            %% Local's newer
+            diff_manifests(Loc, Rem, [{send, F}|LAcc], RAcc);
+        {true, false} ->
+            %% Remote's newer
+            diff_manifests(Loc, Rem, LAcc, [{fetch, F}, RAcc])
+    end;
+diff_manifests([{LF, _}=L|Loc], [{RF, _}=R|Rem], LAcc, RAcc) ->
+    if LF < RF ->
+           diff_manifests(Loc, [R|Rem], [{send, LF}|LAcc], RAcc);
+       LF > RF ->
+           diff_manifests([L|Loc], Rem, LAcc, [{fetch, RF}|RAcc])
+    end;
+diff_manifests(Loc, [], LAcc, RAcc) ->
+    {[{send, F} || {F, _} <- Loc] ++ LAcc, RAcc};
+diff_manifests([], Rem, LAcc, RAcc) ->
+    {LAcc, [{fetch, F} || {F, _} <- Rem] ++ RAcc}.
+
+schedule_file_transfers(Local, Remote) ->
+    %% TODO: Do something smart at some point. Right now, who cares.
+    [{next_event, internal, Event} || Event <- Remote ++ Local].

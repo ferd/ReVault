@@ -17,6 +17,7 @@
 %%% protocol here does not need to know where or how.
 -module(revault_id_sync).
 -export([new/0, ask/0, error/1, fork/2]).
+-export([manifest/0, manifest/1, send_file/4, fetch_file/1]).
 -export([send/2, reply/2, unpack/1]).
 -define(VSN, 1).
 
@@ -25,6 +26,18 @@ new() ->
 
 ask() ->
     {ask, ?VSN}.
+
+manifest() ->
+    {manifest, ?VSN}.
+
+manifest(Data) ->
+    {manifest, ?VSN, Data}.
+
+send_file(Path, Vsn, Hash, Bin) ->
+    {file, ?VSN, Path, {Vsn, Hash}, Bin}.
+
+fetch_file(Path) ->
+    {fetch, ?VSN, Path}.
 
 error(R) -> {error, ?VSN, R}.
 
@@ -45,10 +58,14 @@ send({Name, Node}, Payload) ->
     end.
 
 reply({?MODULE, From, Ref}, Payload) ->
-    From ! {revault, {self(), Ref}, Payload},
+    From ! {revault, {?MODULE, self(), Ref}, Payload},
     ok.
 
 %% For this module, we just use raw erlang terms.
 unpack({ask, ?VSN}) -> ask;
 unpack({error, ?VSN, R}) -> {error, R};
+unpack({manifest, ?VSN}) -> manifest;
+unpack({manifest, ?VSN, Data}) -> {manifest, Data};
+unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
+unpack({fetch, ?VSN, Path}) -> {fetch, Path};
 unpack(Term) -> Term.
