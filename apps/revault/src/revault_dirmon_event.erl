@@ -21,6 +21,7 @@ start_link(Name, Opts) ->
     gen_server:start_link({via, gproc, {n, l, {?MODULE, Name}}}, ?MODULE,
                           Opts#{name => Name}, []).
 
+-spec force_scan(term(), timeout()) -> ok.
 force_scan(Name, Wait) ->
     gen_server:call({via, gproc, {n, l, {?MODULE, Name}}}, force_scan, Wait).
 

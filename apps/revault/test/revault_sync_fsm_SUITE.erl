@@ -231,21 +231,35 @@ basic_sync(Config) ->
     %% 1. all unmodified files are left in place
     ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
     ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
-    %% 2. conflicting files are marked
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared"]))),
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared"]))),
-    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared.conflict.1"]))),
-    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ServerPath, "shared.conflict.2"]))),
-    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared.conflict.1"]))),
-    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared.conflict.2"]))),
+    %% 2. conflicting files are marked, with the working files left intact
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual(
+        {ok, <<"1C56416E18E2FE12E55CB8DE8AB3BB54DEDEC94C942520403CCD2E8DCA7BF8D5\n"
+               "D6BE7FB89A392FE342033E3ECCFF9CADFC4A58A19316E162E079D662762CE8B8">>},
+        file:read_file(filename:join([ServerPath, "shared.conflict"]))
+    ),
+    ?assertEqual(
+        {ok, <<"1C56416E18E2FE12E55CB8DE8AB3BB54DEDEC94C942520403CCD2E8DCA7BF8D5\n"
+               "D6BE7FB89A392FE342033E3ECCFF9CADFC4A58A19316E162E079D662762CE8B8">>},
+        file:read_file(filename:join([ClientPath, "shared.conflict"]))
+    ),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ServerPath, "shared.1C56416E"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
+    %% The working file can be edited however.
     %% Resolve em and add a file
-    ok = file:delete(filename:join([ClientPath, "shared.conflict.1"])),
-    ok = file:move(filename:join([ClientPath, "shared.conflict.2"]),
+    ok = file:delete(filename:join([ClientPath, "shared.1C56416E"])),
+    ok = file:move(filename:join([ClientPath, "shared.D6BE7FB8"]),
                    filename:join([ClientPath, "shared"])),
+    ok = file:delete(filename:join([ClientPath, "shared.conflict"])),
     ok = file:write_file(filename:join([ClientPath, "client-2"]), "c2"),
     %% Sync again, but only track on the client side
     ok = revault_dirmon_event:force_scan(Client, 5000),
     ok = revault_sync_fsm:sync(Client, Remote),
+    %% TODO: check with a 3rd party for extra transitive conflicts
+    %% the following should be moved to a lower-level test:
     %% Check again
     ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
     ?assertEqual({ok, <<"c2">>}, file:read_file(filename:join([ClientPath, "client-2"]))),
@@ -253,10 +267,12 @@ basic_sync(Config) ->
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared"]))),
     ?assertEqual({ok, <<"c2">>}, file:read_file(filename:join([ServerPath, "client-2"]))),
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict.1"]))),
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict.2"]))),
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict.1"]))),
-    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict.2"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.1C56416E"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
     ok.
 
 %% TODO: test overwrite sync

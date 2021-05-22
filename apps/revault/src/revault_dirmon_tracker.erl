@@ -6,7 +6,7 @@
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 -export([start_link/3, stop/1, file/2, files/1]).
--export([update_id/2]).
+-export([update_id/2, conflict/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -opaque stamp() :: itc:event().
@@ -15,7 +15,16 @@
 %% optimization hint: replace the queue by an ordered_set ETS table?
 -record(state, {
     snapshot = #{} :: #{file:filename() =>
-                        {stamp(), revault_dirmon_poll:hash()}},
+                        {stamp(),
+                         revault_dirmon_poll:hash() | deleted |
+                         {conflict,
+                          %% known conflicts, track for syncs
+                          [revault_dirmon_poll:hash(), ...],
+                          %% Last known working file; track to know what hash to
+                          %% pick when resolving the conflict, but do not use in
+                          %% actual conflict syncs
+                          revault_dirmon_poll:hash() | deleted}
+                        }},
     storage = undefined :: file:filename() | undefined,
     itc_id :: itc:id()
 }).
@@ -35,6 +44,16 @@ stop(Name) ->
 
 update_id(Name, Id) ->
     gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
+
+-spec conflict(term(), file:filename(), file:filename(),
+               {stamp(), revault_dirmon_poll:hash()}) -> ok.
+conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
+    gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
+
+
+%%%%%%%%%%%%%%%%%
+%%% CALLBACKS %%%
+%%%%%%%%%%%%%%%%%
 
 init([Name, VsnSeed, File]) ->
     Snapshot = restore_snapshot(File),
@@ -58,6 +77,39 @@ handle_call({update_id, ITC}, _From, State = #state{}) ->
     NewState = State#state{itc_id = ITC},
     %% The snapshot currently does not contain ITCs, but do save anyway
     %% in case we eventually do; can't hurt anything but perf.
+    save_snapshot(NewState),
+    {reply, ok, NewState};
+handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
+            State = #state{snapshot=Map, itc_id=Id}) ->
+    NewConflict = case Map of
+        #{Work := {Stamp, {conflict, ConflictHashes, WorkingHash}}} ->
+            %% A conflict already existed; add to it.
+            case lists:member(NewHash, ConflictHashes) of
+                true ->
+                    CStamp = conflict_stamp(Id, Stamp, NewStamp),
+                    {CStamp, {conflict, ConflictHashes, WorkingHash}};
+                false ->
+                    ConflictingFile = Work ++ "." ++ hexname(NewHash),
+                    {ok, _} = file:copy(Conflict, ConflictingFile),
+                    NewHashes = lists:sort([NewHash|ConflictHashes]),
+                    CStamp = conflict_stamp(Id, Stamp, NewStamp),
+                    {CStamp, {conflict, NewHashes, WorkingHash}}
+            end;
+        #{Work := {Stamp, WorkingHash}} ->
+            %% No conflict, create it
+            ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            {ok, _} = file:copy(Conflict, ConflictingFile),
+            NewHashes = [NewHash],
+            CStamp = conflict_stamp(Id, Stamp, NewStamp),
+            {CStamp, {conflict, NewHashes, WorkingHash}};
+        _ when not is_map_key(Work, Map) ->
+            %% No file, create a conflict
+            ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            {ok, _} = file:copy(Conflict, ConflictingFile),
+            {NewStamp, {conflict, [NewHash], NewHash}}
+    end,
+    NewState = State#state{snapshot=Map#{Work => NewConflict}},
+    ok = write_conflict_file(Work, NewConflict),
     save_snapshot(NewState),
     {reply, ok, NewState};
 handle_call(_Call, _From, State) ->
@@ -84,14 +136,40 @@ stamp(Id, Ct) ->
     NewCt.
 
 apply_operation({added, {FileName, Hash}}, SetMap, ITC) ->
-    {Ct, _OldHash} = maps:get(FileName, SetMap, {undefined, Hash}),
-    SetMap#{FileName => {stamp(ITC, Ct), Hash}};
-apply_operation({deleted, {FileName, _Hash}}, SetMap, ITC) ->
-    {Ct, _OldHash} = maps:get(FileName, SetMap),
-    SetMap#{FileName := {stamp(ITC, Ct), deleted}};
+    case get_file(FileName, SetMap) of
+        {ok, {Ct, _OldHash}} ->
+            SetMap#{FileName => {stamp(ITC, Ct), Hash}};
+        {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
+            SetMap#{FileName => {Ct, {conflict, Hashes, Hash}}};
+        unknown ->
+            SetMap#{FileName => {stamp(ITC, undefined), Hash}};
+        _ ->
+            SetMap
+    end;
+apply_operation({deleted, {FileName, Hash}}, SetMap, ITC) ->
+    case get_file(FileName, SetMap) of
+        {ok, {Ct, _OldHash}} ->
+            SetMap#{FileName => {stamp(ITC, Ct), deleted}};
+        {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
+            SetMap#{FileName => {Ct, {conflict, Hashes, deleted}}};
+        {marker, BaseFile, {Ct, {conflict, _Hashes, WorkingHash}}} ->
+            %% conflict resolved
+            %% TODO: clean up conflicting files
+            SetMap#{BaseFile => {stamp(ITC, Ct), WorkingHash}};
+        {conflicting, BaseFile, {Ct, {conflict, Hashes, WorkingHash}}} ->
+            SetMap#{BaseFile => {Ct, {conflict, Hashes--[Hash], WorkingHash}}};
+        conflict_extension ->
+            SetMap
+    end;
 apply_operation({changed, {FileName, Hash}}, SetMap, ITC) ->
-    {Ct, _OldHash} = maps:get(FileName, SetMap),
-    SetMap#{FileName := {stamp(ITC, Ct), Hash}}.
+    case get_file(FileName, SetMap) of
+        {ok, {Ct, _OldHash}} ->
+            SetMap#{FileName => {stamp(ITC, Ct), Hash}};
+        {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
+            SetMap#{FileName => {Ct, {conflict, Hashes, Hash}}};
+        _ ->
+            SetMap
+    end.
 
 restore_snapshot(File) ->
     case file:consult(File) of
@@ -121,3 +199,64 @@ save_snapshot(#state{snapshot = Snap, storage = File}) ->
     ),
     ok = file:write_file(SnapshotName, SnapshotBlob, [sync]),
     ok = file:rename(SnapshotName, File).
+
+write_conflict_file(WorkingFile, {_, {conflict, Hashes, _}}) ->
+    %% We don't care about the rename trick here, it's informational
+    %% but all the critical data is tracked in the snapshot
+    file:write_file(
+        WorkingFile ++ ".conflict",
+        lists:join($\n, [hex(Hash) || Hash <- Hashes])
+    ).
+
+hex(Hash) ->
+    binary:encode_hex(Hash).
+
+hexname(Hash) ->
+    unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
+
+conflict_stamp(Id, C1, C2) ->
+    %% Merge all things, potential conflicts are handled by merging all
+    %% conflict info in parent calls.
+    NewClock = itc:join(itc:rebuild(Id,C1), itc:peek(itc:rebuild(Id, C2))),
+    {_, Stamp} = itc:explode(NewClock),
+    Stamp.
+
+get_file(FileName, SetMap) ->
+    case maps:find(FileName, SetMap) of
+        {ok, {Ct, {conflict, Hashes, Hash}}} ->
+            {conflict, {Ct, {conflict, Hashes, Hash}}};
+        {ok, {Ct, Hash}} ->
+            {ok, {Ct, Hash}};
+        error ->
+            case conflict_ext(FileName, filename:extension(FileName), SetMap) of
+                false -> unknown;
+                Other -> Other
+            end
+    end.
+
+conflict_ext(File, ".conflict", Map) ->
+    BasePath = drop_suffix(File, ".conflict"),
+    case maps:find(BasePath, Map) of
+        {ok, {Ct, Conflict = {conflict, _, _}}} ->
+            {marker, BasePath, {Ct, Conflict}};
+        _ -> conflict_extension
+    end;
+conflict_ext(File, Ext, Map) ->
+    case length(Ext) == 9 andalso is_hex(tl(Ext)) of
+        true ->
+            BasePath = drop_suffix(File, Ext),
+            case maps:find(BasePath, Map) of
+                {ok, {Ct, Conflict = {conflict, _, _}}} ->
+                    {conflicting, BasePath, {Ct, Conflict}};
+                _ -> conflict_extension
+            end;
+        false ->
+            false
+    end.
+
+drop_suffix(Suffix, Suffix) -> [];
+drop_suffix([H|T], Suffix) -> [H|drop_suffix(T, Suffix)].
+
+is_hex([C]) when C >= $A, C =< $F; C >= $0, C =< $9 -> true;
+is_hex([C|T]) when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
+is_hex(L) when is_list(L) -> false.
