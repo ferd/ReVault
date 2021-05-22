@@ -21,8 +21,6 @@ groups() ->
     %%       although that wouldn't be needed.
     %% TODO: do the thing where a conflict candidate is dropped and make sure it's removed
     %%       from the tracked file
-    %% TODO: check the case where the conflict marker is deleted and the working
-    %%       file modified within the same scan and the resolution order gets weird.
     %% TODO: weird ass things like moving conflicting files around
 
 init_per_testcase(Name, Config) ->
@@ -200,10 +198,69 @@ conflict_resolution_marker_first() ->
     [{doc, "Dropping the conflict marker should instantly declare the working "
            "file as resolved. It would be awfully nice to then auto-delete the "
            "conflicting files."}].
+conflict_resolution_marker_first(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    %% Set up the basic files
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = file:write_file(TmpFile, <<"b">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {Vsn1, HashA}} = revault_dirmon_tracker:files(Name),
+    %% Create conflicts
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, WorkFile, {Vsn1, HashA}),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {Vsn1, hash(<<"b">>)}),
+    ?assertEqual({ok, <<"a">>}, file:read_file(WorkFile)),
+    ?assertEqual({ok, <<"a">>}, file:read_file(ConflictA)),
+    ?assertEqual({ok, <<"b">>}, file:read_file(ConflictB)),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Clear conflict marker and see what goes
+    ok = file:delete(ConflictMarker),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {Vsn2, HashA}} = revault_dirmon_tracker:files(Name),
+    ?assertNotEqual(Vsn1, Vsn2),
+    ?assertEqual({ok, <<"a">>}, file:read_file(WorkFile)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictA)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictB)),
+    ok.
 
 conflict_resolution_drop_conflict() ->
     [{doc, "Deleting the conflict marker and the working files results in the "
            "conflict resolving in a deletion. Conflicting files are dropped as well."}].
+conflict_resolution_drop_conflict(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    %% Set up the basic files
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = file:write_file(TmpFile, <<"b">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {Vsn1, HashA}} = revault_dirmon_tracker:files(Name),
+    %% Create conflicts
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, WorkFile, {Vsn1, HashA}),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {Vsn1, hash(<<"b">>)}),
+    ?assertEqual({ok, <<"a">>}, file:read_file(WorkFile)),
+    ?assertEqual({ok, <<"a">>}, file:read_file(ConflictA)),
+    ?assertEqual({ok, <<"b">>}, file:read_file(ConflictB)),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Clear conflict marker and workfile within the same scan
+    ok = file:delete(WorkFile),
+    ok = file:delete(ConflictMarker),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {Vsn2, deleted}} = revault_dirmon_tracker:files(Name),
+    ?assertNotEqual(Vsn1, Vsn2),
+    ?assertEqual({error, enoent}, file:read_file(WorkFile)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictA)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictB)),
+    ok.
 
 
 %%%%%%%%%%%%%%%

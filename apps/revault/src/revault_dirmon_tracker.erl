@@ -152,11 +152,13 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC) ->
             SetMap#{FileName => {stamp(ITC, Ct), deleted}};
         {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
             SetMap#{FileName => {Ct, {conflict, Hashes, deleted}}};
-        {marker, BaseFile, {Ct, {conflict, _Hashes, WorkingHash}}} ->
-            %% conflict resolved
-            %% TODO: clean up conflicting files
+        {marker, BaseFile, {Ct, {conflict, Hashes, WorkingHash}}} ->
+            %% conflict resolved. clear trailing conflicting files
+            [file:delete(BaseFile ++ "." ++ hexname(ConflictHash))
+             || ConflictHash <- Hashes],
             SetMap#{BaseFile => {stamp(ITC, Ct), WorkingHash}};
         {conflicting, BaseFile, {Ct, {conflict, Hashes, WorkingHash}}} ->
+            write_conflict_file(BaseFile, {Ct, {conflict, Hashes, WorkingHash}}),
             SetMap#{BaseFile => {Ct, {conflict, Hashes--[Hash], WorkingHash}}};
         conflict_extension ->
             SetMap
