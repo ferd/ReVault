@@ -200,17 +200,38 @@ handle_event(info, {revault, From, Payload}, server_sync,
     case Demand of
         {file, _F, _Meta, _Bin} ->
             %% TODO: sync the file? find conflicts?
-            %% 
+            error(not_implemented);
+        {conflict_file, _WorkF, _F, _Meta, _Bin} ->
+            %% TODO: sync the file? find conflicts?
             error(not_implemented);
         {fetch, F} ->
-            {Vsn, Hash} = revault_dirmon_tracker:file(Name, F),
-            %% just inefficiently read the whole freaking thing at once
-            %% TODO: optimize to better read and send file parts
-            {ok, Bin} = file:read_file(F),
-            {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
-            %% TODO: track failing or succeeding transfers?
-            {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-            {next_state, server_sync, Data#data{callback=Cb3}}
+            case revault_dirmon_tracker:file(Name, F) of
+                {Vsn, {conflict, Hashes, _}} ->
+                    %% Stream all the files, mark as conflicts?
+                    %% just inefficiently read the whole freaking thing at once
+                    %% TODO: optimize to better read and send file parts
+                    Cb2 = lists:foldl(
+                        fun(Hash, CbAcc1) ->
+                            FHash = make_conflict_path(F, Hash),
+                            {ok, Bin} = file:read_file(FHash),
+                            {NewPayload, CbAcc2} = apply_cb(CbAcc1, send_conflict_file, [F, FHash, Vsn, Hash, Bin]),
+                            %% TODO: track failing or succeeding transfers?
+                            {_Ref, CbAcc3} = apply_cb(CbAcc2, reply, [From, NewPayload]),
+                            CbAcc3
+                        end,
+                        Hashes,
+                        Cb1
+                    ),
+                    {next_state, server_sync, Data#data{callback=Cb2}};
+                {Vsn, Hash} ->
+                    %% just inefficiently read the whole freaking thing at once
+                    %% TODO: optimize to better read and send file parts
+                    {ok, Bin} = file:read_file(F),
+                    {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
+                    %% TODO: track failing or succeeding transfers?
+                    {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+                    {next_state, server_sync, Data#data{callback=Cb3}}
+            end
     end;
 
 
@@ -258,9 +279,10 @@ diff_manifests(LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
 
 diff_manifests([H|Loc], [H|Rem], LAcc, RAcc) ->
     diff_manifests(Loc, Rem, LAcc, RAcc);
-diff_manifests([{F, {LVsn, LHash}}|Loc], [{F, {RVsn, RHash}}|Rem], LAcc, RAcc) ->
+%% TODO: handle conflicts
+diff_manifests([{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
     case {itc:leq(LVsn, RVsn), itc:leq(LVsn, RVsn)} of
-        {true, true} when LHash =:= RHash ->
+        {true, true} ->
             %% We can skip this, even though bumping versions could be nice since
             %% they differ but compare equal
             diff_manifests(Loc, Rem, LAcc, RAcc);
@@ -290,3 +312,19 @@ diff_manifests([], Rem, LAcc, RAcc) ->
 schedule_file_transfers(Local, Remote) ->
     %% TODO: Do something smart at some point. Right now, who cares.
     [{next_event, internal, Event} || Event <- Remote ++ Local].
+
+
+% make_conflict_path(F) ->
+%     F ++ ".conflict".
+
+make_conflict_path(F, Hash) ->
+    F ++ "." ++ hexname(Hash).
+
+%% TODO: extract shared definition with revault_dirmon_tracker
+hex(Hash) ->
+    binary:encode_hex(Hash).
+
+%% TODO: extract shared definition with revault_dirmon_tracker
+hexname(Hash) ->
+    unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
+

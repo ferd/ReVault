@@ -6,7 +6,7 @@
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 -export([start_link/3, stop/1, file/2, files/1]).
--export([update_id/2, conflict/4]).
+-export([update_id/2, conflict/4, update_file/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -opaque stamp() :: itc:event().
@@ -50,6 +50,9 @@ update_id(Name, Id) ->
 conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
 
+update_file(Name, WorkFile, NewFile, Vsn = {_Stamp, _Hash}) ->
+    gen_server:call(?VIA_GPROC(Name), {update_file, WorkFile, NewFile, Vsn}, infinity).
+
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -79,6 +82,32 @@ handle_call({update_id, ITC}, _From, State = #state{}) ->
     %% in case we eventually do; can't hurt anything but perf.
     save_snapshot(NewState),
     {reply, ok, NewState};
+handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
+            State = #state{snapshot=Map, itc_id=Id}) ->
+    case Map of
+        #{Work := {_, {conflict, _, _}}} ->
+            handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
+        #{Work := {Stamp, _WorkingHash}} ->
+            case compare(Id, Stamp, NewStamp) of
+                conflict ->
+                    handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
+                lesser ->
+                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
+                    {ok, _} = file:copy(Source, Work),
+                    FinalStamp = stamp(Id, NewStamp),
+                    NewState = State#state{snapshot=Map#{Work => {FinalStamp, NewHash}}},
+                    save_snapshot(NewState),
+                    {reply, ok, NewState};
+                _ -> % current file is newer or equal to the proposed one
+                    {reply, ok, State}
+            end;
+        _ when not is_map_key(Work, Map) ->
+            %% TODO: use a copy+rename to avoid corrupting files mid-crash
+            {ok, _} = file:copy(Source, Work),
+            NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
+            save_snapshot(NewState),
+            {reply, ok, NewState}
+    end;
 handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             State = #state{snapshot=Map, itc_id=Id}) ->
     NewConflict = case Map of
@@ -90,6 +119,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
                     {CStamp, {conflict, ConflictHashes, WorkingHash}};
                 false ->
                     ConflictingFile = Work ++ "." ++ hexname(NewHash),
+                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
                     {ok, _} = file:copy(Conflict, ConflictingFile),
                     NewHashes = lists:sort([NewHash|ConflictHashes]),
                     CStamp = conflict_stamp(Id, Stamp, NewStamp),
@@ -98,6 +128,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
         #{Work := {Stamp, WorkingHash}} ->
             %% No conflict, create it
             ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            %% TODO: use a copy+rename to avoid corrupting files mid-crash
             {ok, _} = file:copy(Conflict, ConflictingFile),
             NewHashes = [NewHash],
             CStamp = conflict_stamp(Id, Stamp, NewStamp),
@@ -105,6 +136,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
         _ when not is_map_key(Work, Map) ->
             %% No file, create a conflict
             ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            %% TODO: use a copy+rename to avoid corrupting files mid-crash
             {ok, _} = file:copy(Conflict, ConflictingFile),
             {NewStamp, {conflict, [NewHash], NewHash}}
     end,
@@ -135,8 +167,20 @@ stamp(Id, Ct) ->
     {_Id, NewCt} = itc:explode(itc:event(ITC)),
     NewCt.
 
+compare(Id, Ct1, Ct2) ->
+    ITC1 = itc:rebuild(Id, Ct1),
+    ITC2 = itc:rebuild(Id, Ct2),
+    case {itc:leq(ITC1, ITC2), itc:leq(ITC2, ITC1)} of
+        {false, false} -> conflict;
+        {true, true} -> equal;
+        {true, false} -> lesser;
+        {false, true} -> greater
+    end.
+
 apply_operation({added, {FileName, Hash}}, SetMap, ITC) ->
     case get_file(FileName, SetMap) of
+        {ok, {_Ct, Hash}} -> % same hash, clash on sync-updated file
+            SetMap;
         {ok, {Ct, _OldHash}} ->
             SetMap#{FileName => {stamp(ITC, Ct), Hash}};
         {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
@@ -148,6 +192,8 @@ apply_operation({added, {FileName, Hash}}, SetMap, ITC) ->
     end;
 apply_operation({deleted, {FileName, Hash}}, SetMap, ITC) ->
     case get_file(FileName, SetMap) of
+        {ok, {_, deleted}} -> % already gone, clash on sync-updated file
+            SetMap;
         {ok, {Ct, _OldHash}} ->
             SetMap#{FileName => {stamp(ITC, Ct), deleted}};
         {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
@@ -165,6 +211,8 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC) ->
     end;
 apply_operation({changed, {FileName, Hash}}, SetMap, ITC) ->
     case get_file(FileName, SetMap) of
+        {ok, {_Ct, Hash}} -> % same hash, clash on sync-updated file
+            SetMap;
         {ok, {Ct, _OldHash}} ->
             SetMap#{FileName => {stamp(ITC, Ct), Hash}};
         {conflict, {Ct, {conflict, Hashes, _OldHash}}} ->
