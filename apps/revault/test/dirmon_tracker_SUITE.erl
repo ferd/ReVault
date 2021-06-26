@@ -4,7 +4,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 all() ->
-    [update_file,
+    [{group, update},
      conflict_creation,
      {group, conflict_resolution}].
 
@@ -14,13 +14,15 @@ groups() ->
         conflict_resolution_orderly_deleted,
         conflict_resolution_marker_first,
         conflict_resolution_drop_conflict
+     ]},
+     {update, [], [
+        update_file,
+        update_new,
+        update_older,
+        update_delete,
      ]}
     ].
 
-
-    %% TODO: updating a file that doesn't exist won't re-stamp
-    %% TODO: updating a file from an older file ignores the file change
-    %% TODO: updating a file as a deletion works
     %% TODO: do the thing where you delete the conflict file first and then drop the hashes
     %%       although that wouldn't be needed.
     %% TODO: do the thing where a conflict candidate is dropped and make sure it's removed
@@ -29,6 +31,7 @@ groups() ->
     %% TODO: updating a file into a conflict when the new file is newer is a resolution
     %% TODO: updating a file into a conflict when the new file is older is ignored
     %% TODO: updating a file into a conflict when the new file clashes adds to the conflict
+    %% TODO: updating a file as a deletion works
 
 init_per_testcase(Name, Config) ->
     {ok, Apps} = application:ensure_all_started(gproc),
@@ -57,41 +60,6 @@ end_per_testcase(_, Config) ->
     gen_server:stop(?config(tracker, Config)),
     [application:stop(App) || App <- lists:reverse(?config(apps, Config))],
     Config.
-
-update_file() ->
-    [{doc, "A file coming from another server needs to be updated in a way "
-           "that is aware of the remote version, and not just of the file "
-           "getting modified on disk. "
-           "This can be handled by asking the tracker to directly upsert "
-           "the file in the tracked directory with the contents of one "
-           "located elsewhere in the filesystem (e.g.: /tmp) while "
-           "bumping its version and ensuring that there is no clash with "
-           "the scanner."}].
-update_file(Config) ->
-    Name = ?config(name, Config),
-    Dir = ?config(files_dir, Config),
-    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
-    WorkFile = filename:join([Dir, "work"]),
-    ok = file:write_file(WorkFile, <<"a">>),
-    ok = revault_dirmon_event:force_scan(Name, 5000),
-    #{WorkFile := {VsnA, HashA}} = revault_dirmon_tracker:files(Name),
-    ?assertEqual(HashA, hash(<<"a">>)),
-    %% Create the remote file to merge
-    ok = file:write_file(TmpFile, <<"b">>),
-    %% cheating with internals
-    {_, IdB} = revault_id:fork(revault_id:new()),
-    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, VsnA))),
-    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
-    ?assertEqual({ok, <<"b">>}, file:read_file(WorkFile)),
-    %% Check that changes in version are picked up properly
-    {Stamp1, HashB} = revault_dirmon_tracker:file(Name, WorkFile),
-    ?assertEqual(hash(<<"b">>), HashB),
-    ?assert(itc:leq(itc:rebuild(IdB, VsnB), itc:rebuild(IdB, Stamp1))),
-    ?assert(itc:leq(itc:rebuild(IdB, VsnA), itc:rebuild(IdB, Stamp1))),
-    %% Check that the change isn't picked more than once
-    ok = revault_dirmon_event:force_scan(Name, 5000),
-    ?assertEqual({Stamp1, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
-    ok.
 
 conflict_creation() ->
     [{doc, "A conflict can be created with nothing but the existing file "
@@ -304,6 +272,99 @@ conflict_resolution_drop_conflict(Config) ->
     ?assertEqual({error, enoent}, file:read_file(ConflictB)),
     ok.
 
+update_file() ->
+    [{doc, "A file coming from another server needs to be updated in a way "
+           "that is aware of the remote version, and not just of the file "
+           "getting modified on disk. "
+           "This can be handled by asking the tracker to directly upsert "
+           "the file in the tracked directory with the contents of one "
+           "located elsewhere in the filesystem (e.g.: /tmp) while "
+           "bumping its version and ensuring that there is no clash with "
+           "the scanner."}].
+update_file(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnA, HashA}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashA, hash(<<"a">>)),
+    %% Create the remote file to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, VsnA))),
+    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertEqual({ok, <<"b">>}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    {Stamp1, HashB} = revault_dirmon_tracker:file(Name, WorkFile),
+    ?assertEqual(hash(<<"b">>), HashB),
+    ?assert(itc:leq(itc:rebuild(IdB, VsnB), itc:rebuild(IdB, Stamp1))),
+    ?assert(itc:leq(itc:rebuild(IdB, VsnA), itc:rebuild(IdB, Stamp1))),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({Stamp1, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+update_new() ->
+    [{doc, "A file coming from another server that does not exist locally "
+           "is merged in a way that does not re-stamp the file to avoid "
+           "the scanner re-detecting it and amplifying re-syncs with "
+           "other peers."}].
+update_new(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote file to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertEqual({ok, <<"b">>}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    {Stamp1, HashB} = revault_dirmon_tracker:file(Name, WorkFile),
+    ?assertEqual(hash(<<"b">>), HashB),
+    ?assert(itc:leq(itc:rebuild(IdB, VsnB), itc:rebuild(IdB, Stamp1))),
+    ?assert(itc:leq(itc:rebuild(IdB, Stamp1), itc:rebuild(IdB, VsnB))),
+    ?assertEqual(Stamp1, VsnB),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({Stamp1, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+update_older() ->
+    [{doc, "Updating a file with an older one ignores any changes since the "
+           "newer file wins."}].
+update_older(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnA, HashA}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashA, hash(<<"a">>)),
+    ok = file:write_file(WorkFile, <<"b">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnB, HashB}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashB, hash(<<"b">>)),
+    %% Create the remote file to merge
+    ok = file:write_file(TmpFile, <<"a">>),
+    %% merge and see it ignored
+    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFile, {VsnA, hash(<<"a">>)}),
+    ?assertEqual({ok, <<"b">>}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    {Stamp1, HashB} = revault_dirmon_tracker:file(Name, WorkFile),
+    ?assertEqual(hash(<<"b">>), HashB),
+    ?assertEqual(VsnB, Stamp1),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({Stamp1, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
 
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
