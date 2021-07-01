@@ -5,6 +5,7 @@
 
 all() ->
     [{group, update},
+     {group, delete},
      conflict_creation,
      {group, conflict_resolution}].
 
@@ -19,7 +20,17 @@ groups() ->
         update_file,
         update_new,
         update_older,
-        update_delete,
+        update_conflict,
+        update_conflict_resolve,
+        update_conflict_older
+     ]},
+     {delete, [], [
+        delete_file,
+        delete_new,
+        delete_older,
+        delete_conflict,
+        delete_conflict_resolve,
+        delete_conflict_older
      ]}
     ].
 
@@ -28,10 +39,6 @@ groups() ->
     %% TODO: do the thing where a conflict candidate is dropped and make sure it's removed
     %%       from the tracked file
     %% TODO: weird ass things like moving conflicting files around
-    %% TODO: updating a file into a conflict when the new file is newer is a resolution
-    %% TODO: updating a file into a conflict when the new file is older is ignored
-    %% TODO: updating a file into a conflict when the new file clashes adds to the conflict
-    %% TODO: updating a file as a deletion works
 
 init_per_testcase(Name, Config) ->
     {ok, Apps} = application:ensure_all_started(gproc),
@@ -364,6 +371,274 @@ update_older(Config) ->
     %% Check that the change isn't picked more than once
     ok = revault_dirmon_event:force_scan(Name, 5000),
     ?assertEqual({Stamp1, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+update_conflict() ->
+    [{doc, "Syncing a disjoint update into a conflict results in the "
+           "update being in the conflict."}].
+update_conflict(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    TmpFileUp = filename:join([?config(tmp_dir, Config), "up"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ConflictC = filename:join([Dir, "work." ++ hexname("c")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    ok = file:write_file(TmpFileUp, <<"c">>),
+    %% cheating with internals
+    {IdA, IdB} = revault_id:fork(revault_id:new()),
+    {_, IdC} = revault_id:fork(IdA),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdC, undefined))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictC)),
+    %% Using an update with a newer version resolves the conflict and cleares files
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFileUp, {VsnC, hash(<<"c">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    ?assertMatch({ok, _}, file:read_file(ConflictC)),
+    ok.
+
+update_conflict_resolve() ->
+    [{doc, "Syncing a recent update into a conflict results in the "
+           "conflict resolving. Conflicting files are dropped as well."}].
+update_conflict_resolve(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    TmpFileUp = filename:join([?config(tmp_dir, Config), "up"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    ok = file:write_file(TmpFileUp, <<"c">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdB, VsnB))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    %% Using an update with a newer version resolves the conflict and cleares files
+    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFileUp, {VsnC, hash(<<"c">>)}),
+    {Stamp1, HashC} = revault_dirmon_tracker:file(Name, WorkFile),
+    ?assertEqual({error, enoent}, file:read_file(ConflictMarker)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictB)),
+    ?assertEqual(hash(<<"c">>), HashC),
+    ?assert(itc:leq(itc:rebuild(IdB, VsnC), itc:rebuild(IdB, Stamp1))),
+    ?assert(itc:leq(itc:rebuild(IdB, Stamp1), itc:rebuild(IdB, VsnC))),
+    ?assertEqual(Stamp1, VsnC),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({Stamp1, HashC}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+update_conflict_older() ->
+    [{doc, "Syncing an old update into a newer conflict results in the "
+           "update being ignored"}].
+update_conflict_older(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    TmpFileUp = filename:join([?config(tmp_dir, Config), "up"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ConflictC = filename:join([Dir, "work." ++ hexname("c")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    ok = file:write_file(TmpFileUp, <<"c">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdB, VsnB))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnC, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    %% Using an update with an older version is ignored
+    ok = revault_dirmon_tracker:update_file(Name, WorkFile, TmpFileUp, {VsnB, hash(<<"c">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictC)),
+    ok.
+
+delete_file() ->
+    [{doc, "A delete coming from another server needs to be marked in a way "
+           "that is aware of the remote version, and not just of the file "
+           "getting modified on disk. "
+           "This can be handled by asking the tracker to directly remove "
+           "the file from the tracked directory while bumping its version "
+           "and ensuring that there is no clash with the scanner."}].
+delete_file(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnA, HashA}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashA, hash(<<"a">>)),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, VsnA))),
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnB, deleted}),
+    ?assertEqual({error, enoent}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    ?assertEqual({VsnB, deleted}, revault_dirmon_tracker:file(Name, WorkFile)),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({VsnB, deleted}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+delete_new() ->
+    [{doc, "A deleted file coming from another server that does not exist locally "
+           "is merged in a way that does not re-stamp the file to avoid "
+           "the scanner re-detecting it and amplifying re-syncs with "
+           "other peers."}].
+delete_new(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnB, deleted}),
+    ?assertEqual({error, enoent}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    {VsnB, deleted} = revault_dirmon_tracker:file(Name, WorkFile),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({VsnB, deleted}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+delete_older() ->
+    [{doc, "Deleting a newer file ignores any changes since the newer file wins."}].
+delete_older(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    WorkFile = filename:join([Dir, "work"]),
+    ok = file:write_file(WorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnA, HashA}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashA, hash(<<"a">>)),
+    ok = file:write_file(WorkFile, <<"b">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    #{WorkFile := {VsnB, HashB}} = revault_dirmon_tracker:files(Name),
+    ?assertEqual(HashB, hash(<<"b">>)),
+    %% merge and see it ignored
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnA, deleted}),
+    ?assertEqual({ok, <<"b">>}, file:read_file(WorkFile)),
+    %% Check that changes in version are picked up properly
+    ?assertEqual({VsnB, HashB}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+delete_conflict() ->
+    [{doc, "Syncing a disjoint delete into a conflict results in the "
+           "conflict being unchanged since the deletion does nothing."}].
+delete_conflict(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    %% cheating with internals
+    {IdA, IdB} = revault_id:fork(revault_id:new()),
+    {_, IdC} = revault_id:fork(IdA),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdC, undefined))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    %% Using an update with a newer version resolves the conflict and cleares files
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnC, deleted}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    ok.
+
+delete_conflict_resolve() ->
+    [{doc, "Syncing a recent delete into a conflict results in the "
+           "conflict resolving. Conflicting files are dropped as well."}].
+delete_conflict_resolve(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdB, VsnB))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnB, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    %% Using an update with a newer version resolves the conflict and cleares files
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnC, deleted}),
+    ?assertEqual({VsnC, deleted}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictMarker)),
+    ?assertEqual({error, enoent}, file:read_file(ConflictB)),
+    ?assertEqual({error, enoent}, file:read_file(WorkFile)),
+    %% Check that the change isn't picked more than once
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertEqual({VsnC, deleted}, revault_dirmon_tracker:file(Name, WorkFile)),
+    ok.
+
+delete_conflict_older() ->
+    [{doc, "Syncing an old delete into a newer conflict results in the "
+           "delete being ignored"}].
+delete_conflict_older(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "work"]),
+    WorkFile = filename:join([Dir, "work"]),
+    ConflictMarker = filename:join([Dir, "work.conflict"]),
+    ConflictA = filename:join([Dir, "work." ++ hexname("a")]),
+    ConflictB = filename:join([Dir, "work." ++ hexname("b")]),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    %% Create the remote files to merge
+    ok = file:write_file(TmpFile, <<"b">>),
+    %% cheating with internals
+    {_, IdB} = revault_id:fork(revault_id:new()),
+    {_, VsnB} = itc:explode(itc:event(itc:rebuild(IdB, undefined))),
+    {_, VsnC} = itc:explode(itc:event(itc:rebuild(IdB, VsnB))),
+    ok = revault_dirmon_tracker:conflict(Name, WorkFile, TmpFile, {VsnC, hash(<<"b">>)}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
+    %% Using an update with an older version is ignored
+    ok = revault_dirmon_tracker:delete_file(Name, WorkFile, {VsnB, deleted}),
+    ?assertMatch({ok, _}, file:read_file(ConflictMarker)),
+    ?assertMatch({error, enoent}, file:read_file(ConflictA)), % created on opposed end sync
+    ?assertMatch({ok, _}, file:read_file(ConflictB)),
     ok.
 
 %%%%%%%%%%%%%%%

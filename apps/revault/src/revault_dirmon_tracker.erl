@@ -6,7 +6,7 @@
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 -export([start_link/3, stop/1, file/2, files/1]).
--export([update_id/2, conflict/4, update_file/4]).
+-export([update_id/2, conflict/4, update_file/4, delete_file/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -opaque stamp() :: itc:event().
@@ -53,6 +53,8 @@ conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
 update_file(Name, WorkFile, NewFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {update_file, WorkFile, NewFile, Vsn}, infinity).
 
+delete_file(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
+    gen_server:call(?VIA_GPROC(Name), {delete_file, WorkFile, Vsn}, infinity).
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -82,32 +84,6 @@ handle_call({update_id, ITC}, _From, State = #state{}) ->
     %% in case we eventually do; can't hurt anything but perf.
     save_snapshot(NewState),
     {reply, ok, NewState};
-handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
-            State = #state{snapshot=Map, itc_id=Id}) ->
-    case Map of
-        #{Work := {_, {conflict, _, _}}} ->
-            handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
-        #{Work := {Stamp, _WorkingHash}} ->
-            case compare(Id, Stamp, NewStamp) of
-                conflict ->
-                    handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
-                lesser ->
-                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
-                    {ok, _} = file:copy(Source, Work),
-                    FinalStamp = stamp(Id, NewStamp),
-                    NewState = State#state{snapshot=Map#{Work => {FinalStamp, NewHash}}},
-                    save_snapshot(NewState),
-                    {reply, ok, NewState};
-                _ -> % current file is newer or equal to the proposed one
-                    {reply, ok, State}
-            end;
-        _ when not is_map_key(Work, Map) ->
-            %% TODO: use a copy+rename to avoid corrupting files mid-crash
-            {ok, _} = file:copy(Source, Work),
-            NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
-            save_snapshot(NewState),
-            {reply, ok, NewState}
-    end;
 handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             State = #state{snapshot=Map, itc_id=Id}) ->
     NewConflict = case Map of
@@ -144,6 +120,84 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
     ok = write_conflict_file(Work, NewConflict),
     save_snapshot(NewState),
     {reply, ok, NewState};
+handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
+            State = #state{snapshot=Map, itc_id=Id}) ->
+    case Map of
+        #{Work := {Stamp, {conflict, Hashes, _}}} ->
+            case compare(Id, Stamp, NewStamp) of
+                equal -> % this doesn't make sense
+                    error({stamp_shared_for_conflicting_operations,
+                           {Stamp, conflict}, {NewStamp, update_file}});
+                lesser -> % sync resolves conflict
+                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
+                    {ok, _} = file:copy(Source, Work),
+                    resolve_conflict(Work, Hashes),
+                    delete_conflict_file(Work),
+                    NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
+                    save_snapshot(NewState),
+                    {reply, ok, NewState};
+                greater -> % sync outdated
+                    {reply, ok, State};
+                conflict ->
+                    handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State)
+            end;
+        #{Work := {Stamp, _WorkingHash}} ->
+            case compare(Id, Stamp, NewStamp) of
+                conflict ->
+                    handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
+                lesser ->
+                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
+                    {ok, _} = file:copy(Source, Work),
+                    NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
+                    save_snapshot(NewState),
+                    {reply, ok, NewState};
+                _ -> % current file is newer or equal to the proposed one
+                    {reply, ok, State}
+            end;
+        _ when not is_map_key(Work, Map) ->
+            %% TODO: use a copy+rename to avoid corrupting files mid-crash
+            {ok, _} = file:copy(Source, Work),
+            NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
+            save_snapshot(NewState),
+            {reply, ok, NewState}
+    end;
+handle_call({delete_file, Work, {NewStamp, deleted}}, _From,
+            State = #state{snapshot=Map, itc_id=Id}) ->
+    case Map of
+        #{Work := {Stamp, {conflict, Hashes, _}}} ->
+            case compare(Id, Stamp, NewStamp) of
+                equal -> % this doesn't make sense
+                    error({stamp_shared_for_conflicting_operations,
+                           {Stamp, conflict}, {NewStamp, delete_file}});
+                lesser -> % sync resolves conflict
+                    _ = file:delete(Work),
+                    resolve_conflict(Work, Hashes),
+                    delete_conflict_file(Work),
+                    NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
+                    save_snapshot(NewState),
+                    {reply, ok, NewState};
+                greater -> % sync outdated
+                    {reply, ok, State};
+                conflict -> % already gone from the current conflict?
+                    {reply, ok, State}
+            end;
+        #{Work := {Stamp, _WorkingHash}} ->
+            case compare(Id, Stamp, NewStamp) of
+                conflict -> % it's already gone from the current conflict?
+                    {reply, ok, State};
+                lesser ->
+                    _ = file:delete(Work),
+                    NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
+                    save_snapshot(NewState),
+                    {reply, ok, NewState};
+                _ -> % current file is newer or equal to the proposed one
+                    {reply, ok, State}
+            end;
+        _ when not is_map_key(Work, Map) ->
+            NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
+            save_snapshot(NewState),
+            {reply, ok, NewState}
+    end;
 handle_call(_Call, _From, State) ->
     {noreply, State}.
 
@@ -200,8 +254,7 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC) ->
             SetMap#{FileName => {Ct, {conflict, Hashes, deleted}}};
         {marker, BaseFile, {Ct, {conflict, Hashes, WorkingHash}}} ->
             %% conflict resolved. clear trailing conflicting files
-            [file:delete(BaseFile ++ "." ++ hexname(ConflictHash))
-             || ConflictHash <- Hashes],
+            resolve_conflict(BaseFile, Hashes),
             SetMap#{BaseFile => {stamp(ITC, Ct), WorkingHash}};
         {conflicting, BaseFile, {Ct, {conflict, Hashes, WorkingHash}}} ->
             write_conflict_file(BaseFile, {Ct, {conflict, Hashes, WorkingHash}}),
@@ -258,6 +311,9 @@ write_conflict_file(WorkingFile, {_, {conflict, Hashes, _}}) ->
         lists:join($\n, [hex(Hash) || Hash <- Hashes])
     ).
 
+delete_conflict_file(WorkingFile) ->
+    file:delete(WorkingFile ++ ".conflict").
+
 hex(Hash) ->
     binary:encode_hex(Hash).
 
@@ -310,3 +366,8 @@ drop_suffix([H|T], Suffix) -> [H|drop_suffix(T, Suffix)].
 is_hex([C]) when C >= $A, C =< $F; C >= $0, C =< $9 -> true;
 is_hex([C|T]) when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
 is_hex(L) when is_list(L) -> false.
+
+resolve_conflict(BaseFile, Hashes) ->
+    [file:delete(BaseFile ++ "." ++ hexname(ConflictHash))
+     || ConflictHash <- Hashes],
+    ok.
