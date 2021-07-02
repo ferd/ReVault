@@ -17,7 +17,8 @@
 %%% protocol here does not need to know where or how.
 -module(revault_id_sync).
 -export([new/0, ask/0, error/1, fork/2]).
--export([manifest/0, manifest/1, send_file/4, send_conflict_file/5, fetch_file/1]).
+-export([manifest/0, manifest/1, send_file/4, send_conflict_file/5, fetch_file/1,
+         sync_complete/0]).
 -export([send/2, reply/2, unpack/1]).
 -define(VSN, 1).
 
@@ -41,6 +42,9 @@ send_conflict_file(WorkPath, Path, Vsn, Hash, Bin) ->
 
 fetch_file(Path) ->
     {fetch, ?VSN, Path}.
+
+sync_complete() ->
+    {sync_complete, ?VSN}.
 
 error(R) -> {error, ?VSN, R}.
 
@@ -71,6 +75,7 @@ unpack({manifest, ?VSN}) -> manifest;
 unpack({manifest, ?VSN, Data}) -> {manifest, Data};
 unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
 unpack({fetch, ?VSN, Path}) -> {fetch, Path};
+unpack({sync_complete, ?VSN}) -> sync_complete;
 unpack({conflict_file, ?VSN, WorkPath, Path, Meta, Bin}) ->
     {conflict_file, WorkPath, Path, Meta, Bin};
 unpack(Term) ->

@@ -36,7 +36,7 @@ start_link(DbDir, Name, Path, Interval) ->
     start_link(DbDir, Name, Path, Interval, revault_id_sync).
 
 start_link(DbDir, Name, Path, Interval, Callback) ->
-    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, []).
+    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, [{debug, [trace]}]).
 
 -spec server(name()) -> ok | {error, busy}.
 server(Name) ->
@@ -135,33 +135,58 @@ handle_event({call, From}, {sync, Remote}, client,
      Data#data{callback=Cb2, remote = Remote, caller=From}};
 %% TODO: improve that Ref format
 handle_event(info, {revault, _From={_,_,Ref}, Payload}, {sync_manifest, Ref},
-             Data = #data{callback=Cb0, name=Name}) ->
+             Data = #data{id=Id, callback=Cb0, name=Name}) ->
     {{manifest, RManifest}, Cb1} = apply_cb(Cb0, unpack, [Payload]),
     LManifest = revault_dirmon_tracker:files(Name),
-    {Local, Remote} = diff_manifests(LManifest, RManifest),
+    {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
     Actions = schedule_file_transfers(Local, Remote),
-    {next_state, client_sync, Data#data{callback=Cb1},
+    {next_state, {client_sync, []}, Data#data{callback=Cb1},
      Actions ++ [{next_event, internal, sync_complete}]};
-handle_event(internal, {send, F}, client_sync,
-             Data=#data{name=Name, remote=R, callback=Cb0}) ->
+handle_event(internal, {send, F}, {client_sync, Acc},
+             Data=#data{name=Name, path=Path, remote=R, callback=Cb0}) ->
     {Vsn, Hash} = revault_dirmon_tracker:file(Name, F),
     %% just inefficiently read the whole freaking thing at once
     %% TODO: optimize to better read and send file parts
-    {ok, Bin} = file:read_file(F),
+    {ok, Bin} = file:read_file(filename:join(Path,F)),
     {Payload, Cb1} = apply_cb(Cb0, send_file, [F, Vsn, Hash, Bin]),
     %% TODO: track failing or succeeding transfers?
     {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
-    {next_state, client_sync, Data#data{callback=Cb2}};
-handle_event(internal, {fetch, F}, client_sync,
+    {next_state, {client_sync, Acc}, Data#data{callback=Cb2}};
+handle_event(internal, {fetch, F}, {client_sync, Acc},
              Data=#data{remote=R, callback=Cb0}) ->
     {Payload, Cb1} = apply_cb(Cb0, fetch_file, [F]),
-    %% TODO: track incoming transfers?
+    %% TODO: track incoming transfers to know when we're done syncing
     {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
-    {next_state, client_sync, Data#data{callback=Cb2}};
-handle_event(internal, sync_complete, client_sync, Data=#data{caller=From}) ->
-    %% push and pull files..
-    {next_state, client, Data,
-     [{reply, From, ok}]};
+    {next_state, {client_sync, [F|Acc]}, Data#data{callback=Cb2}};
+handle_event(internal, sync_complete, {client_sync, []},
+             Data=#data{name=Name, remote=R, callback=Cb0}) ->
+    %% force scan to ensure conflict files (if any) are tracked before
+    %% users start modifying them. Might not be relevant when things like
+    %% filesystem watchers are used, but I'm starting to like the idea of
+    %% on-demand scan/sync only.
+    ok = revault_dirmon_event:force_scan(Name, infinity),
+    {Payload, Cb1} = apply_cb(Cb0, sync_complete, []),
+    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
+    {next_state, client_sync_complete_ack, Data#data{callback=Cb2}};
+handle_event(internal, sync_complete, {client_sync, _Acc}, #data{}) ->
+    {keep_state_and_data, [postpone]};
+%% TODO: find how to constrain the 'From' here (or make it the same as the remote)
+%% in order to avoid confusing the FSM with cross-talk
+handle_event(info, {revault, _From, Payload}, {client_sync, Acc},
+             Data=#data{name=Name, id=Id, callback=Cb0}) ->
+    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
+    case Demand of
+        {file, F, Meta, Bin} ->
+            handle_file_sync(Name, Id, F, Meta, Bin),
+            {next_state, {client_sync, Acc -- [F]}, Data#data{callback=Cb1}}
+    end;
+handle_event(info, {revault, _From, Payload}, client_sync_complete_ack,
+             Data=#data{caller=From, callback=Cb0}) ->
+    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
+    case Demand of
+        sync_complete ->
+            {next_state, client, Data#data{callback=Cb1}, [{reply, From, ok}]}
+    end;
 
 %% Server Mode
 handle_event({call, From}, id, server,
@@ -195,43 +220,31 @@ handle_event(info, {revault, From, Payload}, server,
             {next_state, server_sync, Data#data{callback=Cb3}}
     end;
 handle_event(info, {revault, From, Payload}, server_sync,
-             Data=#data{name=Name, callback=Cb0}) ->
+             Data=#data{name=Name, id=Id, callback=Cb0}) ->
     {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
     case Demand of
-        {file, _F, _Meta, _Bin} ->
-            %% TODO: sync the file? find conflicts?
-            error(not_implemented);
-        {conflict_file, _WorkF, _F, _Meta, _Bin} ->
-            %% TODO: sync the file? find conflicts?
-            error(not_implemented);
+        {file, F, Meta, Bin} ->
+            handle_file_sync(Name, Id, F, Meta, Bin),
+            {next_state, server_sync, Data#data{callback=Cb1}};
+        {conflict_file, WorkF, F, Meta, Bin} ->
+            TmpF = filename:join("/tmp", F),
+            filelib:ensure_dir(TmpF),
+            ok = file:write_file(TmpF, Bin),
+            revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
+            file:delete(TmpF),
+            {next_state, server_sync, Data#data{callback=Cb1}};
         {fetch, F} ->
-            case revault_dirmon_tracker:file(Name, F) of
-                {Vsn, {conflict, Hashes, _}} ->
-                    %% Stream all the files, mark as conflicts?
-                    %% just inefficiently read the whole freaking thing at once
-                    %% TODO: optimize to better read and send file parts
-                    Cb2 = lists:foldl(
-                        fun(Hash, CbAcc1) ->
-                            FHash = make_conflict_path(F, Hash),
-                            {ok, Bin} = file:read_file(FHash),
-                            {NewPayload, CbAcc2} = apply_cb(CbAcc1, send_conflict_file, [F, FHash, Vsn, Hash, Bin]),
-                            %% TODO: track failing or succeeding transfers?
-                            {_Ref, CbAcc3} = apply_cb(CbAcc2, reply, [From, NewPayload]),
-                            CbAcc3
-                        end,
-                        Hashes,
-                        Cb1
-                    ),
-                    {next_state, server_sync, Data#data{callback=Cb2}};
-                {Vsn, Hash} ->
-                    %% just inefficiently read the whole freaking thing at once
-                    %% TODO: optimize to better read and send file parts
-                    {ok, Bin} = file:read_file(F),
-                    {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
-                    %% TODO: track failing or succeeding transfers?
-                    {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-                    {next_state, server_sync, Data#data{callback=Cb3}}
-            end
+            NewData = handle_file_demand(F, From, Data#data{callback=Cb1}),
+            {next_state, server_sync, NewData};
+        sync_complete ->
+            %% force scan to ensure conflict files (if any) are tracked before
+            %% users start modifying them. Might not be relevant when things like
+            %% filesystem watchers are used, but I'm starting to like the idea of
+            %% on-demand scan/sync only.
+            ok = revault_dirmon_event:force_scan(Name, infinity),
+            {NewPayload, Cb2} = apply_cb(Cb1, sync_complete, []),
+            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+            {next_state, server, Data#data{callback=Cb3}}
     end;
 
 
@@ -239,7 +252,7 @@ handle_event(info, {revault, From, Payload}, server_sync,
 handle_event({call, From}, {role, _}, State, Data) when State =/= idle ->
     {next_state, State, Data, [{reply, From, {error, busy}}]};
 handle_event(info, {revault, From, _Payload}, State, Data=#data{callback=Cb}) ->
-    {NewPayload, Cb1} = apply_cb(Cb, error, [bad_state]),
+    {NewPayload, Cb1} = apply_cb(Cb, error, [{bad_state, State, {revault, From, _Payload}}]),
     %% Save NewId to disk before replying to avoid issues
     {_, Cb2} = apply_cb(Cb1, reply, [From, NewPayload]),
     {next_state, State, Data#data{callback=Cb2}}.
@@ -272,50 +285,101 @@ store_id(Dir, Name, Id) ->
 start_tracker(Name, Id, Path, Interval, DbDir) ->
     revault_trackers_sup:start_tracker(Name, Id, Path, Interval, DbDir).
 
-diff_manifests(LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
-    diff_manifests(lists:sort(maps:to_list(LocalMap)),
+diff_manifests(Id, LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
+    diff_manifests(Id,
+                   lists:sort(maps:to_list(LocalMap)),
                    lists:sort(maps:to_list(RemoteMap)),
                    [], []).
 
-diff_manifests([H|Loc], [H|Rem], LAcc, RAcc) ->
-    diff_manifests(Loc, Rem, LAcc, RAcc);
+diff_manifests(Id, [H|Loc], [H|Rem], LAcc, RAcc) ->
+    diff_manifests(Id, Loc, Rem, LAcc, RAcc);
 %% TODO: handle conflicts
-diff_manifests([{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
-    case {itc:leq(LVsn, RVsn), itc:leq(LVsn, RVsn)} of
-        {true, true} ->
+diff_manifests(Id, [{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
+    case compare(Id, LVsn, RVsn) of
+        equal ->
             %% We can skip this, even though bumping versions could be nice since
             %% they differ but compare equal
-            diff_manifests(Loc, Rem, LAcc, RAcc);
-        {false, false} ->
+            diff_manifests(Id, Loc, Rem, LAcc, RAcc);
+        conflict ->
             %% Conflict! Fetch & Push in both cases
-            diff_manifests(Loc, Rem,
+            diff_manifests(Id, Loc, Rem,
                            [{send, F}|LAcc],
                            [{fetch, F}|RAcc]);
-        {false, true} ->
+        greater ->
             %% Local's newer
-            diff_manifests(Loc, Rem, [{send, F}|LAcc], RAcc);
-        {true, false} ->
+            diff_manifests(Id, Loc, Rem, [{send, F}|LAcc], RAcc);
+        lesser ->
             %% Remote's newer
-            diff_manifests(Loc, Rem, LAcc, [{fetch, F}, RAcc])
+            diff_manifests(Id, Loc, Rem, LAcc, [{fetch, F}, RAcc])
     end;
-diff_manifests([{LF, _}=L|Loc], [{RF, _}=R|Rem], LAcc, RAcc) ->
+diff_manifests(Id, [{LF, _}=L|Loc], [{RF, _}=R|Rem], LAcc, RAcc) ->
     if LF < RF ->
-           diff_manifests(Loc, [R|Rem], [{send, LF}|LAcc], RAcc);
+           diff_manifests(Id, Loc, [R|Rem], [{send, LF}|LAcc], RAcc);
        LF > RF ->
-           diff_manifests([L|Loc], Rem, LAcc, [{fetch, RF}|RAcc])
+           diff_manifests(Id, [L|Loc], Rem, LAcc, [{fetch, RF}|RAcc])
     end;
-diff_manifests(Loc, [], LAcc, RAcc) ->
+diff_manifests(_Id, Loc, [], LAcc, RAcc) ->
     {[{send, F} || {F, _} <- Loc] ++ LAcc, RAcc};
-diff_manifests([], Rem, LAcc, RAcc) ->
+diff_manifests(_Id, [], Rem, LAcc, RAcc) ->
     {LAcc, [{fetch, F} || {F, _} <- Rem] ++ RAcc}.
 
 schedule_file_transfers(Local, Remote) ->
     %% TODO: Do something smart at some point. Right now, who cares.
     [{next_event, internal, Event} || Event <- Remote ++ Local].
 
+handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
+    %% is this file a conflict or an update?
+    case revault_dirmon_tracker:file(Name, F) of
+        undefined ->
+            update_file(Name, F, Meta, Bin);
+        {LVsn, _HashOrStatus} ->
+            case compare(Id, LVsn, Vsn) of
+                conflict ->
+                    FHash = make_conflict_path(F, Hash),
+                    TmpF = filename:join("/tmp", FHash),
+                    file:write_file(TmpF, Bin),
+                    revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
+                    file:delete(TmpF);
+                _ ->
+                    update_file(Name, F, Meta, Bin)
+            end
+    end.
 
-% make_conflict_path(F) ->
-%     F ++ ".conflict".
+update_file(Name, F, Meta, Bin) ->
+    TmpF = filename:join("/tmp", F),
+    filelib:ensure_dir(TmpF),
+    ok = file:write_file(TmpF, Bin),
+    revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
+    file:delete(TmpF).
+
+handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
+    case revault_dirmon_tracker:file(Name, F) of
+        {Vsn, {conflict, Hashes, _}} ->
+            %% Stream all the files, mark as conflicts?
+            %% just inefficiently read the whole freaking thing at once
+            %% TODO: optimize to better read and send file parts
+            Cb2 = lists:foldl(
+                fun(Hash, CbAcc1) ->
+                    FHash = make_conflict_path(F, Hash),
+                    {ok, Bin} = file:read_file(filename:join(Path, FHash)),
+                    {NewPayload, CbAcc2} = apply_cb(CbAcc1, send_conflict_file, [F, FHash, Vsn, Hash, Bin]),
+                    %% TODO: track failing or succeeding transfers?
+                    {_Ref, CbAcc3} = apply_cb(CbAcc2, reply, [From, NewPayload]),
+                    CbAcc3
+                end,
+                Cb1,
+                Hashes
+            ),
+            Data#data{callback=Cb2};
+        {Vsn, Hash} ->
+            %% just inefficiently read the whole freaking thing at once
+            %% TODO: optimize to better read and send file parts
+            {ok, Bin} = file:read_file(filename:join(Path, F)),
+            {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
+            %% TODO: track failing or succeeding transfers?
+            {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
+            Data#data{callback=Cb3}
+    end.
 
 make_conflict_path(F, Hash) ->
     F ++ "." ++ hexname(Hash).
@@ -328,3 +392,12 @@ hex(Hash) ->
 hexname(Hash) ->
     unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
 
+compare(Id, Ct1, Ct2) ->
+    ITC1 = itc:rebuild(Id, Ct1),
+    ITC2 = itc:rebuild(Id, Ct2),
+    case {itc:leq(ITC1, ITC2), itc:leq(ITC2, ITC1)} of
+        {false, false} -> conflict;
+        {true, true} -> equal;
+        {true, false} -> lesser;
+        {false, true} -> greater
+    end.

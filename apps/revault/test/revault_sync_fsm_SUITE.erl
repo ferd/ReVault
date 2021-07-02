@@ -198,17 +198,18 @@ fork_server_save(Config) ->
     ?assertEqual(ServId2, binary_to_term(BinId)),
     %% Check worker ID, peek into internal state even if brittle.
     State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
-    ?assertEqual(ServId2, element(4, State)),
+    ?assertEqual(ServId2, element(5, State)),
     ok.
 
 basic_sync() ->
-    [{doc, "Basic file synchronization works"}].
+    [{doc, "Basic file synchronization works"},
+     {timetrap, timer:seconds(30)}].
 basic_sync(Config) ->
     Client = ?config(name, Config),
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
     ClientPath = ?config(path, Config),
     ServerPath = ?config(server_path, Config),
-    {ok, ServId1} = revault_sync_fsm:id(Server),
+    {ok, _ServId1} = revault_sync_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Client,
@@ -250,13 +251,21 @@ basic_sync(Config) ->
     ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
     %% The working file can be edited however.
     %% Resolve em and add a file
+    ct:pal("RACE_AREA"),
+    %% POTENTIAL RACE CONDITION!
+    %%   moving the shared.D6BE7FB8 and deleting shared.D6BE7FB8 and then
+    %%   deleting shared.conflict can yield, upon a scan, a sequence where
+    %%   the server itself recreates the shared.conflict file.
+    %%   Conditionals in the code are assumed to cover this case.
     ok = file:delete(filename:join([ClientPath, "shared.1C56416E"])),
-    ok = file:move(filename:join([ClientPath, "shared.D6BE7FB8"]),
-                   filename:join([ClientPath, "shared"])),
+    ok = file:rename(filename:join([ClientPath, "shared.D6BE7FB8"]),
+                     filename:join([ClientPath, "shared"])),
     ok = file:delete(filename:join([ClientPath, "shared.conflict"])),
     ok = file:write_file(filename:join([ClientPath, "client-2"]), "c2"),
     %% Sync again, but only track on the client side
     ok = revault_dirmon_event:force_scan(Client, 5000),
+    %% TODO: should we go back to idle mode and re-force setting a client here?
+    ct:pal("RE-SYNC"),
     ok = revault_sync_fsm:sync(Client, Remote),
     %% TODO: check with a 3rd party for extra transitive conflicts
     %% the following should be moved to a lower-level test:

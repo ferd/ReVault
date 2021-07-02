@@ -21,26 +21,27 @@ scan_with_timeouts() ->
            "covered in property testing suites."}].
 scan_with_timeouts(Config) ->
     PrivDir = ?config(priv_dir, Config),
-    File = filename:join(PrivDir, "a-file.txt"),
+    File = "a-file.txt",
+    AbsFile = filename:join(PrivDir, File),
     gproc:reg({p, l, {?MODULE, ?FUNCTION_NAME}}),
     {ok, _} = revault_dirmon_event:start_link(
       {?MODULE, ?FUNCTION_NAME},
       #{directory => PrivDir, poll_interval => 10,
         initial_sync => scan}
     ),
-    ok = file:write_file(File, "text"),
+    ok = file:write_file(AbsFile, "text"),
     H0 = receive
         {dirmon, {?MODULE, ?FUNCTION_NAME}, {added, {File, Hash0}}} -> Hash0
     after 5000 ->
         flush_err()
     end,
-    ok = file:write_file(File, "text2"),
+    ok = file:write_file(AbsFile, "text2"),
     H1 = receive
         {dirmon, {?MODULE, ?FUNCTION_NAME}, {changed, {File, Hash1}}} -> Hash1
     after 5000 ->
         flush_err()
     end,
-    ok = file:delete(File),
+    ok = file:delete(AbsFile),
     receive
         {dirmon, {?MODULE, ?FUNCTION_NAME}, {deleted, {File, H1}}} -> ok
     after 5000 ->

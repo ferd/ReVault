@@ -33,6 +33,7 @@ prop_test() ->
                 revault_test_utils:setup_scratch_dir(?DIR),
                 {ok, _Listener} = revault_dirmon_tracker:start_link(
                     ?LISTENER_NAME,
+                    ?DIR,
                     ?STORE,
                     ?ITC_SEED
                 ),
@@ -53,9 +54,10 @@ prop_test() ->
             end)).
 
 prop_monotonic(doc) ->
-   "Do a sequence of random operations on a file and make sure that all "
-   "operations (even deletions and recreations) end in a logical clock "
-   "always increasing, showing data is properly tracked.".
+    "Do a sequence of random operations on a file and make sure that all "
+    "operations end in a logical clock always increasing, showing data is "
+    "properly tracked. Due to concurrency issue between a directory scanner "
+    "and syncing, we willingly omit redundant changes from the set".
 prop_monotonic() ->
     ?SETUP(fun() ->
         {ok, Apps} = application:ensure_all_started(gproc),
@@ -70,6 +72,7 @@ prop_monotonic() ->
             {Id, _} = itc:explode(itc:seed()),
             {ok, Listener} = revault_dirmon_tracker:start_link(
                 ?LISTENER_NAME,
+                ?DIR,
                 undefined,
                 Id
             ),
@@ -81,13 +84,13 @@ prop_monotonic() ->
                 Events
             ),
             revault_dirmon_tracker:stop(?LISTENER_NAME),
-            Sorter = fun(A, B) ->
+            Sorter = fun({A,_}, {B,_}) ->
                 itc:leq(itc:rebuild(Id, A), itc:rebuild(Id, B))
             end,
             Sorted = lists:usort(Sorter, Hashes),
-            ?WHENFAIL(io:format("Sorted: ~p~nObtained: ~p~n",
-                                [Sorted, Hashes]),
-                      Sorted =:= Hashes andalso
+            ?WHENFAIL(io:format("Ops: ~p~nSorted: ~p~nObtained: ~p~n",
+                                [Events, Sorted, lists:usort(Hashes)]),
+                      Sorted =:= lists:usort(Hashes) andalso
                       not lists:member(undefined, Hashes))
         end))).
 
@@ -148,7 +151,8 @@ postcondition(_State, {call, _, delete_file, _}, ok) ->
     true;
 postcondition(State, {call, _, check_files, _}, {Exist, Deleted, Unknown}) ->
     Model = maps:get(model, State),
-    ModelExist = dirmodel:hashes(?DIR, Model),
+    ModelExist = [{revault_file:make_relative(?DIR, F), H}
+                  || {F,H} <- dirmodel:hashes(?DIR, Model)],
     Res = lists:sort(ModelExist) =:= lists:sort(Exist)
           andalso lists:all(fun({_Vsn, deleted}) -> true; (_) -> false end, Deleted)
           andalso lists:all(fun(Entry) -> Entry == undefined end, Unknown),
@@ -199,12 +203,14 @@ next_state(State, _Res, _Op = {call, _Mod, _Fun, _Args}) ->
 %% ones) to make sure they're truly gone.
 check_files(Dir, Model, Ops) ->
     ok = revault_dirmon_event:force_scan(?LISTENER_NAME, 5000), % sync call
-    KnownFiles = [File || {File, _Hash} <- dirmodel:hashes(Dir, Model)],
+    KnownFiles = [revault_file:make_relative(Dir, File)
+                  || {File, _Hash} <- dirmodel:hashes(Dir, Model)],
     KnownHashes = [{File,
                     drop_vsn(revault_dirmon_tracker:file(?LISTENER_NAME, File))}
                    || File <- KnownFiles],
-    DeletedFiles = [File || {delete, {File, _Hash}} <- Ops,
-                            file_deleted(File, Dir, Model, Ops)],
+    DeletedFiles = [revault_file:make_relative(Dir, File)
+                    || {delete, {File, _Hash}} <- Ops,
+                       file_deleted(File, Dir, Model, Ops)],
     DeletedData = [{File,
                     drop_vsn(revault_dirmon_tracker:file(?LISTENER_NAME, File))}
                    || File <- DeletedFiles],
@@ -229,7 +235,7 @@ file_deleted(File, Dir, Model, Ops) ->
 
 restart_tracker() ->
     revault_dirmon_tracker:stop(?LISTENER_NAME),
-    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?STORE, ?ITC_SEED).
+    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?DIR, ?STORE, ?ITC_SEED).
 
 restart_event() ->
     revault_dirmon_event:stop(?LISTENER_NAME),

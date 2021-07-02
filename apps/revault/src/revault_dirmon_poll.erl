@@ -26,7 +26,8 @@ scan(Dir) ->
       fun(File, Acc) ->
          {ok, Bin} = file:read_file(File),
          Hash = crypto:hash(sha256, Bin),
-         [{File, Hash} | Acc]
+         RelativeFile = revault_file:make_relative(Dir, File),
+         [{RelativeFile, Hash} | Acc]
       end, []
     )).
 
@@ -67,3 +68,4 @@ diff_set([O|Old], [N|New], {Deleted, Added, Modified}) ->
     if O < N -> diff_set(Old, [N|New], {[O|Deleted], Added, Modified})
      ; O > N -> diff_set([O|Old], New, {Deleted, [N|Added], Modified})
     end.
+

@@ -38,7 +38,7 @@ init([Name, Id, Path, Interval, DbDir]) ->
     TrackFile = filename:join(DbDir, "tracker.snapshot"),
     {ok, {{rest_for_one, 1, 60}, [
         #{id => listener,
-          start => {revault_dirmon_tracker, start_link, [Name, TrackFile, Id]},
+          start => {revault_dirmon_tracker, start_link, [Name, Path, TrackFile, Id]},
           type => worker},
         #{id => event,
           start => {revault_dirmon_event, start_link,
