@@ -33,7 +33,7 @@
 %  path = "/Users/ferd/images/"
 %  ignore = [] # regexes on full path
 start_link(DbDir, Name, Path, Interval) ->
-    start_link(DbDir, Name, Path, Interval, revault_id_sync).
+    start_link(DbDir, Name, Path, Interval, revault_disterl).
 
 start_link(DbDir, Name, Path, Interval, Callback) ->
     gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, [{debug, [trace]}]).
@@ -104,43 +104,40 @@ handle_event({call, _From}, {id, _Remote}, {client, sync_id}, Data) ->
     {keep_state, Data, [postpone]};
 handle_event(internal, sync_id, {client, sync_id},
              Data = #data{id=undefined, remote=Remote, callback=Cb}) ->
-    {AskPayload, NewCb} = apply_cb(Cb, ask, []),
-    {Res, FinalCb} = apply_cb(NewCb, send, [Remote, AskPayload]),
+    {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
     case Res of
         {ok, _Ref} ->
-            {keep_state, Data#data{callback=FinalCb}};
+            {keep_state, Data#data{callback=NewCb}};
         {error, _R} -> %% TODO: report error
-            {next_state, {client, sync_failed}, Data#data{callback=FinalCb}}
+            {next_state, {client, sync_failed}, Data#data{callback=NewCb}}
     end;
 handle_event(info, {revault, _From, Payload}, {client, sync_id},
-             Data=#data{name=Name, path=Path, interval=Interval,
-                        callback=Cb, db_dir=Dir}) ->
-    case apply_cb(Cb, unpack, [Payload]) of
-        {{error, _R}, NewCb} ->
-            {next_state, {client, sync_failed}, Data#data{callback=NewCb}};
-        {{reply, NewId}, NewCb} ->
+             Data=#data{name=Name, path=Path, interval=Interval, db_dir=Dir}) ->
+    case Payload of
+        {error, _R} ->
+            {next_state, {client, sync_failed}, Data};
+        {reply, NewId} ->
             ok = store_id(Dir, Name, NewId),
             %% tracker couldn't have been booted yet
             {ok, _} = start_tracker(Name, NewId, Path, Interval, Dir),
-            {next_state, client, Data#data{id=NewId, callback=NewCb}}
+            {next_state, client, Data#data{id=NewId}}
     end;
 handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
     {next_state, client, Data, [{reply, From, {error, sync_failed}}]};
 handle_event({call, From}, {sync, Remote}, client,
              Data = #data{id = Id, callback=Cb0}) when Id =/= undefined ->
     %% Ask the server for its manifest
-    {ManifestPayload, Cb1} = apply_cb(Cb0, manifest, []),
-    {{ok, Marker}, Cb2} = apply_cb(Cb1, send, [Remote, ManifestPayload]),
+    {{ok, Marker}, Cb1} = apply_cb(Cb0, send, [Remote, revault_data_wrapper:manifest()]),
     {next_state, {sync_manifest, Marker},
-     Data#data{callback=Cb2, remote = Remote, caller=From}};
+     Data#data{callback=Cb1, remote = Remote, caller=From}};
 %% TODO: improve that Ref format
 handle_event(info, {revault, _From={_,_,Ref}, Payload}, {sync_manifest, Ref},
-             Data = #data{id=Id, callback=Cb0, name=Name}) ->
-    {{manifest, RManifest}, Cb1} = apply_cb(Cb0, unpack, [Payload]),
+             Data = #data{id=Id, name=Name}) ->
+    {manifest, RManifest} = Payload,
     LManifest = revault_dirmon_tracker:files(Name),
     {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
     Actions = schedule_file_transfers(Local, Remote),
-    {next_state, {client_sync, []}, Data#data{callback=Cb1},
+    {next_state, {client_sync, []}, Data,
      Actions ++ [{next_event, internal, sync_complete}]};
 handle_event(internal, {send, F}, {client_sync, Acc},
              Data=#data{name=Name, path=Path, remote=R, callback=Cb0}) ->
@@ -148,16 +145,16 @@ handle_event(internal, {send, F}, {client_sync, Acc},
     %% just inefficiently read the whole freaking thing at once
     %% TODO: optimize to better read and send file parts
     {ok, Bin} = file:read_file(filename:join(Path,F)),
-    {Payload, Cb1} = apply_cb(Cb0, send_file, [F, Vsn, Hash, Bin]),
+    Payload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
     %% TODO: track failing or succeeding transfers?
-    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
-    {next_state, {client_sync, Acc}, Data#data{callback=Cb2}};
+    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {next_state, {client_sync, Acc}, Data#data{callback=Cb1}};
 handle_event(internal, {fetch, F}, {client_sync, Acc},
              Data=#data{remote=R, callback=Cb0}) ->
-    {Payload, Cb1} = apply_cb(Cb0, fetch_file, [F]),
+    Payload = revault_data_wrapper:fetch_file(F),
     %% TODO: track incoming transfers to know when we're done syncing
-    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
-    {next_state, {client_sync, [F|Acc]}, Data#data{callback=Cb2}};
+    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {next_state, {client_sync, [F|Acc]}, Data#data{callback=Cb1}};
 handle_event(internal, sync_complete, {client_sync, []},
              Data=#data{name=Name, remote=R, callback=Cb0}) ->
     %% force scan to ensure conflict files (if any) are tracked before
@@ -165,76 +162,72 @@ handle_event(internal, sync_complete, {client_sync, []},
     %% filesystem watchers are used, but I'm starting to like the idea of
     %% on-demand scan/sync only.
     ok = revault_dirmon_event:force_scan(Name, infinity),
-    {Payload, Cb1} = apply_cb(Cb0, sync_complete, []),
-    {_Ref, Cb2} = apply_cb(Cb1, send, [R, Payload]),
-    {next_state, client_sync_complete_ack, Data#data{callback=Cb2}};
+    Payload = revault_data_wrapper:sync_complete(),
+    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {next_state, client_sync_complete_ack, Data#data{callback=Cb1}};
 handle_event(internal, sync_complete, {client_sync, _Acc}, #data{}) ->
     {keep_state_and_data, [postpone]};
 %% TODO: find how to constrain the 'From' here (or make it the same as the remote)
 %% in order to avoid confusing the FSM with cross-talk
 handle_event(info, {revault, _From, Payload}, {client_sync, Acc},
-             Data=#data{name=Name, id=Id, callback=Cb0}) ->
-    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
-    case Demand of
+             Data=#data{name=Name, id=Id}) ->
+    case Payload of
         {file, F, Meta, Bin} ->
             handle_file_sync(Name, Id, F, Meta, Bin),
-            {next_state, {client_sync, Acc -- [F]}, Data#data{callback=Cb1}}
+            {next_state, {client_sync, Acc -- [F]}, Data}
     end;
 handle_event(info, {revault, _From, Payload}, client_sync_complete_ack,
-             Data=#data{caller=From, callback=Cb0}) ->
-    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
-    case Demand of
+             Data=#data{caller=From}) ->
+    case Payload of
         sync_complete ->
-            {next_state, client, Data#data{callback=Cb1}, [{reply, From, ok}]}
+            {next_state, client, Data, [{reply, From, ok}]}
     end;
 
 %% Server Mode
 handle_event({call, From}, id, server,
              Data=#data{id=undefined, name=Name, path=Path, interval=Interval,
-                        callback=Cb, db_dir=DbDir}) ->
-    {Id, NewCb} = apply_cb(Cb, new, []),
+                        db_dir=DbDir}) ->
+    Id = revault_data_wrapper:new(),
     ok = store_id(DbDir, Name, Id),
     %% tracker couldn't have been booted yet
     {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
-    {next_state, server, Data#data{id=Id, callback=NewCb},
+    {next_state, server, Data#data{id=Id},
      [{reply, From, {ok, Id}}]};
 handle_event({call, From}, id, server, #data{id=Id}) ->
     {keep_state_and_data, [{reply, From, {ok, Id}}]};
 handle_event(info, {revault, From, Payload}, server,
              Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir}) when Id =/= undefined ->
-    {Demand, Cb1} = apply_cb(Cb, unpack, [Payload]),
-    case Demand of
+    case Payload of
         ask ->
-            {{NewId, NewPayload}, Cb2} = apply_cb(Cb1, fork, [Payload, Id]),
+            {NewId, NewPayload} = revault_data_wrapper:fork(Id),
             %% Save NewId to disk before replying to avoid issues
             ok = store_id(Dir, Name, NewId),
             %% Inject the new ID into all the local handlers before replying
             %% to avoid concurrency issues
             ok = revault_dirmon_tracker:update_id(Name, NewId),
-            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-            {next_state, server, Data#data{id=NewId, callback=Cb3}};
+            {_, Cb2} = apply_cb(Cb, reply, [From, NewPayload]),
+            {next_state, server, Data#data{id=NewId, callback=Cb2}};
         manifest ->
             Manifest = revault_dirmon_tracker:files(Name),
-            {NewPayload, Cb2} = apply_cb(Cb1, manifest, [Manifest]),
-            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-            {next_state, server_sync, Data#data{callback=Cb3}}
+            NewPayload = revault_data_wrapper:manifest(Manifest),
+            {_, Cb2} = apply_cb(Cb, reply, [From, NewPayload]),
+            {next_state, server_sync, Data#data{callback=Cb2}}
     end;
 handle_event(info, {revault, From, Payload}, server_sync,
              Data=#data{name=Name, id=Id, callback=Cb0}) ->
-    {Demand, Cb1} = apply_cb(Cb0, unpack, [Payload]),
-    case Demand of
+    case Payload of
         {file, F, Meta, Bin} ->
             handle_file_sync(Name, Id, F, Meta, Bin),
-            {next_state, server_sync, Data#data{callback=Cb1}};
+            {next_state, server_sync, Data};
         {conflict_file, WorkF, F, Meta, Bin} ->
             TmpF = filename:join("/tmp", F),
             filelib:ensure_dir(TmpF),
             ok = file:write_file(TmpF, Bin),
             revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
             file:delete(TmpF),
-            {next_state, server_sync, Data#data{callback=Cb1}};
+            {next_state, server_sync, Data};
         {fetch, F} ->
-            NewData = handle_file_demand(F, From, Data#data{callback=Cb1}),
+            NewData = handle_file_demand(F, From, Data),
             {next_state, server_sync, NewData};
         sync_complete ->
             %% force scan to ensure conflict files (if any) are tracked before
@@ -242,9 +235,9 @@ handle_event(info, {revault, From, Payload}, server_sync,
             %% filesystem watchers are used, but I'm starting to like the idea of
             %% on-demand scan/sync only.
             ok = revault_dirmon_event:force_scan(Name, infinity),
-            {NewPayload, Cb2} = apply_cb(Cb1, sync_complete, []),
-            {_, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-            {next_state, server, Data#data{callback=Cb3}}
+            NewPayload = revault_data_wrapper:sync_complete(),
+            {_, Cb1} = apply_cb(Cb0, reply, [From, NewPayload]),
+            {next_state, server, Data#data{callback=Cb1}}
     end;
 
 
@@ -252,10 +245,10 @@ handle_event(info, {revault, From, Payload}, server_sync,
 handle_event({call, From}, {role, _}, State, Data) when State =/= idle ->
     {next_state, State, Data, [{reply, From, {error, busy}}]};
 handle_event(info, {revault, From, _Payload}, State, Data=#data{callback=Cb}) ->
-    {NewPayload, Cb1} = apply_cb(Cb, error, [{bad_state, State, {revault, From, _Payload}}]),
+    NewPayload = revault_data_wrapper:error({bad_state, State, {revault, From, _Payload}}),
     %% Save NewId to disk before replying to avoid issues
-    {_, Cb2} = apply_cb(Cb1, reply, [From, NewPayload]),
-    {next_state, State, Data#data{callback=Cb2}}.
+    {_, Cb1} = apply_cb(Cb, reply, [From, NewPayload]),
+    {next_state, State, Data#data{callback=Cb1}}.
 
 terminate(_State, _Data, _Reason) ->
     % end session
@@ -362,10 +355,10 @@ handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
                 fun(Hash, CbAcc1) ->
                     FHash = make_conflict_path(F, Hash),
                     {ok, Bin} = file:read_file(filename:join(Path, FHash)),
-                    {NewPayload, CbAcc2} = apply_cb(CbAcc1, send_conflict_file, [F, FHash, Vsn, Hash, Bin]),
+                    NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Vsn, Hash, Bin),
                     %% TODO: track failing or succeeding transfers?
-                    {_Ref, CbAcc3} = apply_cb(CbAcc2, reply, [From, NewPayload]),
-                    CbAcc3
+                    {_Ref, CbAcc2} = apply_cb(CbAcc1, reply, [From, NewPayload]),
+                    CbAcc2
                 end,
                 Cb1,
                 Hashes
@@ -375,10 +368,10 @@ handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
             %% just inefficiently read the whole freaking thing at once
             %% TODO: optimize to better read and send file parts
             {ok, Bin} = file:read_file(filename:join(Path, F)),
-            {NewPayload, Cb2} = apply_cb(Cb1, send_file, [F, Vsn, Hash, Bin]),
+            NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
             %% TODO: track failing or succeeding transfers?
-            {_Ref, Cb3} = apply_cb(Cb2, reply, [From, NewPayload]),
-            Data#data{callback=Cb3}
+            {_Ref, Cb2} = apply_cb(Cb1, reply, [From, NewPayload]),
+            Data#data{callback=Cb2}
     end.
 
 make_conflict_path(F, Hash) ->

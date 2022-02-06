@@ -1,18 +1,24 @@
 -module(maestro_cfg).
 -export([parse/1, parse_file/0, parse_file/1, config_path/0]).
 
+-type t() :: #{binary() := binary() | #{binary() := map()}}.
+-export_type([t/0]).
+
 -define(DEFAULT_INTERVAL_SECONDS, 60).
 
+-spec parse(unicode:chardata()) -> {ok, t()} | {error, term()}.
 parse(Chardata) ->
     case tomerl:parse(Chardata) of
         {ok, Cfg} -> normalize(Cfg);
         {error, Reason} -> {error, Reason}
     end.
 
+-spec parse_file() -> {ok, t()} | {error, term()}.
 parse_file() ->
     %% ensure the call is mockable for tests by making it fully qualified.
     parse_file(?MODULE:config_path()).
 
+-spec parse_file(file:filename()) -> {ok, t()} | {error, term()}.
 parse_file(FileName) ->
     case tomerl:read_file(FileName) of
         {ok, Cfg} -> normalize(Cfg);
@@ -122,6 +128,7 @@ status(<<"enabled">>) -> enabled.
 mode(<<"read/write">>) -> read_write;
 mode(<<"read">>) -> read.
 
+-spec config_path() -> file:filename().
 config_path() ->
     filename:join(config_dir(), "config.toml").
 

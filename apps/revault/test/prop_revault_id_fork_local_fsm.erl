@@ -77,7 +77,7 @@ postcondition(_From, _To, _Data, {call, _Mod, _Fun, _Args}, _Res) ->
 
 %% Assuming the postcondition for a call was true, update the model
 %% accordingly for the test to proceed. 
-next_state_data(waiting, done, D=#data{client=C, server=S}, _Res, {call, _, id_reply, [_, _, Id]}) ->
+next_state_data(waiting, done, D=#data{client=C, server=S}, _Res, {call, _, id_reply, [_, _, _Id]}) ->
     #{id := RootId} = S,
     {Keep, Send} = revault_id:fork(RootId),
     D#data{client = C#{id => Send}, server = S#{id => Keep}};

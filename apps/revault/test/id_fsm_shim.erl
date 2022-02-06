@@ -18,14 +18,14 @@ stop(_) ->
     gen_server:stop(server),
     ok.
 
-id_ask(From, To) ->
-    Msg = revault_id_sync:ask(),
+id_ask(From, _To) ->
+    Msg = revault_data_wrapper:ask(),
     gen_server:call(From, {set, id_ask, Msg}),
     ok.
 
 id_reply(From, To, Id) ->
     Msg = gen_server:call(To, {get, id_ask}),
-    {Keep, Resp} = revault_id_sync:reply(Msg, gen_server:call(From, {get, id})),
+    {Keep, Resp} = revault_disterl:reply(Msg, gen_server:call(From, {get, id})),
     gen_server:call(From, {set, id, Keep}),
     {reply, Id} = Resp,
     gen_server:call(To, {set, id, Id}),
