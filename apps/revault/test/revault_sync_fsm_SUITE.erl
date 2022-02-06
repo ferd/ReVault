@@ -3,9 +3,10 @@
 -include_lib("common_test/include/ct.hrl").
 -compile(export_all).
 
+
 all() ->
     [start_hierarchy, client_id, client_no_server, client_uninit_server,
-     fork_server_save, basic_sync].
+     fork_server_save, basic_sync, too_many_clients].
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
                                      Case =:= client_no_server ->
@@ -284,4 +285,81 @@ basic_sync(Config) ->
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
     ok.
 
+too_many_clients() ->
+    [{doc, "Make sure that a given server does not get confused by connecting "
+           "with too many clients at once."},
+     {timetrap, timer:seconds(30)}].
+too_many_clients(Config) ->
+    Client = ?config(name, Config),
+    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    ClientPath = ?config(path, Config),
+    {ok, _ServId1} = revault_sync_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config)
+    ),
+    ok = revault_sync_fsm:client(Client),
+    {ok, _ClientId} = revault_sync_fsm:id(Client, Remote),
+    %% Now we can start another client, and it should fail trying to sync.
+    Client2 = Client ++ "_2",
+    Priv = ?config(priv_dir, Config),
+    DbDir = filename:join([Priv, "db_2"]),
+    Path = filename:join([Priv, "data", "client_2"]),
+    filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
+    filelib:ensure_dir(filename:join([Path, "fakefile"])),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path, ?config(interval, Config)),
+    ok = revault_sync_fsm:client(Client2),
+    %% Since each sync calls for its own Remote, we can assume we can safely
+    %% ask for an ID even if another remote is in place.
+    ?assertMatch({ok, _}, revault_sync_fsm:id(Client2, Remote)),
+    %% We can get wedged halfway through another client's sync
+    %% After the sync, we can finally work again.
+    %% However, getting a client stuck demands going fast enough that the test
+    %% would be brittle. We can cheat by making file access via data wrappers
+    %% incredibly slow!
+    try
+        block(),
+        meck:new(revault_data_wrapper, [passthrough]),
+        meck:expect(revault_data_wrapper, send_file,
+                    fun(A,B,C,D) -> block_loop(), meck:passthrough([A,B,C,D]) end),
+        %% Write files, client-only so only the client blocks
+        ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
+        %% Track em
+        ok = revault_dirmon_event:force_scan(Client, 5000),
+        ok = revault_dirmon_event:force_scan(Server, 5000),
+        %% Sync em
+        P = self(),
+        spawn_link(fun() -> P ! ok, revault_sync_fsm:sync(Client, Remote), P ! ok end),
+        receive
+            ok -> timer:sleep(50) % give time to the async call above to start
+        end,
+        ?assertEqual({error, peer_busy}, revault_sync_fsm:sync(Client2, Remote)),
+        unblock(),
+        %% wait for things to be done before unloading meck, or this causes crashes
+        receive ok -> ok end
+    after
+        meck:unload(revault_data_wrapper)
+    end,
+    ?assertEqual(ok, revault_sync_fsm:sync(Client2, Remote)),
+    ok.
+
+%% TODO: dealing with interrupted connections?
 %% TODO: test overwrite sync
+
+
+%%%%%%%%%%%%%%
+%%% HELPER %%%
+%%%%%%%%%%%%%%
+block() ->
+    application:set_env(revault, ?MODULE, block).
+
+unblock() ->
+    application:set_env(revault, ?MODULE, unblock).
+
+block_loop() ->
+    case application:get_env(revault, ?MODULE, unblock) of
+        block -> timer:sleep(10), block_loop();
+        _ -> ok
+    end.

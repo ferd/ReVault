@@ -9,10 +9,13 @@
 %%% This implies that the ID will be stored somewhere stateful, but the
 %%% protocol here does not need to know where or how.
 -module(revault_data_wrapper).
--export([new/0, ask/0, error/1, fork/1]).
+-export([peer/1, new/0, ask/0, ok/0, error/1, fork/1]).
 -export([manifest/0, manifest/1, send_file/4, send_conflict_file/5, fetch_file/1,
          sync_complete/0]).
 -define(VSN, 1).
+
+peer(Remote) ->
+    {peer, ?VSN, Remote}.
 
 new() ->
     revault_id:new().
@@ -38,6 +41,7 @@ fetch_file(Path) ->
 sync_complete() ->
     {sync_complete, ?VSN}.
 
+ok() -> {ok, ?VSN}.
 error(R) -> {error, ?VSN, R}.
 
 fork(Id) ->

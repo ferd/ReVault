@@ -25,7 +25,7 @@ id_ask(From, _To) ->
 
 id_reply(From, To, Id) ->
     Msg = gen_server:call(To, {get, id_ask}),
-    {Keep, Resp} = revault_disterl:reply(Msg, gen_server:call(From, {get, id})),
+    {Keep, Resp} = revault_disterl:reply(From, Msg, gen_server:call(From, {get, id})),
     gen_server:call(From, {set, id, Keep}),
     {reply, Id} = Resp,
     gen_server:call(To, {set, id, Id}),

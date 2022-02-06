@@ -13,10 +13,30 @@
 %%% concrete data that can then be handed off to some format-specific
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
--export([send/2, reply/2, unpack/1]).
+-export([peer/2, unpeer/2, send/2, reply/3, unpack/1]).
 -define(VSN, 1).
 
-send({Name, Node}, Payload) ->
+peer(FromName, {ToName, ToNode}) ->
+    %% TODO: change this to a Maybe construct in OTP-25
+    FromNode = node(),
+    Payload = revault_data_wrapper:peer({FromName, FromNode}),
+    case FromNode == ToNode orelse lists:member(ToNode, nodes()) of
+        true ->
+            send({ToName, ToNode}, Payload);
+        false ->
+            case net_adm:ping(ToNode) of
+                pong ->
+                    send({ToName, ToNode}, Payload);
+                pang ->
+                    {error, disterl_connection}
+            end
+    end.
+
+unpeer(_FromName, _ToName) ->
+    %% No need to actually unset any sort of connections over distributed erlang.
+    ok.
+
+send(Remote, Payload) ->
     %% TODO: This code here assumes all peers are on the same version
     %%       since distributed erlang is mostly used as a test layer.
     %%       This assumption lets us unpack the payload here.
@@ -25,23 +45,21 @@ send({Name, Node}, Payload) ->
     %%       the unpacking translation, which we ignore for conciseness
     %%       right now.
     Ref = make_ref(),
-    From = self(),
-    try
-        erpc:call(Node, gproc, send,
-                  [{n, l, {revault_sync_fsm, Name}},
-                   {revault, {?MODULE, From, Ref}, unpack(Payload)}]),
-        {ok, Ref}
-    catch
-        E:R -> {error, {E,R}}
+    case call(Remote, {revault, Ref, unpack(Payload)}) of
+        ok -> {ok, Ref};
+        {error,_} = E -> E
     end.
 
-reply({?MODULE, From, Ref}, Payload) ->
+reply(From, Ref, Payload) ->
     %% TODO: see note in send/2
-    From ! {revault, {?MODULE, self(), Ref}, unpack(Payload)},
-    ok.
+    Msg = {revault, Ref, unpack(Payload)},
+    call(From, Msg).
+
 
 %% For this module, we just use raw erlang terms.
+unpack({peer, ?VSN, Remote}) -> {peer, Remote};
 unpack({ask, ?VSN}) -> ask;
+unpack({ok, ?VSN}) -> ok;
 unpack({error, ?VSN, R}) -> {error, R};
 unpack({manifest, ?VSN}) -> manifest;
 unpack({manifest, ?VSN, Data}) -> {manifest, Data};
@@ -52,3 +70,15 @@ unpack({conflict_file, ?VSN, WorkPath, Path, Meta, Bin}) ->
     {conflict_file, WorkPath, Path, Meta, Bin};
 unpack(Term) ->
     Term.
+
+
+%%%%%%%%%%%%%%%
+%%% PRIVATE %%%
+%%%%%%%%%%%%%%%
+call({Name, Node}, Msg) ->
+    try
+        erpc:call(Node, gproc, send, [{n, l, {revault_sync_fsm, Name}}, Msg]),
+        ok
+    catch
+        E:R -> {error, {E,R}}
+    end.

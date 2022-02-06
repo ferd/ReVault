@@ -90,7 +90,19 @@ handle_event({call, From}, id, client, Data=#data{id=undefined}) ->
     {next_state, client, Data, [{reply, From, undefined}]};
 handle_event({call, From}, id, client, Data=#data{id=Id}) ->
     {next_state, client, Data, [{reply, From, {ok, Id}}]};
-handle_event({call, _From}, {id, Remote}, client, Data = #data{id = undefined}) ->
+handle_event({call, From}, {id, Remote}, client,
+             Data = #data{name=Name, id = undefined, callback=Cb, remote=undefined}) ->
+    %% TODO: handle connection errors
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+    case Res of
+        {ok, Marker} ->
+            {next_state, {client, {peer,Remote,Marker}},
+             Data#data{callback=NewCb}, [postpone]};
+        {error, _Reason} ->
+            % TODO: log something here
+            {next_state, client, Data, [{reply, From, {error, sync_failed}}]}
+    end;
+handle_event({call, _From}, {id, Remote}, client, Data = #data{id = undefined, remote=Remote}) ->
     {next_state, {client, sync_id}, Data#data{remote=Remote},
       % get an ID from a server
      [{next_event, internal, sync_id},
@@ -98,6 +110,29 @@ handle_event({call, _From}, {id, Remote}, client, Data = #data{id = undefined}) 
       postpone]};
 handle_event({call, From}, {id, _Remote}, client, Data = #data{id = Id}) ->
     {next_state, client, Data, [{reply, From, {ok, Id}}]};
+%% Establishing a connection
+handle_event(info, {revault, Marker, ok}, {client, {peer,Remote,Marker}}, Data) ->
+    %% Successful connection
+    {next_state, client, Data#data{remote=Remote}};
+handle_event(info, {revault, Marker, {error,_}=Err}, {client, {peer,Remote,Marker}}, Data) ->
+    %% The connection establishment failed; we don't have the original 'From' for it,
+    %% so we do a messy trampoline to a peer_failed substate of client, and await the
+    %% original matching message to send the client reply
+    {next_state, {client, {peer_failed, Remote, Err}}, Data};
+handle_event(_, _, {client, {peer, _, _}}, Data) ->
+    %% cycle through messages that aren't the peer's response
+    {keep_state, Data, [postpone]};
+handle_event({call, From}, {id,Remote}, {client, {peer_failed, Remote, {error,_}=Err}}, Data) ->
+    %% Finally we do get the proper call! Tell them about the failure and go back to our
+    %% regular schedule.
+    {next_state, client, Data, [{reply, From, Err}]};
+handle_event({call, From}, {sync, Remote}, {client, {peer_failed, Remote, {error,_}=Err}}, Data) ->
+    %% Another call that's valid is the sync call, since it also tries establishing a
+    %% connection. Let the caller know it failed.
+    {next_state, client, Data, [{reply, From, Err}]};
+handle_event(_, _, {client, {peer_failed, _, {error,_}}}, Data) ->
+    %% Cycle through messages that aren't the failing one.
+    {keep_state, Data, [postpone]};
 %% Getting a new ID
 handle_event({call, _From}, {id, _Remote}, {client, sync_id}, Data) ->
     %% Not ready yet, defer until we got a response
@@ -106,32 +141,46 @@ handle_event(internal, sync_id, {client, sync_id},
              Data = #data{id=undefined, remote=Remote, callback=Cb}) ->
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
     case Res of
-        {ok, _Ref} ->
+        {ok, _Marker} ->
             {keep_state, Data#data{callback=NewCb}};
         {error, _R} -> %% TODO: report error
             {next_state, {client, sync_failed}, Data#data{callback=NewCb}}
     end;
 handle_event(info, {revault, _From, Payload}, {client, sync_id},
-             Data=#data{name=Name, path=Path, interval=Interval, db_dir=Dir}) ->
+             Data=#data{name=Name, path=Path, interval=Interval, db_dir=Dir,
+                        callback=Cb, remote=R}) ->
+    {_,Cb1} = apply_cb(Cb, unpeer, [Name, R]),
     case Payload of
         {error, _R} ->
-            {next_state, {client, sync_failed}, Data};
+            {next_state, {client, sync_failed},
+             Data#data{callback=Cb1, remote=undefined}};
         {reply, NewId} ->
             ok = store_id(Dir, Name, NewId),
             %% tracker couldn't have been booted yet
             {ok, _} = start_tracker(Name, NewId, Path, Interval, Dir),
-            {next_state, client, Data#data{id=NewId}}
+            {next_state, client,
+             Data#data{id=NewId, remote=undefined, callback=Cb1}}
     end;
 handle_event({call, From}, {id, _Remote}, {client, sync_failed}, Data) ->
     {next_state, client, Data, [{reply, From, {error, sync_failed}}]};
 handle_event({call, From}, {sync, Remote}, client,
-             Data = #data{id = Id, callback=Cb0}) when Id =/= undefined ->
-    %% Ask the server for its manifest
+             Data = #data{id = Id, callback=Cb, remote=undefined, name=Name}) when Id =/= undefined ->
+    %% TODO: handle connection errors
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+    case Res of
+        {ok, Marker} ->
+            {next_state, {client, {peer,Remote,Marker}},
+             Data#data{callback=NewCb}, [postpone]};
+        {error, _Reason} ->
+            % TODO: log something here
+            {next_state, client, Data, [{reply, From, {error, sync_failed}}]}
+    end;
+handle_event({call, From}, {sync, Remote}, client,
+             Data = #data{id = Id, callback=Cb0, remote=Remote}) when Id =/= undefined ->
     {{ok, Marker}, Cb1} = apply_cb(Cb0, send, [Remote, revault_data_wrapper:manifest()]),
     {next_state, {sync_manifest, Marker},
      Data#data{callback=Cb1, remote = Remote, caller=From}};
-%% TODO: improve that Ref format
-handle_event(info, {revault, _From={_,_,Ref}, Payload}, {sync_manifest, Ref},
+handle_event(info, {revault, Marker, Payload}, {sync_manifest, Marker},
              Data = #data{id=Id, name=Name}) ->
     {manifest, RManifest} = Payload,
     LManifest = revault_dirmon_tracker:files(Name),
@@ -147,13 +196,13 @@ handle_event(internal, {send, F}, {client_sync, Acc},
     {ok, Bin} = file:read_file(filename:join(Path,F)),
     Payload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
     %% TODO: track failing or succeeding transfers?
-    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {_Marker, Cb1} = apply_cb(Cb0, send, [R, Payload]),
     {next_state, {client_sync, Acc}, Data#data{callback=Cb1}};
 handle_event(internal, {fetch, F}, {client_sync, Acc},
              Data=#data{remote=R, callback=Cb0}) ->
     Payload = revault_data_wrapper:fetch_file(F),
     %% TODO: track incoming transfers to know when we're done syncing
-    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {_Marker, Cb1} = apply_cb(Cb0, send, [R, Payload]),
     {next_state, {client_sync, [F|Acc]}, Data#data{callback=Cb1}};
 handle_event(internal, sync_complete, {client_sync, []},
              Data=#data{name=Name, remote=R, callback=Cb0}) ->
@@ -163,7 +212,7 @@ handle_event(internal, sync_complete, {client_sync, []},
     %% on-demand scan/sync only.
     ok = revault_dirmon_event:force_scan(Name, infinity),
     Payload = revault_data_wrapper:sync_complete(),
-    {_Ref, Cb1} = apply_cb(Cb0, send, [R, Payload]),
+    {_Marker, Cb1} = apply_cb(Cb0, send, [R, Payload]),
     {next_state, client_sync_complete_ack, Data#data{callback=Cb1}};
 handle_event(internal, sync_complete, {client_sync, _Acc}, #data{}) ->
     {keep_state_and_data, [postpone]};
@@ -177,10 +226,13 @@ handle_event(info, {revault, _From, Payload}, {client_sync, Acc},
             {next_state, {client_sync, Acc -- [F]}, Data}
     end;
 handle_event(info, {revault, _From, Payload}, client_sync_complete_ack,
-             Data=#data{caller=From}) ->
+             Data=#data{name=Name, remote=R, callback=Cb, caller=From}) ->
     case Payload of
         sync_complete ->
-            {next_state, client, Data, [{reply, From, ok}]}
+            {_,NewCb} = apply_cb(Cb, unpeer, [Name, R]),
+            {next_state, client,
+             Data#data{callback=NewCb, remote=undefined, caller=undefined},
+             [{reply, From, ok}]}
     end;
 
 %% Server Mode
@@ -195,8 +247,17 @@ handle_event({call, From}, id, server,
      [{reply, From, {ok, Id}}]};
 handle_event({call, From}, id, server, #data{id=Id}) ->
     {keep_state_and_data, [{reply, From, {ok, Id}}]};
-handle_event(info, {revault, From, Payload}, server,
-             Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir}) when Id =/= undefined ->
+handle_event(info, {revault, Marker, Payload}, server,
+             Data=#data{remote=undefined, callback=Cb}) ->
+    %% TODO: deal with an already ongoing connection
+    case Payload of
+        {peer, Remote} ->
+            {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, revault_data_wrapper:ok()]),
+            {next_state, server, Data#data{remote=Remote, callback=NewCb}}
+    end;
+handle_event(info, {revault, Marker, Payload}, server,
+             Data=#data{id=Id, name=Name, callback=Cb, db_dir=Dir, remote=R})
+            when Id =/= undefined ->
     case Payload of
         ask ->
             {NewId, NewPayload} = revault_data_wrapper:fork(Id),
@@ -205,16 +266,24 @@ handle_event(info, {revault, From, Payload}, server,
             %% Inject the new ID into all the local handlers before replying
             %% to avoid concurrency issues
             ok = revault_dirmon_tracker:update_id(Name, NewId),
-            {_, Cb2} = apply_cb(Cb, reply, [From, NewPayload]),
-            {next_state, server, Data#data{id=NewId, callback=Cb2}};
+            {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
+            {_, Cb2} = apply_cb(Cb1, unpeer, [Name, R]),
+            {next_state, server, Data#data{id=NewId, callback=Cb2, remote=undefined}};
         manifest ->
             Manifest = revault_dirmon_tracker:files(Name),
             NewPayload = revault_data_wrapper:manifest(Manifest),
-            {_, Cb2} = apply_cb(Cb, reply, [From, NewPayload]),
-            {next_state, server_sync, Data#data{callback=Cb2}}
+            {_, Cb2} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
+            {next_state, server_sync, Data#data{callback=Cb2}};
+        {peer, Peer} -> % R can't be undefined
+            %% TODO: consider just postponing this message to respond
+            %% later.
+            NewPayload = revault_data_wrapper:error(peer_busy),
+            {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, NewPayload]),
+            {keep_state, Data#data{callback=Cb2}}
+
     end;
-handle_event(info, {revault, From, Payload}, server_sync,
-             Data=#data{name=Name, id=Id, callback=Cb0}) ->
+handle_event(info, {revault, Marker, Payload}, server_sync,
+             Data=#data{name=Name, id=Id, callback=Cb0, remote=R}) ->
     case Payload of
         {file, F, Meta, Bin} ->
             handle_file_sync(Name, Id, F, Meta, Bin),
@@ -227,7 +296,7 @@ handle_event(info, {revault, From, Payload}, server_sync,
             file:delete(TmpF),
             {next_state, server_sync, Data};
         {fetch, F} ->
-            NewData = handle_file_demand(F, From, Data),
+            NewData = handle_file_demand(F, Marker, Data),
             {next_state, server_sync, NewData};
         sync_complete ->
             %% force scan to ensure conflict files (if any) are tracked before
@@ -236,18 +305,23 @@ handle_event(info, {revault, From, Payload}, server_sync,
             %% on-demand scan/sync only.
             ok = revault_dirmon_event:force_scan(Name, infinity),
             NewPayload = revault_data_wrapper:sync_complete(),
-            {_, Cb1} = apply_cb(Cb0, reply, [From, NewPayload]),
-            {next_state, server, Data#data{callback=Cb1}}
+            {_, Cb1} = apply_cb(Cb0, reply, [R, Marker, NewPayload]),
+            {_,Cb2} = apply_cb(Cb1, unpeer, [Name, R]),
+            {next_state, server, Data#data{callback=Cb2, remote=undefined}};
+        {peer, Peer} -> % R can't be undefined
+            NewPayload = revault_data_wrapper:error(peer_busy),
+            {_, Cb1} = apply_cb(Cb0, reply, [Peer, Marker, NewPayload]),
+            {keep_state, Data#data{callback=Cb1}}
     end;
 
 
 %% All-state
 handle_event({call, From}, {role, _}, State, Data) when State =/= idle ->
     {next_state, State, Data, [{reply, From, {error, busy}}]};
-handle_event(info, {revault, From, _Payload}, State, Data=#data{callback=Cb}) ->
-    NewPayload = revault_data_wrapper:error({bad_state, State, {revault, From, _Payload}}),
+handle_event(info, {revault, Marker, _Payload}, State, Data=#data{callback=Cb, remote=R}) ->
+    NewPayload = revault_data_wrapper:error({bad_state, State, {revault, Marker, _Payload}}),
     %% Save NewId to disk before replying to avoid issues
-    {_, Cb1} = apply_cb(Cb, reply, [From, NewPayload]),
+    {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
     {next_state, State, Data#data{callback=Cb1}}.
 
 terminate(_State, _Data, _Reason) ->
@@ -345,7 +419,7 @@ update_file(Name, F, Meta, Bin) ->
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
     file:delete(TmpF).
 
-handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
+handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1, remote=R}) ->
     case revault_dirmon_tracker:file(Name, F) of
         {Vsn, {conflict, Hashes, _}} ->
             %% Stream all the files, mark as conflicts?
@@ -357,7 +431,7 @@ handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
                     {ok, Bin} = file:read_file(filename:join(Path, FHash)),
                     NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Vsn, Hash, Bin),
                     %% TODO: track failing or succeeding transfers?
-                    {_Ref, CbAcc2} = apply_cb(CbAcc1, reply, [From, NewPayload]),
+                    {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
                     CbAcc2
                 end,
                 Cb1,
@@ -370,7 +444,7 @@ handle_file_demand(F, From, Data=#data{name=Name, path=Path, callback=Cb1}) ->
             {ok, Bin} = file:read_file(filename:join(Path, F)),
             NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
             %% TODO: track failing or succeeding transfers?
-            {_Ref, Cb2} = apply_cb(Cb1, reply, [From, NewPayload]),
+            {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
             Data#data{callback=Cb2}
     end.
 
