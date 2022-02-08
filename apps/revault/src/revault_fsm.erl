@@ -1,0 +1,363 @@
+%%% @doc
+%%% ```
+%%% Note: STATENAME with that underline means it's not implemented yet.
+%%%               ‾
+%%%
+%%%                 .-------------INIT----.
+%%%                 |                     |
+%%%                 v                     v
+%%%          UNINITIALIZED      .---->INITIALIZED-------->SERVER------.
+%%%          |           |      |      |  ^     ‾            | ‾      |
+%%%          v           v      |   .--'  |                  v        |
+%%%     CLIENT_INIT    SERVER_INIT  |     |           SERVER_ID_SYNC  |
+%%%          |    ^---.             |  DISCONNECT<-------'         ‾  |
+%%%          v        |             |   ^                    .--------'
+%%%     CONNECTING-->DISCONNECT     |   |                    |
+%%%          |    .---^             |   |                    v
+%%%          v    |                 |   |--------------SERVER_SYNC
+%%%    CLIENT_ID_SYNC  .------------'   |                    |   ‾
+%%%      |             |                |                    v
+%%%      |             v                |           SERVER_SYNC_FILES
+%%%      |           CLIENT-------------+--------------------'      ‾
+%%%      |             | ^‾             |
+%%%      |             v |              |
+%%%      |         CONNECTING-----------|
+%%%      |             |                |
+%%%      |             v                |
+%%%      |   CLIENT_SYNC_MANIFEST-------|
+%%%      |             |        ‾       |
+%%%      |             v                |
+%%%      |     CLIENT_SYNC_FILES--------|
+%%%      |             |       ‾        |
+%%%      |             v                |
+%%%      |   CLIENT_SYNC_COMPLETE-------|
+%%%      |                      ‾       |
+%%%      '------------------------------'
+%%% ```
+-module(revault_fsm).
+-behaviour(gen_statem).
+-export([start_link/4, start_link/5,
+         server/1, client/1, id/1, id/2, sync/2]).
+-export([%% Lifecycle
+         callback_mode/0,
+         init/1, %handle_event/4, terminate/3,
+         %% Id initialization callbacks
+         uninitialized/3, server_init/3,
+         client_init/3, client_id_sync/3,
+         %% File synchronization callbacks
+         %% Connection handling
+         connecting/3, disconnect/3
+        ]).
+-define(registry(M, N), {via, gproc, {n, l, {M, N}}}).
+-define(registry(N), ?registry(?MODULE, N)).
+
+-type name() :: string().
+
+%% Substate data records, used to carry state-specific
+%% information withing top-level data records
+-record(connecting, {
+          %% The state to transition to if the connection succeeds
+          next_state :: term(),
+          %% Upon success, there is an internal event
+          %% being sent that contains {connect, Remote, Payload}
+          next_payload = ok :: term(),
+          %% The state to transition to if the connection succeeds
+          fail_state :: term(),
+          %% Upon failure, there is an internal event
+          %% being sent that contains {connect, Remote, Payload, timeout | {error, Reason}}
+          fail_payload = error :: term(),
+          timeout = infinity,
+          remote :: term(),
+          marker = undefined :: term()
+        }).
+
+-record(disconnect, {
+          %% The state to transition to if the connection succeeds
+          next_state :: term(),
+          next_actions = [] :: list()
+        }).
+
+-record(id_sync, {from, marker, remote}).
+
+%% Top-level data records
+-record(uninit, {
+          db_dir,
+          name,
+          path,
+          interval,
+          callback,
+          %% holding data used for the current substate
+          sub :: undefined | #connecting{} | #disconnect{} | #id_sync{}
+        }).
+
+-record(data, {
+          db_dir,
+          id,
+          uuid,
+          name,
+          path,
+          interval,
+          callback,
+          %% holding data used for the current substate
+          sub :: undefined | #connecting{} | #disconnect{}
+        }).
+
+
+%  [dirs.images]
+%  interval = 60
+%  path = "/Users/ferd/images/"
+%  ignore = [] # regexes on full path
+start_link(DbDir, Name, Path, Interval) ->
+    start_link(DbDir, Name, Path, Interval, revault_disterl).
+
+start_link(DbDir, Name, Path, Interval, Callback) ->
+    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, [{debug, [trace]}]).
+
+-spec server(name()) -> ok | {error, busy}.
+server(Name) ->
+    gen_statem:call(?registry(Name), {role, server}).
+
+-spec client(name()) -> ok | {error, busy}.
+client(Name) ->
+    gen_statem:call(?registry(Name), {role, client}).
+
+-spec id(name()) -> {ok, itc:id()} | undefined | {error, _}.
+id(Name) ->
+    gen_statem:call(?registry(Name), id).
+
+-spec id(name(), term()) -> {ok, itc:id()} | undefined | {error, _}.
+id(Name, Remote) ->
+    gen_statem:call(?registry(Name), {id, Remote}).
+
+-spec sync(name(), term()) -> ok | {error, _}.
+sync(Name, Remote) ->
+    gen_statem:call(?registry(Name), {sync, Remote}).
+
+%%%%%%%%%%%%%%%%%
+%%% CALLBACKS %%%
+%%%%%%%%%%%%%%%%%
+callback_mode() ->
+    [state_functions, state_enter].
+
+init({DbDir, Name, Path, Interval, Callback}) ->
+    process_flag(trap_exit, true),
+    Id = init_id(DbDir, Name),
+    UUID = init_uuid(DbDir, Name),
+    case Id of
+        undefined ->
+            {ok, uninitialized,
+             #uninit{db_dir=DbDir, name=Name, path=Path, interval=Interval,
+                     callback=Callback}};
+        _ ->
+            {ok, initialized,
+             #data{db_dir=DbDir, name=Name, path=Path, interval=Interval,
+                   id = Id, uuid = UUID,
+                   callback = Callback}}
+    end.
+
+
+uninitialized(enter, _, Data) ->
+    {keep_state, Data};
+uninitialized({call, From}, {role, server}, Data) ->
+    %% Something external telling us we're gonna be in server mode
+    {next_state, server_init, Data,
+     [{reply, From, ok},
+      {next_event, internal, init}]};
+uninitialized({call, From}, {role, client}, Data) ->
+    %% Something external telling us we're gonna be in client mode
+    {next_state, client_init, Data, [{reply, From, ok}]}.
+
+server_init(enter, uninitialized, Data) ->
+    {keep_state, Data};
+server_init(internal, init, #uninit{name=Name, db_dir=DbDir, path=Path,
+                                    interval=Interval, callback=Cb}) ->
+    Id = revault_data_wrapper:new(),
+    UUID = uuid:get_v4(),
+    ok = store_uuid(DbDir, Name, UUID),
+    ok = store_id(DbDir, Name, Id),
+    %% tracker couldn't have been booted yet
+    {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
+    {next_state, initialized,
+     #data{db_dir=DbDir, name=Name, path=Path, interval=Interval, callback=Cb,
+           id=Id, uuid=UUID}}.
+
+client_init(enter, uninitialized, Data=#uninit{}) ->
+    {keep_state, Data};
+client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
+    %% The connecting substate is using a sort of data-based callback mechanism
+    %% where we ask of it to run a connection, and then describe to it
+    %% how to transition in case of failure or success.
+    {next_state, connecting,
+     Data#uninit{sub=#connecting{
+        next_state=client_id_sync,
+        next_payload={call,From},
+        fail_state=client_init,
+        fail_payload={call,From}
+     }},
+     [{next_event, internal, {connect, Remote}}]};
+client_init(internal, {connect, _, {call, From}, Reason}, Data) ->
+    %% From the connecting state
+    {keep_state, Data, [{reply, From, Reason}]}.
+
+connecting(enter, _OldState, Data) ->
+    {keep_state, Data};
+connecting(internal, {connect, Remote}, Data=#data{name=Name, callback=Cb, sub=Conn}) ->
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+    case Res of
+        {ok, Marker} ->
+            %% Await confirmation from the peer
+            {next_state, connecting,
+             Data#data{callback=NewCb,
+                       sub=Conn#connecting{marker=Marker, remote=Remote}},
+             [{state_timeout, Conn#connecting.timeout, {connect, Remote}}]};
+        {error, Reason} ->
+            %% Bail out
+            #connecting{fail_state=State, fail_payload=Payload} = Conn,
+            {next_state, State,
+             Data#data{callback=NewCb, sub=undefined},
+             [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
+    end;
+connecting(info, {revault, Marker, ok},
+           Data=#data{sub=S=#connecting{marker=Marker}}) ->
+    %% Transition to a successful state
+    #connecting{next_state=State, next_payload=Payload, remote=Remote} = S,
+    {next_state, State,
+     Data#data{sub=undefined},
+     [{next_event, internal, {connect, Remote, Payload}}]};
+connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
+    %% We took too long, bail out, but first send an explicit unpeer call
+    %% in case we had a race condition. We may end up with a FSM that receives
+    %% a late {revault, Marker, ok} message out of this.
+    #connecting{fail_state=State, fail_payload=Payload} = S,
+    Disconnect = #disconnect{
+        next_state=State,
+        next_actions=[{next_event, internal, {connect, Remote, Payload, timeout}}]
+    },
+    {next_state, disconnect, Data#data{sub=Disconnect},
+     [{next_event, internal, {disconnect, Remote}}]};
+%% And now we unfortunately repeat the whole ordeal with the #uninit{} state record...
+connecting(internal, {connect, Remote}, Data=#uninit{name=Name, callback=Cb, sub=Conn}) ->
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+    case Res of
+        {ok, Marker} ->
+            %% Await confirmation from the peer
+            {next_state, connecting,
+             Data#uninit{callback=NewCb,
+                       sub=Conn#connecting{marker=Marker, remote=Remote}},
+             [{state_timeout, Conn#connecting.timeout, {connect, Remote}}]};
+        {error, Reason} ->
+            %% Bail out
+            #connecting{fail_state=State, fail_payload=Payload} = Conn,
+            {next_state, State,
+             Data#uninit{callback=NewCb, sub=undefined},
+             [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
+    end;
+connecting(info, {revault, Marker, ok},
+           Data=#uninit{sub=S=#connecting{marker=Marker}}) ->
+    %% Transition to a successful state
+    #connecting{next_state=State, next_payload=Payload, remote=Remote} = S,
+    {next_state, State,
+     Data#uninit{sub=undefined},
+     [{next_event, internal, {connect, Remote, Payload}}]};
+connecting(state_timeout, {connect, Remote}, Data=#uninit{sub=S}) ->
+    %% We took too long, bail out, but first disconnect
+    %% in case we had a race condition. We may end up with a FSM that receives
+    %% a late {revault, Marker, ok} message out of this.
+    #connecting{fail_state=State, fail_payload=Payload} = S,
+    Disconnect = #disconnect{
+        next_state=State,
+        next_actions=[{next_event, internal, {connect, Remote, Payload, timeout}}]
+    },
+    {next_state, disconnect, Data#uninit{sub=Disconnect},
+     [{next_event, internal, {disconnect, Remote}}]}.
+
+disconnect(enter, _, Data) ->
+    {keep_state, Data};
+disconnect(internal, {disconnect, Remote}, Data=#data{name=Name, callback=Cb, sub=S}) ->
+    {_, NewCb} = apply_cb(Cb, unpeer, [Name, Remote]),
+    #disconnect{next_state=State, next_actions=Actions} = S,
+    {next_state, State, Data#data{sub=undefined, callback=NewCb}, Actions};
+disconnect(internal, {disconnect, Remote}, Data=#uninit{name=Name, callback=Cb, sub=S}) ->
+    {_, NewCb} = apply_cb(Cb, unpeer, [Name, Remote]),
+    #disconnect{next_state=State, next_actions=Actions} = S,
+    {next_state, State, Data#uninit{sub=undefined, callback=NewCb}, Actions}.
+
+client_id_sync(enter, connecting, Data=#uninit{}) ->
+    {keep_state, Data};
+client_id_sync(internal, {connect, Remote, {call,From}}, Data=#uninit{callback=Cb}) ->
+    {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
+    case Res of
+        {ok, Marker} ->
+            {keep_state,
+             Data#uninit{callback=NewCb,
+                         sub=#id_sync{from=From, remote=Remote, marker=Marker}}};
+        {error, R} ->
+            Disconnect = #disconnect{next_state=client_init},
+            {next_state, disconnect, Data#uninit{sub=Disconnect},
+             [{reply, From, {error, R}},
+              {next_event, internal, {disconnect, Remote}}]}
+    end;
+client_id_sync(info, {revault, Marker, {error, R}},
+               Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
+    Disconnect = #disconnect{next_state=client_init},
+    {next_state, disconnect, Data#uninit{sub=Disconnect},
+     [{reply, From, {error, R}},
+      {next_event, internal, {disconnect, Remote}}]};
+client_id_sync(info, {revault, Marker, {reply, NewId}},
+               Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
+    #uninit{db_dir=Dir, name=Name, path=Path, interval=Interval,
+            callback=Cb} = Data,
+    %% TODO: weave in the UUID from the server
+    UUID = uuid:get_v4(),
+    ok = store_uuid(Dir, Name, UUID),
+    ok = store_id(Dir, Name, NewId),
+    %% tracker couldn't have been booted yet
+    {ok, _} = start_tracker(Name, NewId, Path, Interval, Dir),
+    %% Disconnect before moving on
+    Disconnect = #disconnect{next_state = initialized},
+    {next_state, disconnect,
+     #data{db_dir=Dir, id=NewId, uuid=UUID, name=Name, path=Path,
+           interval=Interval, callback=Cb, sub=Disconnect},
+     [{reply, From, {ok, NewId}},
+      {next_event, internal, {disconnect, Remote}}]}.
+
+%%%%%%%%%%%%%%%
+%%% PRIVATE %%%
+%%%%%%%%%%%%%%%
+apply_cb({Mod, State}, F, Args) when is_atom(Mod) ->
+    apply(Mod, F, Args ++ [State]);
+apply_cb(Mod, F, Args) when is_atom(Mod) ->
+    {apply(Mod, F, Args), Mod}.
+
+init_id(Dir, Name) ->
+    Path = filename:join([Dir, Name, "id"]),
+    case file:read_file(Path) of
+        {error, enoent} -> undefined;
+        {ok, Bin} -> binary_to_term(Bin)
+    end.
+
+init_uuid(Dir, Name) ->
+    Path = filename:join([Dir, Name, "uuid"]),
+    case file:read_file(Path) of
+        {error, enoent} -> undefined;
+        {ok, Bin} -> binary_to_term(Bin)
+    end.
+
+%% Callback-mode, Dir is the carried state.
+store_id(Dir, Name, Id) ->
+    Path = filename:join([Dir, Name, "id"]),
+    PathTmp = filename:join([Dir, Name, "id.tmp"]),
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(PathTmp, term_to_binary(Id)),
+    ok = file:rename(PathTmp, Path).
+
+store_uuid(Dir, Name, UUID) ->
+    Path = filename:join([Dir, Name, "uuid"]),
+    PathTmp = filename:join([Dir, Name, "uuid.tmp"]),
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(PathTmp, term_to_binary(UUID)),
+    ok = file:rename(PathTmp, Path).
+
+start_tracker(Name, Id, Path, Interval, DbDir) ->
+    revault_trackers_sup:start_tracker(Name, Id, Path, Interval, DbDir).
+

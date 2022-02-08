@@ -345,8 +345,13 @@ too_many_clients(Config) ->
     ?assertEqual(ok, revault_sync_fsm:sync(Client2, Remote)),
     ok.
 
+%% TODO: rewrite FSM
+%% TODO: add a UUID per server that creates its own ID
+%%       and make sure two distinct servers can't peer into each other
 %% TODO: dealing with interrupted connections?
 %% TODO: test overwrite sync
+%% TODO: using OTel to create FSM-level traces via debug hooks and keeping
+%%       them distinct from specific request-long traces
 
 
 %%%%%%%%%%%%%%

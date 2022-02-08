@@ -8,6 +8,10 @@
 %%%         '----------------------'
 %%%
 %%% should be given storage and access config...
+%%%
+%%% It may make sense to reduce the numbers of state by having per-state data records,
+%%% which could allow storing more transient information and lowering the amount of
+%%% intermediary states that just carry data around.
 -module(revault_sync_fsm).
 -behaviour(gen_statem).
 -export([start_link/4, start_link/5,
