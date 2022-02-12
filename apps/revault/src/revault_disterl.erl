@@ -77,7 +77,7 @@ unpack(Term) ->
 %%%%%%%%%%%%%%%
 call({Name, Node}, Msg) ->
     try
-        erpc:call(Node, gproc, send, [{n, l, {revault_sync_fsm, Name}}, Msg]),
+        erpc:call(Node, gproc, send, [{n, l, {revault_fsm, Name}}, Msg]),
         ok
     catch
         E:R -> {error, {E,R}}

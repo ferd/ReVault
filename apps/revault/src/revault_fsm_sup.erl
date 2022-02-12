@@ -35,8 +35,8 @@ start_fsm(DbDir, Name, Path, Interval) ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
     {ok, {{simple_one_for_one, 1, 1}, [
-        #{id => sync_fsm,
-          start => {revault_sync_fsm, start_link, []},
+        #{id => revault_fsm,
+          start => {revault_fsm, start_link, []},
           type => worker}
     ]}}.
 

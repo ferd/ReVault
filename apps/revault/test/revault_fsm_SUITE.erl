@@ -1,11 +1,11 @@
--module(revault_sync_fsm_SUITE).
+-module(revault_fsm_SUITE).
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("common_test/include/ct.hrl").
 -compile(export_all).
 
 
 all() ->
-    [start_hierarchy, client_id, client_no_server, client_uninit_server,
+    [start_hierarchy, client_id, client_no_server,
      fork_server_save, basic_sync, too_many_clients].
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
@@ -24,8 +24,6 @@ init_per_testcase(Case, Config) when Case =:= start_hierarchy;
      {name, Name},
      {interval, Interval},
      {apps, Apps} | Config];
-init_per_testcase(client_uninit_server, Config) ->
-    init_per_testcase(client_deferred_uninit_server, [{init_server, false} | Config]);
 init_per_testcase(Case, Config) ->
     {ok, Apps} = application:ensure_all_started(gproc),
     Priv = ?config(priv_dir, Config),
@@ -42,9 +40,7 @@ init_per_testcase(Case, Config) ->
     %% Starting the hierarchy
     {ok, Sup} = revault_sup:start_link(),
     {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Interval),
-    ok = revault_sync_fsm:server(ServerName),
-    %% set up ID if not done, and if allowed
-    ?config(init_server, Config) =/= false andalso revault_sync_fsm:id(ServerName),
+    ok = revault_fsm:server(ServerName), %% sets up the ID and parks itself in server state.
     [{db_dir, DbDir},
      {path, Path},
      {server_path, ServerPath},
@@ -78,14 +74,14 @@ start_hierarchy(Config) ->
         ?config(path, Config),
         ?config(interval, Config)
     ),
-    %% The FSM is alive and we know it, declare it a server so it runs solo
-    ok = revault_sync_fsm:server(Name),
-    %% Can't force to switch to client mode now!
-    ?assertEqual({error, busy}, revault_sync_fsm:client(Name)),
+    %% The FSM is alive and we know it, declare it a server so it self-initializes
+    ok = revault_fsm:server(Name),
     %% As a server it bootstrapped its own ID
-    ?assertNotEqual(undefined, revault_sync_fsm:id(Name)),
+    ?assertNotEqual(undefined, revault_fsm:id(Name)),
+    %% Can't force to switch to client mode now!
+    ?assertEqual({error, busy}, revault_fsm:client(Name)),
     %% The supervision structure should have been started as part of the setup
-    ?assert(is_pid(gproc:where({n, l, {revault_sync_fsm, Name}}))),
+    ?assert(is_pid(gproc:where({n, l, {revault_fsm, Name}}))),
     ?assert(is_pid(gproc:where({n, l, {revault_tracker_sup, Name}}))),
     ?assert(is_pid(gproc:where({n, l, {revault_dirmon_tracker, Name}}))),
     ?assert(is_pid(gproc:where({n, l, {revault_dirmon_event, Name}}))),
@@ -93,7 +89,7 @@ start_hierarchy(Config) ->
     unlink(Fsm),
     unlink(Sup),
     gen_server:stop(Sup),
-    ?assertEqual(undefined, gproc:where({n, l, {revault_sync_fsm, Name}})),
+    ?assertEqual(undefined, gproc:where({n, l, {revault_fsm, Name}})),
     ?assertEqual(undefined, gproc:where({n, l, {revault_tracker_sup, Name}})),
     ?assertEqual(undefined, gproc:where({n, l, {revault_dirmon_tracker, Name}})),
     ?assertEqual(undefined, gproc:where({n, l, {revault_dirmon_event, Name}})),
@@ -104,7 +100,7 @@ client_id() ->
 client_id(Config) ->
     Name = ?config(name, Config),
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
-    {ok, ServId1} = revault_sync_fsm:id(Server),
+    {ok, ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Name,
@@ -112,26 +108,26 @@ client_id(Config) ->
         ?config(interval, Config)
     ),
     %% How to specify what sort of client we are? to which server?
-    ok = revault_sync_fsm:client(Name),
-    ?assertEqual({error, busy}, revault_sync_fsm:client(Name)),
-    ?assertEqual({error, busy}, revault_sync_fsm:server(Name)),
-    ?assertEqual(undefined, revault_sync_fsm:id(Name)),
-    {ok, ClientId} = revault_sync_fsm:id(Name, Remote),
-    {ok, ServId2} = revault_sync_fsm:id(Server),
+    ok = revault_fsm:client(Name),
+    ?assertEqual({error, busy}, revault_fsm:client(Name)),
+    ?assertEqual({error, busy}, revault_fsm:server(Name)),
+    ?assertEqual(undefined, revault_fsm:id(Name)),
+    {ok, ClientId} = revault_fsm:id(Name, Remote),
+    {ok, ServId2} = revault_fsm:id(Server),
     ?assertNotEqual(undefined, ClientId),
     ?assertNotEqual(ServId1, ServId2),
     ?assertNotEqual(ServId2, ClientId),
     ?assertNotEqual(ServId1, ClientId),
     %% Now shut down the client and restart it and make sure it works
     gen_server:stop(revault_fsm_sup, normal, 5000),
-    {ok, Pid} = revault_sync_fsm:start_link(
+    {ok, Pid} = revault_fsm:start_link(
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
         ?config(interval, Config)
     ),
-    ok = revault_sync_fsm:client(Name),
-    ?assertEqual({ok, ClientId}, revault_sync_fsm:id(Name)),
+    ok = revault_fsm:client(Name),
+    ?assertEqual({ok, ClientId}, revault_fsm:id(Name)),
     unlink(Pid),
     gen_statem:stop(Pid, normal, 5000),
     ok.
@@ -149,31 +145,13 @@ client_no_server(Config) ->
         ?config(interval, Config)
     ),
     %% How to specify what sort of client we are? to which server?
-    ok = revault_sync_fsm:client(Name),
-    ?assertEqual({error, busy}, revault_sync_fsm:client(Name)),
-    ?assertEqual({error, busy}, revault_sync_fsm:server(Name)),
-    ?assertEqual(undefined, revault_sync_fsm:id(Name)),
-    ?assertEqual({error, sync_failed}, revault_sync_fsm:id(Name, Remote)),
+    ok = revault_fsm:client(Name),
+    ?assertEqual({error, busy}, revault_fsm:client(Name)),
+    ?assertEqual({error, busy}, revault_fsm:server(Name)),
+    ?assertEqual(undefined, revault_fsm:id(Name)),
+    ?assertEqual({error, sync_failed}, revault_fsm:id(Name, Remote)),
     unlink(Sup),
     gen_server:stop(Sup),
-    ok.
-
-client_uninit_server() ->
-    [{doc, "If the server is started but not initialized, we fail to set "
-           "a client id"}].
-client_uninit_server(Config) ->
-    Name = ?config(name, Config),
-    Remote = {?config(server, Config), node()}, % using distributed erlang
-    {ok, _} = revault_fsm_sup:start_fsm(
-        ?config(db_dir, Config),
-        Name,
-        ?config(path, Config),
-        ?config(interval, Config)
-    ),
-    %% How to specify what sort of client we are? to which server?
-    ok = revault_sync_fsm:client(Name),
-    ?assertEqual(undefined, revault_sync_fsm:id(Name)),
-    ?assertEqual({error, sync_failed}, revault_sync_fsm:id(Name, Remote)),
     ok.
 
 fork_server_save() ->
@@ -182,16 +160,16 @@ fork_server_save() ->
 fork_server_save(Config) ->
     Name = ?config(name, Config),
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
-    {ok, ServId1} = revault_sync_fsm:id(Server),
+    {ok, ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
         ?config(interval, Config)
     ),
-    ok = revault_sync_fsm:client(Name),
-    {ok, _ClientId} = revault_sync_fsm:id(Name, Remote),
-    {ok, ServId2} = revault_sync_fsm:id(Server),
+    ok = revault_fsm:client(Name),
+    {ok, _ClientId} = revault_fsm:id(Name, Remote),
+    {ok, ServId2} = revault_fsm:id(Server),
     ?assertNotEqual(ServId2, ServId1),
     %% Check ID on disk
     IDFile = filename:join([?config(db_dir, Config), Server, "id"]),
@@ -210,15 +188,16 @@ basic_sync(Config) ->
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
     ClientPath = ?config(path, Config),
     ServerPath = ?config(server_path, Config),
-    {ok, _ServId1} = revault_sync_fsm:id(Server),
+    {ok, _ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Client,
         ClientPath,
         ?config(interval, Config)
     ),
-    ok = revault_sync_fsm:client(Client),
-    {ok, _ClientId} = revault_sync_fsm:id(Client, Remote),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    %% now in initialized mode
     %% Write files
     ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
     ok = file:write_file(filename:join([ServerPath, "server-only"]), "s1"),
@@ -228,7 +207,7 @@ basic_sync(Config) ->
     ok = revault_dirmon_event:force_scan(Client, 5000),
     ok = revault_dirmon_event:force_scan(Server, 5000),
     %% Sync em
-    ok = revault_sync_fsm:sync(Client, Remote),
+    ok = revault_fsm:sync(Client, Remote),
     %% See the result
     %% 1. all unmodified files are left in place
     ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
@@ -267,7 +246,7 @@ basic_sync(Config) ->
     ok = revault_dirmon_event:force_scan(Client, 5000),
     %% TODO: should we go back to idle mode and re-force setting a client here?
     ct:pal("RE-SYNC"),
-    ok = revault_sync_fsm:sync(Client, Remote),
+    ok = revault_fsm:sync(Client, Remote),
     %% TODO: check with a 3rd party for extra transitive conflicts
     %% the following should be moved to a lower-level test:
     %% Check again
@@ -293,15 +272,15 @@ too_many_clients(Config) ->
     Client = ?config(name, Config),
     Remote = {Server=?config(server, Config), node()}, % using distributed erlang
     ClientPath = ?config(path, Config),
-    {ok, _ServId1} = revault_sync_fsm:id(Server),
+    {ok, _ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Client,
         ClientPath,
         ?config(interval, Config)
     ),
-    ok = revault_sync_fsm:client(Client),
-    {ok, _ClientId} = revault_sync_fsm:id(Client, Remote),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
     %% Now we can start another client, and it should fail trying to sync.
     Client2 = Client ++ "_2",
     Priv = ?config(priv_dir, Config),
@@ -310,10 +289,10 @@ too_many_clients(Config) ->
     filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
     filelib:ensure_dir(filename:join([Path, "fakefile"])),
     {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path, ?config(interval, Config)),
-    ok = revault_sync_fsm:client(Client2),
+    ok = revault_fsm:client(Client2),
     %% Since each sync calls for its own Remote, we can assume we can safely
     %% ask for an ID even if another remote is in place.
-    ?assertMatch({ok, _}, revault_sync_fsm:id(Client2, Remote)),
+    ?assertMatch({ok, _}, revault_fsm:id(Client2, Remote)),
     %% We can get wedged halfway through another client's sync
     %% After the sync, we can finally work again.
     %% However, getting a client stuck demands going fast enough that the test
@@ -331,21 +310,20 @@ too_many_clients(Config) ->
         ok = revault_dirmon_event:force_scan(Server, 5000),
         %% Sync em
         P = self(),
-        spawn_link(fun() -> P ! ok, revault_sync_fsm:sync(Client, Remote), P ! ok end),
+        spawn_link(fun() -> P ! ok, revault_fsm:sync(Client, Remote), P ! ok end),
         receive
             ok -> timer:sleep(50) % give time to the async call above to start
         end,
-        ?assertEqual({error, peer_busy}, revault_sync_fsm:sync(Client2, Remote)),
+        ?assertEqual({error, peer_busy}, revault_fsm:sync(Client2, Remote)),
         unblock(),
         %% wait for things to be done before unloading meck, or this causes crashes
         receive ok -> ok end
     after
         meck:unload(revault_data_wrapper)
     end,
-    ?assertEqual(ok, revault_sync_fsm:sync(Client2, Remote)),
+    ?assertEqual(ok, revault_fsm:sync(Client2, Remote)),
     ok.
 
-%% TODO: rewrite FSM
 %% TODO: add a UUID per server that creates its own ID
 %%       and make sure two distinct servers can't peer into each other
 %% TODO: dealing with interrupted connections?

@@ -1,25 +1,22 @@
 %%% @doc
 %%% ```
-%%% Note: STATENAME with that underline means it's not implemented yet.
-%%%               ‾
-%%%
 %%%                 .-------------INIT----.
 %%%                 |                     |
 %%%                 v                     v
 %%%          UNINITIALIZED      .---->INITIALIZED-------->SERVER------.
-%%%          |           |      |      |  ^                  | ‾      |
+%%%          |           |      |      |  ^                  |        |
 %%%          v           v      |   .--'  |                  v        |
 %%%     CLIENT_INIT    SERVER_INIT  |     |           SERVER_ID_SYNC  |
-%%%          |    ^---.             |  DISCONNECT<-------'         ‾  |
+%%%          |    ^---.             |  DISCONNECT<-------'            |
 %%%          v        |             |   ^                    .--------'
 %%%     CONNECTING-->DISCONNECT     |   |                    |
 %%%          |    .---^             |   |                    v
 %%%          v    |                 |   |--------------SERVER_SYNC
-%%%    CLIENT_ID_SYNC  .------------'   |                    |   ‾
+%%%    CLIENT_ID_SYNC  .------------'   |                    |
 %%%      |             |                |                    v
 %%%      |             v                |           SERVER_SYNC_FILES
-%%%      |           CLIENT-------------+--------------------'      ‾
-%%%      |             | ^‾             |
+%%%      |           CLIENT-------------+--------------------'
+%%%      |             | ^              |
 %%%      |             v |              |
 %%%      |         CONNECTING           |
 %%%      |             |                |
@@ -44,9 +41,14 @@
          %% Id initialization callbacks
          uninitialized/3, server_init/3,
          client_init/3, client_id_sync/3,
-         %% File synchronization callbacks
-         initialized/3, client/3, client_sync_manifest/3,
-         client_sync_files/3, client_sync_complete/3,
+         %% initialized callbacks
+         initialized/3, client/3, server/3,
+         %% client-side file synchronization callbacks
+         client_sync_manifest/3, client_sync_files/3, client_sync_complete/3,
+         %% server-side id initialization callbacks
+         server_id_sync/3,
+         %% server-side file synchronization callbacks
+         server_sync/3, server_sync_files/3,
          %% Connection handling
          connecting/3, disconnect/3
         ]).
@@ -83,6 +85,8 @@
 
 -record(client_sync, {from, marker, remote, acc=[]}).
 
+-record(server, {remote}).
+
 %% Top-level data records
 -record(uninit, {
           db_dir,
@@ -104,6 +108,7 @@
           callback,
           %% holding data used for the current substate
           sub :: undefined | #connecting{} | #disconnect{}
+               | #client_sync{} | #server{}
         }).
 
 
@@ -183,14 +188,18 @@ server_init(internal, init, #uninit{name=Name, db_dir=DbDir, path=Path,
     ok = store_id(DbDir, Name, Id),
     %% tracker couldn't have been booted yet
     {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
-    {next_state, initialized,
+    {next_state, server,
      #data{db_dir=DbDir, name=Name, path=Path, interval=Interval, callback=Cb,
            id=Id, uuid=UUID}};
 server_init(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-client_init(enter, uninitialized, Data=#uninit{}) ->
+client_init(enter, _, Data=#uninit{}) ->
     {keep_state, Data};
+client_init({call, From}, {role, _}, Data) ->
+    {keep_state, Data, [{reply, From, {error, busy}}]};
+client_init({call, From}, id, Data=#uninit{}) ->
+    {keep_state, Data, [{reply, From, undefined}]};
 client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
     %% The connecting substate is using a sort of data-based callback mechanism
     %% where we ask of it to run a connection, and then describe to it
@@ -203,9 +212,10 @@ client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
         fail_payload={call,From}
      }},
      [{next_event, internal, {connect, Remote}}]};
-client_init(internal, {connect, _, {call, From}, Reason}, Data) ->
+client_init(internal, {connect, _, {call, From}, _Reason}, Data) ->
     %% From the connecting state
-    {keep_state, Data, [{reply, From, Reason}]};
+    %% TODO: log the internal error
+    {keep_state, Data, [{reply, From, {error, sync_failed}}]};
 client_init(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
@@ -234,6 +244,15 @@ connecting(info, {revault, Marker, ok},
     {next_state, State,
      Data#data{sub=undefined},
      [{next_event, internal, {connect, Remote, Payload}}]};
+connecting(info, {revault, Marker, Err},
+           Data=#data{sub=S=#connecting{marker=Marker}}) ->
+    #connecting{fail_state=State, fail_payload=Payload, remote=Remote} = S,
+    Disconnect = #disconnect{
+        next_state=State,
+        next_actions=[{next_event, internal, {connect, Remote, Payload, Err}}]
+    },
+    {next_state, disconnect, Data#data{sub=Disconnect},
+     [{next_event, internal, {disconnect, Remote}}]};
 connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
     %% We took too long, bail out, but first send an explicit unpeer call
     %% in case we had a race condition. We may end up with a FSM that receives
@@ -305,17 +324,19 @@ client_id_sync(internal, {connect, Remote, {call,From}}, Data=#uninit{callback=C
             {keep_state,
              Data#uninit{callback=NewCb,
                          sub=#id_sync{from=From, remote=Remote, marker=Marker}}};
-        {error, R} ->
+        {error, _R} ->
+            %% TODO: log internal error
             Disconnect = #disconnect{next_state=client_init},
             {next_state, disconnect, Data#uninit{sub=Disconnect},
-             [{reply, From, {error, R}},
+             [{reply, From, {error, sync_failed}},
               {next_event, internal, {disconnect, Remote}}]}
     end;
-client_id_sync(info, {revault, Marker, {error, R}},
+client_id_sync(info, {revault, Marker, {error, _R}},
                Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
+    %% TODO: log internal error
     Disconnect = #disconnect{next_state=client_init},
     {next_state, disconnect, Data#uninit{sub=Disconnect},
-     [{reply, From, {error, R}},
+     [{reply, From, {error, sync_failed}},
       {next_event, internal, {disconnect, Remote}}]};
 client_id_sync(info, {revault, Marker, {reply, NewId}},
                Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
@@ -344,7 +365,18 @@ initialized({call, From}, id, Data=#data{id=Id}) ->
 initialized({call, From}, {role, client}, Data) ->
     {next_state, client, Data, [{reply, From, ok}]};
 initialized({call, From}, {role, server}, Data) ->
-    {next_state, server, Data, [{reply, From, ok}]}.
+    {next_state, server, Data, [{reply, From, ok}]};
+initialized({call, _From}, {id, _Remote}, Data) ->
+    %% consider this to be an implicit {role, client} call
+    {next_state, client, Data, [postpone]};
+initialized({call, _From}, {sync, _Remote}, Data) ->
+    %% consider this to be an implicit {role, client} call
+    {next_state, client, Data, [postpone]};
+initialized(info, {revault, _Marker, {peer, _Remote}}, Data) ->
+    %% consider this to be an implicit {role, server} shift;
+    %% TODO: add a "wait_role" sort of call if this ends up
+    %% preventing client calls from happening on a busy server?
+    {next_state, server, Data, [postpone]}.
 
 client(enter, _, Data) ->
     {keep_state, Data};
@@ -355,13 +387,13 @@ client({call, From}, {sync, Remote}, Data) ->
      Data#data{sub=#connecting{
         next_state=client_sync_manifest,
         next_payload={call,From},
-        fail_state=client, % should this go back to initialized?
+        fail_state=client,
         fail_payload={call,From}
      }},
      [{next_event, internal, {connect, Remote}}]};
 client(internal, {connect, _, {call, From}, Reason}, Data) ->
-    %% From the connecting state
-    {keep_state, Data, [{reply, From, Reason}]}.
+    %% From the connecting state, go back to initialized
+    {next_state, initialized, Data, [{reply, From, Reason}]}.
 
 client_sync_manifest(enter, _, Data) ->
     {keep_state, Data};
@@ -448,6 +480,89 @@ client_sync_complete(info, {revault, _Marker, sync_complete},
       {next_event, internal, {disconnect, Remote}}]};
 client_sync_complete(_, _, Data) ->
     {keep_state, Data, [postpone]}.
+
+server(enter, _, Data) ->
+    {keep_state, Data};
+server({call, From}, {role, _}, Data) ->
+    %% TODO: support switching to client role is not connected.
+    {keep_state, Data, [{reply, From, {error, busy}}]};
+server({call, From}, id, Data=#data{id=Id}) ->
+    {keep_state, Data, [{reply, From, {ok, Id}}]};
+server(info, {revault, Marker, {peer, Remote}}, Data=#data{sub=undefined, callback=Cb}) ->
+    %% TODO: handle error
+    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, revault_data_wrapper:ok()]),
+    {keep_state, Data#data{callback=NewCb, sub=#server{remote=Remote}}};
+server(info, {revault, Marker, {peer, Remote}}, Data=#data{callback=Cb}) ->
+    %% TODO: consider postponing the message to respond later?
+    Payload = revault_data_wrapper:error(peer_busy),
+    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
+    {keep_state, Data#data{callback=NewCb}};
+server(info, {revault, _Marker, ask}, Data=#data{sub=#server{}}) ->
+    {next_state, server_id_sync, Data, [postpone]};
+server(info, {revault, _Marker, manifest}, Data=#data{sub=#server{}}) ->
+    {next_state, server_sync, Data, [postpone]}.
+
+server_id_sync(enter, _, Data) ->
+    {keep_state, Data};
+server_id_sync(info, {revault, Marker, ask},
+       Data=#data{name=Name, id=Id, callback=Cb,
+                  db_dir=Dir, sub=#server{remote=R}}) ->
+    {NewId, Payload} = revault_data_wrapper:fork(Id),
+    %% Save NewId to disk before replying to avoid issues
+    ok = store_id(Dir, Name, NewId),
+    %% Inject the new ID into all the local handlers before replying
+    %% to avoid concurrency issues
+    ok = revault_dirmon_tracker:update_id(Name, NewId),
+    {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
+    Disconnect = #disconnect{next_state=initialized},
+    {next_state, disconnect, Data#data{id=NewId, callback=Cb1, sub=Disconnect},
+     [{next_event, internal, {disconnect, R}}]}.
+
+server_sync(enter, _, Data) ->
+    {keep_state, Data};
+server_sync(info, {revault, Marker, manifest},
+       Data=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
+    Manifest = revault_dirmon_tracker:files(Name),
+    Payload = revault_data_wrapper:manifest(Manifest),
+    {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
+    {next_state, server_sync_files, Data#data{callback=Cb1}}.
+
+
+server_sync_files(enter, _, Data) ->
+    {keep_state, Data};
+server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
+                  Data=#data{name=Name, id=Id}) ->
+    handle_file_sync(Name, Id, F, Meta, Bin),
+    {keep_state, Data};
+server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, Meta, Bin}}, Data) ->
+    TmpF = filename:join("/tmp", F),
+    filelib:ensure_dir(TmpF),
+    ok = file:write_file(TmpF, Bin),
+    revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
+    file:delete(TmpF),
+    {keep_state, Data};
+server_sync_files(info, {revault, Marker, {fetch, F}}, Data) ->
+    NewData = handle_file_demand(F, Marker, Data),
+    {keep_state, NewData};
+server_sync_files(info, {revault, Marker, sync_complete},
+                  Data=#data{name=Name, callback=Cb,
+                             sub=#server{remote=R}}) ->
+    %% force scan to ensure conflict files (if any) are tracked before
+    %% users start modifying them. Might not be relevant when things like
+    %% filesystem watchers are used, but I'm starting to like the idea of
+    %% on-demand scan/sync only.
+    ok = revault_dirmon_event:force_scan(Name, infinity),
+    NewPayload = revault_data_wrapper:sync_complete(),
+    {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
+    Disconnect = #disconnect{next_state=initialized},
+    {next_state, disconnect, Data#data{callback=Cb1, sub=Disconnect},
+     [{next_event, internal, {disconnect, R}}]};
+server_sync_files(info, {revault, Marker, {peer, Peer}},
+                  Data=#data{callback=Cb}) ->
+    Payload = revault_data_wrapper:error(peer_busy),
+    {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
+    {keep_state, Data#data{callback=Cb2}}.
+
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
@@ -565,6 +680,36 @@ update_file(Name, F, Meta, Bin) ->
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
     file:delete(TmpF).
+
+handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
+                                         sub=#server{remote=R}}) ->
+    case revault_dirmon_tracker:file(Name, F) of
+        {Vsn, {conflict, Hashes, _}} ->
+            %% Stream all the files, mark as conflicts?
+            %% just inefficiently read the whole freaking thing at once
+            %% TODO: optimize to better read and send file parts
+            Cb2 = lists:foldl(
+                fun(Hash, CbAcc1) ->
+                    FHash = make_conflict_path(F, Hash),
+                    {ok, Bin} = file:read_file(filename:join(Path, FHash)),
+                    NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Vsn, Hash, Bin),
+                    %% TODO: track failing or succeeding transfers?
+                    {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
+                    CbAcc2
+                end,
+                Cb1,
+                Hashes
+            ),
+            Data#data{callback=Cb2};
+        {Vsn, Hash} ->
+            %% just inefficiently read the whole freaking thing at once
+            %% TODO: optimize to better read and send file parts
+            {ok, Bin} = file:read_file(filename:join(Path, F)),
+            NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
+            %% TODO: track failing or succeeding transfers?
+            {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
+            Data#data{callback=Cb2}
+    end.
 
 make_conflict_path(F, Hash) ->
     F ++ "." ++ hexname(Hash).
