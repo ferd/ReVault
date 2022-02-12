@@ -7,7 +7,7 @@
 %%%                 |                     |
 %%%                 v                     v
 %%%          UNINITIALIZED      .---->INITIALIZED-------->SERVER------.
-%%%          |           |      |      |  ^     ‾            | ‾      |
+%%%          |           |      |      |  ^                  | ‾      |
 %%%          v           v      |   .--'  |                  v        |
 %%%     CLIENT_INIT    SERVER_INIT  |     |           SERVER_ID_SYNC  |
 %%%          |    ^---.             |  DISCONNECT<-------'         ‾  |
@@ -21,11 +21,11 @@
 %%%      |           CLIENT-------------+--------------------'      ‾
 %%%      |             | ^‾             |
 %%%      |             v |              |
-%%%      |         CONNECTING-----------|
+%%%      |         CONNECTING           |
 %%%      |             |                |
 %%%      |             v                |
 %%%      |   CLIENT_SYNC_MANIFEST-------|
-%%%      |             |        ‾       |
+%%%      |             |                |
 %%%      |             v                |
 %%%      |     CLIENT_SYNC_FILES--------|
 %%%      |             |       ‾        |
@@ -45,6 +45,7 @@
          uninitialized/3, server_init/3,
          client_init/3, client_id_sync/3,
          %% File synchronization callbacks
+         initialized/3, client/3, client_sync_manifest/3,
          %% Connection handling
          connecting/3, disconnect/3
         ]).
@@ -78,6 +79,8 @@
         }).
 
 -record(id_sync, {from, marker, remote}).
+
+-record(client_sync, {from, marker, remote, acc=[]}).
 
 %% Top-level data records
 -record(uninit, {
@@ -158,6 +161,8 @@ init({DbDir, Name, Path, Interval, Callback}) ->
 
 uninitialized(enter, _, Data) ->
     {keep_state, Data};
+uninitialized({call, From}, id, Data) ->
+    {next_state, initialized, Data, [{reply, From, undefined}]};
 uninitialized({call, From}, {role, server}, Data) ->
     %% Something external telling us we're gonna be in server mode
     {next_state, server_init, Data,
@@ -179,7 +184,9 @@ server_init(internal, init, #uninit{name=Name, db_dir=DbDir, path=Path,
     {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
     {next_state, initialized,
      #data{db_dir=DbDir, name=Name, path=Path, interval=Interval, callback=Cb,
-           id=Id, uuid=UUID}}.
+           id=Id, uuid=UUID}};
+server_init(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 client_init(enter, uninitialized, Data=#uninit{}) ->
     {keep_state, Data};
@@ -197,7 +204,9 @@ client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
      [{next_event, internal, {connect, Remote}}]};
 client_init(internal, {connect, _, {call, From}, Reason}, Data) ->
     %% From the connecting state
-    {keep_state, Data, [{reply, From, Reason}]}.
+    {keep_state, Data, [{reply, From, Reason}]};
+client_init(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 connecting(enter, _OldState, Data) ->
     {keep_state, Data};
@@ -269,7 +278,9 @@ connecting(state_timeout, {connect, Remote}, Data=#uninit{sub=S}) ->
         next_actions=[{next_event, internal, {connect, Remote, Payload, timeout}}]
     },
     {next_state, disconnect, Data#uninit{sub=Disconnect},
-     [{next_event, internal, {disconnect, Remote}}]}.
+     [{next_event, internal, {disconnect, Remote}}]};
+connecting(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 disconnect(enter, _, Data) ->
     {keep_state, Data};
@@ -280,7 +291,9 @@ disconnect(internal, {disconnect, Remote}, Data=#data{name=Name, callback=Cb, su
 disconnect(internal, {disconnect, Remote}, Data=#uninit{name=Name, callback=Cb, sub=S}) ->
     {_, NewCb} = apply_cb(Cb, unpeer, [Name, Remote]),
     #disconnect{next_state=State, next_actions=Actions} = S,
-    {next_state, State, Data#uninit{sub=undefined, callback=NewCb}, Actions}.
+    {next_state, State, Data#uninit{sub=undefined, callback=NewCb}, Actions};
+disconnect(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 client_id_sync(enter, connecting, Data=#uninit{}) ->
     {keep_state, Data};
@@ -319,7 +332,62 @@ client_id_sync(info, {revault, Marker, {reply, NewId}},
      #data{db_dir=Dir, id=NewId, uuid=UUID, name=Name, path=Path,
            interval=Interval, callback=Cb, sub=Disconnect},
      [{reply, From, {ok, NewId}},
-      {next_event, internal, {disconnect, Remote}}]}.
+      {next_event, internal, {disconnect, Remote}}]};
+client_id_sync(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
+
+initialized(enter, _, Data=#data{}) ->
+    {keep_state, Data};
+initialized({call, From}, id, Data=#data{id=Id}) ->
+    {keep_state, Data, [{reply, From, {ok, Id}}]};
+initialized({call, From}, {role, client}, Data) ->
+    {next_state, client, Data, [{reply, From, ok}]};
+initialized({call, From}, {role, server}, Data) ->
+    {next_state, server, Data, [{reply, From, ok}]}.
+
+client(enter, _, Data) ->
+    {keep_state, Data};
+client({call, From}, id, Data=#data{id=Id}) ->
+    {keep_state, Data, [{reply, From, {ok, Id}}]};
+client({call, From}, {sync, Remote}, Data) ->
+    {next_state, connecting,
+     Data#data{sub=#connecting{
+        next_state=client_sync_manifest,
+        next_payload={call,From},
+        fail_state=client, % should this go back to initialized?
+        fail_payload={call,From}
+     }},
+     [{next_event, internal, {connect, Remote}}]};
+client(internal, {connect, _, {call, From}, Reason}, Data) ->
+    %% From the connecting state
+    {keep_state, Data, [{reply, From, Reason}]}.
+
+client_sync_manifest(enter, _, Data) ->
+    {keep_state, Data};
+client_sync_manifest(internal, {connect, Remote, {call,From}}, Data=#data{callback=Cb}) ->
+    {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:manifest()]),
+    case Res of
+        {ok, Marker} ->
+            {keep_state,
+             Data#data{callback=NewCb,
+                       sub=#client_sync{from=From, remote=Remote,
+                                        marker=Marker}}};
+        {error, R} ->
+            Disconnect = #disconnect{next_state=initialized},
+            {next_state, disconnect, Data#data{sub=Disconnect},
+             [{reply, From, {error, R}},
+              {next_event, internal, {disconnect, Remote}}]}
+    end;
+client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
+                     Data=#data{sub=#client_sync{marker=Marker},
+                                name=Name, id=Id}) ->
+    LManifest = revault_dirmon_tracker:files(Name),
+    {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
+    Actions = schedule_file_transfers(Local, Remote),
+    {next_state, client_sync_files, Data,
+     Actions ++ [{next_event, internal, sync_complete}]};
+client_sync_manifest(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
@@ -361,3 +429,54 @@ store_uuid(Dir, Name, UUID) ->
 start_tracker(Name, Id, Path, Interval, DbDir) ->
     revault_trackers_sup:start_tracker(Name, Id, Path, Interval, DbDir).
 
+diff_manifests(Id, LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
+    diff_manifests(Id,
+                   lists:sort(maps:to_list(LocalMap)),
+                   lists:sort(maps:to_list(RemoteMap)),
+                   [], []).
+
+diff_manifests(Id, [H|Loc], [H|Rem], LAcc, RAcc) ->
+    diff_manifests(Id, Loc, Rem, LAcc, RAcc);
+%% TODO: handle conflicts
+diff_manifests(Id, [{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
+    case compare(Id, LVsn, RVsn) of
+        equal ->
+            %% We can skip this, even though bumping versions could be nice since
+            %% they differ but compare equal
+            diff_manifests(Id, Loc, Rem, LAcc, RAcc);
+        conflict ->
+            %% Conflict! Fetch & Push in both cases
+            diff_manifests(Id, Loc, Rem,
+                           [{send, F}|LAcc],
+                           [{fetch, F}|RAcc]);
+        greater ->
+            %% Local's newer
+            diff_manifests(Id, Loc, Rem, [{send, F}|LAcc], RAcc);
+        lesser ->
+            %% Remote's newer
+            diff_manifests(Id, Loc, Rem, LAcc, [{fetch, F}, RAcc])
+    end;
+diff_manifests(Id, [{LF, _}=L|Loc], [{RF, _}=R|Rem], LAcc, RAcc) ->
+    if LF < RF ->
+           diff_manifests(Id, Loc, [R|Rem], [{send, LF}|LAcc], RAcc);
+       LF > RF ->
+           diff_manifests(Id, [L|Loc], Rem, LAcc, [{fetch, RF}|RAcc])
+    end;
+diff_manifests(_Id, Loc, [], LAcc, RAcc) ->
+    {[{send, F} || {F, _} <- Loc] ++ LAcc, RAcc};
+diff_manifests(_Id, [], Rem, LAcc, RAcc) ->
+    {LAcc, [{fetch, F} || {F, _} <- Rem] ++ RAcc}.
+
+schedule_file_transfers(Local, Remote) ->
+    %% TODO: Do something smart at some point. Right now, who cares.
+    [{next_event, internal, Event} || Event <- Remote ++ Local].
+
+compare(Id, Ct1, Ct2) ->
+    ITC1 = itc:rebuild(Id, Ct1),
+    ITC2 = itc:rebuild(Id, Ct2),
+    case {itc:leq(ITC1, ITC2), itc:leq(ITC2, ITC1)} of
+        {false, false} -> conflict;
+        {true, true} -> equal;
+        {true, false} -> lesser;
+        {false, true} -> greater
+    end.
