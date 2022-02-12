@@ -28,10 +28,10 @@
 %%%      |             |                |
 %%%      |             v                |
 %%%      |     CLIENT_SYNC_FILES--------|
-%%%      |             |       ‾        |
+%%%      |             |                |
 %%%      |             v                |
 %%%      |   CLIENT_SYNC_COMPLETE-------|
-%%%      |                      ‾       |
+%%%      |                              |
 %%%      '------------------------------'
 %%% ```
 -module(revault_fsm).
@@ -46,6 +46,7 @@
          client_init/3, client_id_sync/3,
          %% File synchronization callbacks
          initialized/3, client/3, client_sync_manifest/3,
+         client_sync_files/3, client_sync_complete/3,
          %% Connection handling
          connecting/3, disconnect/3
         ]).
@@ -389,6 +390,65 @@ client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
 client_sync_manifest(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
+client_sync_files(enter, _, Data) ->
+    {keep_state, Data};
+client_sync_files(internal, {send, File},
+                  Data=#data{name=Name, path=Path, callback=Cb,
+                             sub=#client_sync{remote=R}}) ->
+    {Vsn, Hash} = revault_dirmon_tracker:file(Name, File),
+    %% TODO: optimize to read and send files in parts rather than
+    %% just reading it all at once and loading everything in memory
+    %% and shipping it in one block
+    {ok, Bin} = file:read_file(filename:join(Path, File)),
+    Payload = revault_data_wrapper:send_file(File, Vsn, Hash, Bin),
+    %% TODO: track the success or failures of transfers, detect disconnections
+    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+    {keep_state, Data#data{callback=NewCb}};
+client_sync_files(internal, {fetch, File},
+                  Data=#data{callback=Cb, sub=S=#client_sync{remote=R, acc=Acc}}) ->
+    Payload = revault_data_wrapper:fetch_file(File),
+    %% TODO: track the incoming transfers to know when we're done syncing
+    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+    {keep_state, Data#data{callback=NewCb, sub=S#client_sync{acc=[File|Acc]}}};
+client_sync_files(internal, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
+    #data{callback=Cb, sub=#client_sync{remote=R}} = Data,
+    Payload = revault_data_wrapper:sync_complete(),
+    %% TODO: handle failure here
+    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+    {next_state, client_sync_complete, Data#data{callback=NewCb}};
+client_sync_files(internal, sync_complete, Data) ->
+    %% wait for all files we're fetching to be here, and when the last one is in,
+    %% re-trigger a sync_complete message
+    {keep_state, Data};
+client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
+    #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
+    handle_file_sync(Name, Id, F, Meta, Bin),
+    case Acc -- [F] of
+        [] ->
+            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+             [{next_event, internal, sync_complete}]};
+        NewAcc ->
+            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+    end;
+client_sync_files(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
+
+client_sync_complete(enter, _, Data=#data{name=Name}) ->
+    %% force scan to ensure conflict files (if any) are tracked before
+    %% users start modifying them. Might not be relevant when things like
+    %% filesystem watchers are used, but I'm starting to like the idea of
+    %% on-demand scan/sync only.
+    ok = revault_dirmon_event:force_scan(Name, infinity),
+    {keep_state, Data};
+client_sync_complete(info, {revault, _Marker, sync_complete},
+                     Data=#data{sub=#client_sync{from=From, remote=Remote}}) ->
+    Disconnect = #disconnect{next_state=initialized},
+    {next_state, disconnect, Data#data{sub=Disconnect},
+     [{reply, From, ok},
+      {next_event, internal, {disconnect, Remote}}]};
+client_sync_complete(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
+
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
 %%%%%%%%%%%%%%%
@@ -480,3 +540,40 @@ compare(Id, Ct1, Ct2) ->
         {true, false} -> lesser;
         {false, true} -> greater
     end.
+
+handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
+    %% is this file a conflict or an update?
+    case revault_dirmon_tracker:file(Name, F) of
+        undefined ->
+            update_file(Name, F, Meta, Bin);
+        {LVsn, _HashOrStatus} ->
+            case compare(Id, LVsn, Vsn) of
+                conflict ->
+                    FHash = make_conflict_path(F, Hash),
+                    TmpF = filename:join("/tmp", FHash),
+                    file:write_file(TmpF, Bin),
+                    revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
+                    file:delete(TmpF);
+                _ ->
+                    update_file(Name, F, Meta, Bin)
+            end
+    end.
+
+update_file(Name, F, Meta, Bin) ->
+    TmpF = filename:join("/tmp", F),
+    filelib:ensure_dir(TmpF),
+    ok = file:write_file(TmpF, Bin),
+    revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
+    file:delete(TmpF).
+
+make_conflict_path(F, Hash) ->
+    F ++ "." ++ hexname(Hash).
+
+%% TODO: extract shared definition with revault_dirmon_tracker
+hex(Hash) ->
+    binary:encode_hex(Hash).
+
+%% TODO: extract shared definition with revault_dirmon_tracker
+hexname(Hash) ->
+    unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
+
