@@ -4,6 +4,7 @@
 %%% @end
 -module(revault_dirmon_poll).
 -export([scan/1, rescan/2]).
+-export([hash/1]).
 
 -type hash() :: binary().
 -type set() :: [{file:filename(), hash()}].
@@ -25,7 +26,7 @@ scan(Dir) ->
       Dir, ".*", true,
       fun(File, Acc) ->
          {ok, Bin} = file:read_file(File),
-         Hash = crypto:hash(sha256, Bin),
+         Hash = hash(Bin),
          RelativeFile = revault_file:make_relative(Dir, File),
          [{RelativeFile, Hash} | Acc]
       end, []
@@ -45,6 +46,12 @@ scan(Dir) ->
 rescan(Dir, OldSet) ->
     NewSet = scan(Dir),
     {diff_set(OldSet, NewSet), NewSet}.
+
+%% @doc Make the hash function used exportable so that it can be
+%% used to verify hashes from remotely-sent payloads.
+-spec hash(binary()) -> hash().
+hash(Bin) ->
+    crypto:hash(sha256, Bin).
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%

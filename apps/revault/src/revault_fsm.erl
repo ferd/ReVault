@@ -656,7 +656,16 @@ compare(Id, Ct1, Ct2) ->
         {false, true} -> greater
     end.
 
-handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
+handle_file_sync(Name, Id, F, Meta = {_Vsn, Hash}, Bin) ->
+    case validate_hash(Hash, Bin) of
+        false ->
+            %% TODO: add some logging when the hash doesn't match
+            skip;
+        true ->
+            do_handle_file_sync(Name, Id, F, Meta, Bin)
+    end.
+
+do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
     %% is this file a conflict or an update?
     case revault_dirmon_tracker:file(Name, F) of
         undefined ->
@@ -680,6 +689,12 @@ update_file(Name, F, Meta, Bin) ->
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
     file:delete(TmpF).
+
+validate_hash({conflict, Hashes, _}, Bin) ->
+    Hash = revault_dirmon_poll:hash(Bin),
+    lists:member(Hash, Hashes);
+validate_hash(Hash, Bin) ->
+    Hash =:= revault_dirmon_poll:hash(Bin).
 
 handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
                                          sub=#server{remote=R}}) ->

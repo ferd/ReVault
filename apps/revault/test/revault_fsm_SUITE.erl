@@ -6,7 +6,7 @@
 
 all() ->
     [start_hierarchy, client_id, client_no_server,
-     fork_server_save, basic_sync, too_many_clients].
+     fork_server_save, basic_sync, too_many_clients, overwrite_sync_clash].
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
                                      Case =:= client_no_server ->
@@ -324,10 +324,57 @@ too_many_clients(Config) ->
     ?assertEqual(ok, revault_fsm:sync(Client2, Remote)),
     ok.
 
+overwrite_sync_clash() ->
+    [{doc, "A file being overwritten during a transfer doesn't end up "
+           "corrupting it at the call-site. Aborting is accepted."},
+     {timetrap, timer:seconds(30)}].
+overwrite_sync_clash(Config) ->
+    Client = ?config(name, Config),
+    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    ok = file:write_file(filename:join([ServerPath, "shared"]), "sh1"),
+    %% Getting a client racing demands going fast enough that the test
+    %% would be brittle. We can cheat by making file access via data wrappers
+    %% incredibly slow!
+    try
+        block(),
+        meck:new(revault_data_wrapper, [passthrough]),
+        meck:expect(revault_data_wrapper, send_file,
+                    fun(A,B,C,D) -> block_loop(), meck:passthrough([A,B,C,D]) end),
+        %% Track em
+        ok = revault_dirmon_event:force_scan(Client, 5000),
+        ok = revault_dirmon_event:force_scan(Server, 5000),
+        %% Write files, client-only so only the server blocks, with the corrupted data
+        ok = file:write_file(filename:join([ServerPath, "shared"]), "corrupted"),
+        %% Sync em
+        P = self(),
+        spawn_link(fun() -> P ! ok, revault_fsm:sync(Client, Remote), P ! ok end),
+        receive
+            ok -> timer:sleep(50) % give time to the async call above to start
+        end,
+        unblock(),
+        %% wait for things to be done before unloading meck, or this causes crashes
+        receive ok -> ok end
+    after
+        meck:unload(revault_data_wrapper)
+    end,
+    ?assertNotEqual({ok, <<"corrupted">>},
+                    file:read_file(filename:join([ClientPath, "shared"]))),
+    ok.
+
 %% TODO: add a UUID per server that creates its own ID
 %%       and make sure two distinct servers can't peer into each other
 %% TODO: dealing with interrupted connections?
-%% TODO: test overwrite sync
 %% TODO: using OTel to create FSM-level traces via debug hooks and keeping
 %%       them distinct from specific request-long traces
 
