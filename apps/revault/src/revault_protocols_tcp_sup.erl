@@ -3,12 +3,14 @@
 %% @end
 %%%-------------------------------------------------------------------
 
--module(revault_fsm_sup).
+-module(revault_protocols_tcp_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_fsm/4, start_fsm/5]).
+-export([start_link/0,
+         start_server/2, start_server/3,
+         start_client/2, start_client/3]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -22,11 +24,17 @@
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
-start_fsm(DbDir, Name, Path, Interval) ->
-    supervisor:start_child(?SERVER, [DbDir, Name, Path, Interval]).
+start_client(Name, DirOpts) ->
+    start_child(revault_tcp_client, Name, [Name, DirOpts]).
 
-start_fsm(DbDir, Name, Path, Interval, Callback) ->
-    supervisor:start_child(?SERVER, [DbDir, Name, Path, Interval, Callback]).
+start_client(Name, DirOpts, TcpOpts) ->
+    start_child(revault_tcp_client, Name, [Name, DirOpts, TcpOpts]).
+
+start_server(Name, DirOpts) ->
+    start_child(revault_tcp_serv, Name, [Name, DirOpts]).
+
+start_server(Name, DirOpts, TcpOpts) ->
+    start_child(revault_tcp_serv, Name, [Name, DirOpts, TcpOpts]).
 
 %%====================================================================
 %% Supervisor callbacks
@@ -37,13 +45,16 @@ start_fsm(DbDir, Name, Path, Interval, Callback) ->
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, {{simple_one_for_one, 1, 1}, [
-        #{id => revault_fsm,
-          start => {revault_fsm, start_link, []},
-          type => worker}
-    ]}}.
+    {ok, {{one_for_one, 1, 1}, []}}.
 
 %%====================================================================
 %% Internal functions
 %%====================================================================
+start_child(Mod, Name, Args) ->
+    supervisor:start_child(?SERVER, #{
+        id => {client, Name},
+        start => {Mod, start_link, Args},
+        type => worker
+    }).
+
 

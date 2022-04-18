@@ -35,6 +35,9 @@ init([]) ->
         #{id => trackers_sup,
           start => {revault_trackers_sup, start_link, []},
           type => supervisor},
+        #{id => protocols_sup,
+          start => {revault_protocols_sup, start_link, []},
+          type => supervisor},
         #{id => fsm_sup,
           start => {revault_fsm_sup, start_link, []},
           type => supervisor}

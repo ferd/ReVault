@@ -378,8 +378,9 @@ initialized(info, {revault, _Marker, {peer, _Remote}}, Data) ->
     %% preventing client calls from happening on a busy server?
     {next_state, server, Data, [postpone]}.
 
-client(enter, _, Data) ->
-    {keep_state, Data};
+client(enter, _, Data = #data{callback=Cb}) ->
+    {_, NewCb} = apply_cb(Cb, mode, [client]),
+    {keep_state, Data#data{callback=NewCb}};
 client({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
 client({call, From}, {sync, Remote}, Data) ->
@@ -481,8 +482,9 @@ client_sync_complete(info, {revault, _Marker, sync_complete},
 client_sync_complete(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-server(enter, _, Data) ->
-    {keep_state, Data};
+server(enter, _, Data = #data{callback=Cb}) ->
+    {_, NewCb} = apply_cb(Cb, mode, [server]),
+    {keep_state, Data#data{callback=NewCb}};
 server({call, From}, {role, _}, Data) ->
     %% TODO: support switching to client role is not connected.
     {keep_state, Data, [{reply, From, {error, busy}}]};

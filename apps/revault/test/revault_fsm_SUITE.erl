@@ -5,8 +5,41 @@
 
 
 all() ->
-    [start_hierarchy, client_id, client_no_server,
-     fork_server_save, basic_sync, too_many_clients, overwrite_sync_clash].
+    [start_hierarchy,
+     {group, disterl}].
+
+groups() ->
+    [{disterl, [], [{group, syncs}]},
+     {tcp, [], [{group, syncs}]},
+     {syncs, [], [client_id, client_no_server,
+                  fork_server_save, basic_sync, too_many_clients,
+                  overwrite_sync_clash]}].
+
+init_per_group(tcp, Config) ->
+    [{callback, fun(Name) ->
+        revault_tcp:callback({Name, #{
+            <<"peers">> => #{
+                <<"test">> => #{
+                    <<"sync">> => [<<"test">>],
+                    <<"url">> => <<"localhost:8888">>,
+                    <<"auth">> => #{<<"type">> => <<"none">>}
+                }
+            },
+            <<"server">> => #{<<"auth">> => #{
+                <<"none">> => #{
+                    <<"status">> => enabled,
+                    <<"port">> => 8888,
+                    <<"sync">> => [<<"test">>],
+                    <<"mode">> => read_write
+                }
+            }}
+        }})
+    end} | Config];
+init_per_group(_, Config) ->
+    [{callback, fun revault_disterl:callback/1} | Config].
+
+end_per_group(_Group, Config) ->
+    Config.
 
 init_per_testcase(Case, Config) when Case =:= start_hierarchy;
                                      Case =:= client_no_server ->
@@ -27,6 +60,7 @@ init_per_testcase(Case, Config) when Case =:= start_hierarchy;
 init_per_testcase(Case, Config) ->
     {ok, Apps} = application:ensure_all_started(gproc),
     Priv = ?config(priv_dir, Config),
+    CbInit = ?config(callback, Config),
     DbDir = filename:join([Priv, "db"]),
     Path = filename:join([Priv, "data", "client"]),
     ServerPath = filename:join([Priv, "data", "server"]),
@@ -39,7 +73,8 @@ init_per_testcase(Case, Config) ->
     Interval = 100000000, % don't scan yet
     %% Starting the hierarchy
     {ok, Sup} = revault_sup:start_link(),
-    {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Interval),
+    {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Interval,
+                                          CbInit(ServerName)),
     ok = revault_fsm:server(ServerName), %% sets up the ID and parks itself in server state.
     [{db_dir, DbDir},
      {path, Path},
@@ -105,7 +140,8 @@ client_id(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Name)
     ),
     %% How to specify what sort of client we are? to which server?
     ok = revault_fsm:client(Name),
@@ -142,7 +178,8 @@ client_no_server(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Name)
     ),
     %% How to specify what sort of client we are? to which server?
     ok = revault_fsm:client(Name),
@@ -165,7 +202,8 @@ fork_server_save(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Name)
     ),
     ok = revault_fsm:client(Name),
     {ok, _ClientId} = revault_fsm:id(Name, Remote),
@@ -193,7 +231,8 @@ basic_sync(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
     ),
     ok = revault_fsm:client(Client),
     {ok, _ClientId} = revault_fsm:id(Client, Remote),
@@ -277,7 +316,8 @@ too_many_clients(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
     ),
     ok = revault_fsm:client(Client),
     {ok, _ClientId} = revault_fsm:id(Client, Remote),
@@ -288,7 +328,8 @@ too_many_clients(Config) ->
     Path = filename:join([Priv, "data", "client_2"]),
     filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
     filelib:ensure_dir(filename:join([Path, "fakefile"])),
-    {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path, ?config(interval, Config)),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path, ?config(interval, Config),
+                                        (?config(callback, Config))(Client2)),
     ok = revault_fsm:client(Client2),
     %% Since each sync calls for its own Remote, we can assume we can safely
     %% ask for an ID even if another remote is in place.
@@ -338,7 +379,8 @@ overwrite_sync_clash(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
-        ?config(interval, Config)
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
     ),
     ok = revault_fsm:client(Client),
     {ok, _ClientId} = revault_fsm:id(Client, Remote),

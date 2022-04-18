@@ -13,8 +13,17 @@
 %%% concrete data that can then be handed off to some format-specific
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
--export([peer/2, unpeer/2, send/2, reply/3, unpack/1]).
+-export([callback/1, mode/1, peer/2, unpeer/2, send/2, reply/3, unpack/1]).
 -define(VSN, 1).
+-type state() :: ?MODULE.
+-export_type([state/0]).
+
+-spec callback(term()) -> state().
+callback(_) -> ?MODULE.
+
+-spec mode(client|server) -> state().
+mode(_) ->
+    ?MODULE.
 
 peer(FromName, {ToName, ToNode}) ->
     %% TODO: change this to a Maybe construct in OTP-25
