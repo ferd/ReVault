@@ -200,7 +200,8 @@ client_init({call, From}, {role, _}, Data) ->
     {keep_state, Data, [{reply, From, {error, busy}}]};
 client_init({call, From}, id, Data=#uninit{}) ->
     {keep_state, Data, [{reply, From, undefined}]};
-client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
+client_init({call, From}, {id, Remote}, Data=#uninit{callback=Cb}) ->
+    {_, NewCb} = apply_cb(Cb, mode, [client]),
     %% The connecting substate is using a sort of data-based callback mechanism
     %% where we ask of it to run a connection, and then describe to it
     %% how to transition in case of failure or success.
@@ -210,7 +211,7 @@ client_init({call, From}, {id, Remote}, Data=#uninit{}) ->
         next_payload={call,From},
         fail_state=client_init,
         fail_payload={call,From}
-     }},
+     }, callback= NewCb},
      [{next_event, internal, {connect, Remote}}]};
 client_init(internal, {connect, _, {call, From}, _Reason}, Data) ->
     %% From the connecting state
@@ -483,7 +484,8 @@ client_sync_complete(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
 server(enter, _, Data = #data{callback=Cb}) ->
-    {_, NewCb} = apply_cb(Cb, mode, [server]),
+    {_Res, NewCb} = apply_cb(Cb, mode, [server]),
+    ct:pal("applying server mode: ~p", [_Res]),
     {keep_state, Data#data{callback=NewCb}};
 server({call, From}, {role, _}, Data) ->
     %% TODO: support switching to client role is not connected.

@@ -4,6 +4,6 @@
 -define(ACCEPT_WAIT, 100).
 -define(SERVER(Name), {via, gproc, {n, l, {tcp, serv, Name}}}).
 -define(CLIENT(Name), {via, gproc, {n, l, {tcp, client, Name}}}).
--record(client, {dirs, dir, opts, sock, buf = <<>>}).
--record(serv, {dirs, opts, sock, workers=#{}}).
--record(conn, {sock, dirs, buf = <<>>}).
+-record(client, {name, dirs, dir, auth, opts, sock, buf = <<>>}).
+-record(serv, {name, dirs, opts, sock, workers=#{}}).
+-record(conn, {localname, sock, dirs, buf = <<>>}).

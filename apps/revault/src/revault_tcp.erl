@@ -22,38 +22,39 @@
 callback({Name, DirOpts}) ->
     {?MODULE, #state{name=Name, dirs=DirOpts}}.
 
--spec mode(client|server, state()) -> state().
+-spec mode(client|server, state()) -> {term(), state()}.
 mode(Mode, S=#state{name=Name, dirs=DirOpts}) ->
-    case Mode of
+    Res = case Mode of
         client ->
             revault_protocols_tcp_sup:start_client(Name, DirOpts);
         server ->
             revault_protocols_tcp_sup:start_server(Name, DirOpts)
     end,
-    {?MODULE, S#state{mode=Mode}}.
+    {Res, {?MODULE, S#state{mode=Mode}}}.
 
 %% @doc only callable from the client-side.
-peer(_, _, _) -> error(undef).
+peer(Local, Peer=Dir, S=#state{dirs=#{<<"peers">> := Peers}}) ->
+    #{Peer := Map} = Peers,
+    Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir)},
+    {revault_tcp_client:peer(Local, Peer, Map, Payload), {?MODULE, S}}.
+
 unpeer(_, _, _) -> error(undef).
 send(_, _, _) -> error(undef).
-reply(_, _, _, _) -> error(undef).
+
+% [Remote, Marker, revault_data_wrapper:ok()]),
+reply(Remote, Marker, Payload, S=#state{name=Name, mode=client}) ->
+    {revault_tcp_client:reply(Name, Remote, Marker, Payload),
+     {?MODULE, S}};
+reply(Remote, Marker, Payload, S=#state{name=Name, mode=server}) ->
+    {revault_tcp_serv:reply(Name, Remote, Marker, Payload),
+     {?MODULE, S}}.
+
 unpack(_, _) -> error(undef).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% INTERNAL SHARED CALLS %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-wrap({peer, _Dir} = Msg) -> wrap_(Msg);
-wrap(ask) -> wrap_(ask);
-wrap(ok) -> wrap_(ok);
-wrap({error, _} = Msg) -> wrap_(Msg);
-wrap(manifest = Msg) -> wrap_(Msg);
-wrap({manifest, _Data} = Msg) -> wrap_(Msg);
-wrap({file, _Path, _Meta, _Bin} = Msg) -> wrap_(Msg);
-wrap({fetch, _Path} = Msg) -> wrap_(Msg);
-wrap(sync_complete = Msg) -> wrap_(Msg);
-wrap({conflict_file, _WorkPath, _Path, _Meta, _Bin} = Msg) -> wrap_(Msg).
-
-wrap_(Msg) ->
+wrap({revault, _Marker, _Payload}=Msg) ->
     Bin = term_to_binary(Msg, [compressed, {minor_version, 2}]),
     %% Tag by length to ease parsing.
     %% Prepare extra versions that could do things like deal with
@@ -71,12 +72,25 @@ unwrap(<<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>>) ->
             {error, incomplete};
         _ ->
             <<Term:Size/binary, Rest/binary>> = Payload,
-            {ok, ?VSN, binary_to_term(Term), Rest}
+            {revault, Marker, Msg} = binary_to_term(Term),
+            {ok, ?VSN, {revault, Marker, unpack(Msg)}, Rest}
     end;
 unwrap(<<_/binary>>) ->
     {error, incomplete}.
 
+unpack({peer, ?VSN, Remote}) -> {peer, Remote};
+unpack({ask, ?VSN}) -> ask;
+unpack({ok, ?VSN}) -> ok;
+unpack({error, ?VSN, R}) -> {error, R};
+unpack({manifest, ?VSN}) -> manifest;
+unpack({manifest, ?VSN, Data}) -> {manifest, Data};
+unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
+unpack({fetch, ?VSN, Path}) -> {fetch, Path};
+unpack({sync_complete, ?VSN}) -> sync_complete;
+unpack({conflict_file, ?VSN, WorkPath, Path, Meta, Bin}) ->
+    {conflict_file, WorkPath, Path, Meta, Bin};
+unpack(Term) ->
+    Term.
+
 send_local(Name, Payload) ->
-    From = self(),
-    gproc:send({n, l, {revault_sync_fsm, Name}},
-               {revault, From, Payload}).
+    gproc:send({n, l, {revault_fsm, Name}}, Payload).

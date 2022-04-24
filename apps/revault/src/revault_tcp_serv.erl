@@ -14,6 +14,7 @@
 %%% with interrupts and broken transfers with end-to-end retries.
 -module(revault_tcp_serv).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
+-export([reply/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -behaviour(gen_server).
 
@@ -30,13 +31,16 @@ start_link(Name, DirOpts) ->
 start_link(Name, DirOpts, TcpOpts) ->
     MandatoryOpts = [{mode, binary}, {packet, raw}, {active, false}],
     AllTcpOpts = MandatoryOpts ++ TcpOpts,
-    gen_server:start_link(?SERVER(Name), ?MODULE, {DirOpts, AllTcpOpts}, []).
+    gen_server:start_link(?SERVER(Name), ?MODULE, {Name, DirOpts, AllTcpOpts}, []).
 
 stop(Name) ->
     gen_server:call(?SERVER(Name), stop).
 
 update_dirs(Name, DirOpts) ->
     gen_server:call(?SERVER(Name), {dirs, DirOpts}).
+
+reply(Name, _Dir, {Pid,Marker}, Payload) ->
+    gen_server:call(?SERVER(Name), {fwd, Pid, {revault, Marker, Payload}}, infinity).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% GEN_SERVER / MANAGEMENT %%%
@@ -45,22 +49,33 @@ update_dirs(Name, DirOpts) ->
 %% the heavy work to be done by the sync servers and the worker loops,
 %% not the acceptor. It also simplifies the handling of auth and
 %% permissions.
-init({DirOpts = #{<<"port">> := Port, <<"status">> := enabled}, TcpOpts}) ->
-    case gen_tcp:listen(Port, TcpOpts) of
-        {error, Reason} ->
-            {stop, {listen,Reason}};
-        {ok, LSock} ->
-            process_flag(trap_exit, true),
-            self() ! accept,
-            {ok, #serv{dirs=DirOpts, opts=TcpOpts, sock=LSock}}
+% {server => auth => none => sync
+init({Name, #{<<"server">> := #{<<"auth">> := #{<<"none">> := DirOpts}}}, TcpOpts}) ->
+    #{<<"port">> := Port, <<"status">> := Status} = DirOpts,
+    case Status of
+        enabled ->
+            case gen_tcp:listen(Port, TcpOpts) of
+                {error, Reason} ->
+                    {stop, {listen,Reason}};
+                {ok, LSock} ->
+                    process_flag(trap_exit, true),
+                    self() ! accept,
+                    {ok, #serv{name=Name, dirs=DirOpts, opts=TcpOpts, sock=LSock}}
+            end;
+        disabled ->
+            {stop, disabled}
     end;
 init(_) ->
     {stop, disabled}.
 
-handle_call({dirs, DirOpts}, _From, S=#serv{}) ->
+handle_call({dirs, Opts}, _From, S=#serv{}) ->
+    #{<<"server">> := #{<<"auth">> := #{<<"none">> := DirOpts}}} = Opts,
     %% TODO: handle port change
     %% TODO: handle status: disabled
     {reply, ok, S#serv{dirs=DirOpts}};
+handle_call({fwd, Pid, Msg}, From, S=#serv{}) ->
+    Pid ! {fwd, From, Msg},
+    {noreply, S};
 handle_call(stop, _From, S=#serv{}) ->
     NewS = stop_server(S),
     {stop, {shutdown, stop}, ok, NewS};
@@ -70,12 +85,12 @@ handle_call(_, _From, State) ->
 handle_cast(_Info, State) ->
     {noreply, State}.
 
-handle_info(accept, S=#serv{sock=LSock, dirs=Opts, workers=W}) ->
+handle_info(accept, S=#serv{name=Name, sock=LSock, dirs=Opts, workers=W}) ->
     case gen_tcp:accept(LSock, ?ACCEPT_WAIT) of
         {ok, Sock} ->
-            Worker = start_linked_worker(Sock, Opts),
+            Worker = start_linked_worker(Name, Sock, Opts),
             self() ! accept,
-            {ok, S#serv{workers=W#{Worker => Sock}}};
+            {noreply, S#serv{workers=W#{Worker => Sock}}};
         {error, timeout} ->
             %% self-interrupt to let other code have an access to things
             self() ! accept,
@@ -94,42 +109,54 @@ terminate(_Reason, #serv{workers=W}) ->
 %%%%%%%%%%%%%%%%%%%
 %%% WORKER LOOP %%%
 %%%%%%%%%%%%%%%%%%%
-start_linked_worker(Sock, Opts) ->
+start_linked_worker(LocalName, Sock, Opts) ->
     %% TODO: stick into a supervisor
-    Pid = spawn_link(fun() -> worker_init(Opts) end),
+    Pid = spawn_link(fun() -> worker_init(LocalName, Opts) end),
     _ = gen_tcp:controlling_process(Sock, Pid),
     Pid ! {ready, Sock},
     Pid.
 
-worker_init(Opts) ->
+worker_init(LocalName, Opts) ->
     receive
         {ready, Sock} ->
-            worker_dispatch(#conn{sock=Sock, dirs=Opts})
+            worker_dispatch(#conn{localname=LocalName, sock=Sock, dirs=Opts})
     end.
 
-worker_dispatch(C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
+worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
+    %% TODO: wrap the marker into a local one so that the responses
+    %% can come to the proper connection process. There can be multiple
+    %% TCP servers active for a single one and the responses must go
+    %% to the right place.
     {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"sync">> := DirNames} = Dirs,
+    ct:pal("Msg: ~p", [Msg]),
     case Msg of
-        {peer, [Dir|_]} ->
+        {revault, Marker, {peer, Dir}} ->
             case lists:member(Dir, DirNames) of
                 true ->
                     inet:setopts(Sock, [{active, once}]),
+                    revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self()}}),
                     worker_loop(Dir, C#conn{buf=NewBuf});
                 false ->
-                    gen_tcp:send(Sock, revault_tcp:wrap({error, eperm})),
+                    gen_tcp:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),
                     gen_tcp:close(Sock)
             end;
         _ ->
-            gen_tcp:send(Sock, revault_tcp:wrap({error, protocol})),
+            Msg = {revault, internal, revault_data_wrapper:error(protocol)},
+            gen_tcp:send(Sock, revault_tcp:wrap(Msg)),
             gen_tcp:close(Sock)
     end.
 
-worker_loop(Dir, C=#conn{sock=Sock, buf=Buf0}) ->
+worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
     receive
         {revault, _From, Msg} ->
             Payload = revault_tcp:wrap(Msg),
             gen_tcp:send(Sock, Payload),
+            worker_loop(Dir, C);
+        {fwd, From, Msg} ->
+            Payload = revault_tcp:wrap(Msg),
+            Res = gen_tcp:send(Sock, Payload),
+            gen_server:reply(From, Res),
             worker_loop(Dir, C);
         {tcp, Sock, Data} ->
             inet:setopts(Sock, [{active, once}]),
@@ -137,7 +164,7 @@ worker_loop(Dir, C=#conn{sock=Sock, buf=Buf0}) ->
                 {error, incomplete} ->
                     worker_loop(Dir, C#conn{buf = <<Buf0/binary, Data/binary>>});
                 {ok, ?VSN, Msg, NewBuf} ->
-                    revault_tcp:send_local(Dir, Msg),
+                    revault_tcp:send_local(Name, Msg),
                     worker_loop(Dir, C#conn{buf = NewBuf})
             end;
         {tcp_error, Sock, Reason} ->
@@ -169,4 +196,3 @@ next_msg(Sock, Buf) ->
                     {error, Term}
             end
     end.
-

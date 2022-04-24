@@ -6,7 +6,8 @@
 
 all() ->
     [start_hierarchy,
-     {group, disterl}].
+     {group, disterl},
+     {group, tcp}].
 
 groups() ->
     [{disterl, [], [{group, syncs}]},
@@ -34,9 +35,13 @@ init_per_group(tcp, Config) ->
                 }
             }}
         }})
-    end} | Config];
+    end},
+    {peer, fun(_Name) -> <<"test">> end}  | Config];
+init_per_group(disterl, Config) ->
+    [{callback, fun revault_disterl:callback/1},
+     {peer, fun(Name) -> {Name, node()} end} | Config];
 init_per_group(_, Config) ->
-    [{callback, fun revault_disterl:callback/1} | Config].
+    Config.
 
 end_per_group(_Group, Config) ->
     Config.
@@ -99,7 +104,8 @@ end_per_testcase(_, Config) ->
     Config.
 
 start_hierarchy() ->
-    [{doc, "Starting the sync FSM starts the whole overall mechanism."}].
+    [{doc, "Starting the sync FSM starts the whole overall mechanism."},
+     {timetrap, timer:seconds(30)}].
 start_hierarchy(Config) ->
     Name = ?config(name, Config),
     {ok, Sup} = revault_sup:start_link(),
@@ -131,10 +137,12 @@ start_hierarchy(Config) ->
     ok.
 
 client_id() ->
-    [{doc, "Starting a client means it can get its ID from an online server."}].
+    [{doc, "Starting a client means it can get its ID from an online server."},
+     {timetrap, timer:seconds(30)}].
 client_id(Config) ->
     Name = ?config(name, Config),
-    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
     {ok, ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
@@ -169,7 +177,8 @@ client_id(Config) ->
     ok.
 
 client_no_server() ->
-    [{doc, "A server not being available makes the ID fetching error out"}].
+    [{doc, "A server not being available makes the ID fetching error out"},
+     {timetrap, timer:seconds(30)}].
 client_no_server(Config) ->
     Name = ?config(name, Config),
     Remote = {"does not exist", node()}, % using distributed erlang
@@ -193,10 +202,12 @@ client_no_server(Config) ->
 
 fork_server_save() ->
     [{doc, "A server forking its ID saves it to disk and its workers "
-           "have it live-updated."}].
+           "have it live-updated."},
+     {timetrap, timer:seconds(30)}].
 fork_server_save(Config) ->
     Name = ?config(name, Config),
-    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
     {ok, ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
@@ -223,7 +234,8 @@ basic_sync() ->
      {timetrap, timer:seconds(30)}].
 basic_sync(Config) ->
     Client = ?config(name, Config),
-    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
     ClientPath = ?config(path, Config),
     ServerPath = ?config(server_path, Config),
     {ok, _ServId1} = revault_fsm:id(Server),
@@ -309,7 +321,8 @@ too_many_clients() ->
      {timetrap, timer:seconds(30)}].
 too_many_clients(Config) ->
     Client = ?config(name, Config),
-    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
     ClientPath = ?config(path, Config),
     {ok, _ServId1} = revault_fsm:id(Server),
     {ok, _} = revault_fsm_sup:start_fsm(
@@ -371,7 +384,8 @@ overwrite_sync_clash() ->
      {timetrap, timer:seconds(30)}].
 overwrite_sync_clash(Config) ->
     Client = ?config(name, Config),
-    Remote = {Server=?config(server, Config), node()}, % using distributed erlang
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
     ClientPath = ?config(path, Config),
     ServerPath = ?config(server_path, Config),
     {ok, _ServId1} = revault_fsm:id(Server),
