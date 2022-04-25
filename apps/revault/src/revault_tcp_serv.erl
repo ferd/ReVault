@@ -14,7 +14,7 @@
 %%% with interrupts and broken transfers with end-to-end retries.
 -module(revault_tcp_serv).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
--export([reply/4]).
+-export([accept_peer/3, unpeer/3, reply/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -behaviour(gen_server).
 
@@ -39,7 +39,17 @@ stop(Name) ->
 update_dirs(Name, DirOpts) ->
     gen_server:call(?SERVER(Name), {dirs, DirOpts}).
 
-reply(Name, _Dir, {Pid,Marker}, Payload) ->
+accept_peer(_Name, _Dir, {Pid,_Marker}) ->
+    {ok, Pid}.
+
+unpeer(Name, _Dir, Pid) ->
+    gen_server:call(?SERVER(Name), {disconnect, Pid}, infinity).
+
+reply(Name, _Dir, _Pid, {Pid,Marker}, Payload) ->
+    %% Gotcha here: we forget the first _Pid (the remote) and use the one that
+    %% was bundled with the Marker because it's possible that multiple clients
+    %% at once are contacting the server and we need to respond to many with
+    %% a busy message.
     gen_server:call(?SERVER(Name), {fwd, Pid, {revault, Marker, Payload}}, infinity).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -73,6 +83,27 @@ handle_call({dirs, Opts}, _From, S=#serv{}) ->
     %% TODO: handle port change
     %% TODO: handle status: disabled
     {reply, ok, S#serv{dirs=DirOpts}};
+handle_call({disconnect, Pid}, _From, S=#serv{workers=W}) ->
+    case W of
+        #{Pid := _} ->
+            %% Here we do a synchronous block; we fully expect the
+            %% worker process to still be present for this termination
+            %% to work, since the pid is tracked. This means that
+            %% we can synchronously reply to the caller once we receive
+            %% the worker's death.
+            %% We do this because it's possible there's a race condition
+            %% where the remote connection closes at the same time our
+            %% caller here tries to, and if we let the worker respond, it
+            %% may already be dead.
+            Pid ! disconnect,
+            receive
+                {'EXIT', Pid, _Reason} ->
+                    Workers = maps:remove(Pid, W),
+                    {reply, ok, S#serv{workers=Workers}}
+            end;
+        _ ->
+            {reply, ok, S}
+    end;
 handle_call({fwd, Pid, Msg}, From, S=#serv{}) ->
     Pid ! {fwd, From, Msg},
     {noreply, S};
@@ -129,7 +160,6 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
     %% to the right place.
     {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"sync">> := DirNames} = Dirs,
-    ct:pal("Msg: ~p", [Msg]),
     case Msg of
         {revault, Marker, {peer, Dir}} ->
             case lists:member(Dir, DirNames) of
@@ -158,13 +188,17 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             Res = gen_tcp:send(Sock, Payload),
             gen_server:reply(From, Res),
             worker_loop(Dir, C);
+        disconnect ->
+            gen_tcp:close(Sock),
+            exit(normal);
         {tcp, Sock, Data} ->
             inet:setopts(Sock, [{active, once}]),
             case revault_tcp:unwrap(<<Buf0/binary, Data/binary>>) of
                 {error, incomplete} ->
                     worker_loop(Dir, C#conn{buf = <<Buf0/binary, Data/binary>>});
-                {ok, ?VSN, Msg, NewBuf} ->
-                    revault_tcp:send_local(Name, Msg),
+                {ok, ?VSN, Payload, NewBuf} ->
+                    {revault, Marker, Msg} = Payload,
+                    revault_tcp:send_local(Name, {revault, {self(), Marker}, Msg}),
                     worker_loop(Dir, C#conn{buf = NewBuf})
             end;
         {tcp_error, Sock, Reason} ->

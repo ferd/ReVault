@@ -12,17 +12,18 @@
 %% are not generic.
 -export([wrap/1, unwrap/1, send_local/2]).
 %% callbacks from within the FSM
--export([callback/1, mode/2, peer/3, unpeer/3, send/3, reply/4, unpack/2]).
+-export([callback/1, mode/2, peer/3, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 
--record(state, {name, dirs, mode}).
--type state() :: {?MODULE, term()}.
+-record(state, {name, dirs, mode, serv_conn}).
+-type state() :: term().
+-type cb_state() :: {?MODULE, state()}.
 -export_type([state/0]).
 
 -spec callback(term()) -> state().
 callback({Name, DirOpts}) ->
     {?MODULE, #state{name=Name, dirs=DirOpts}}.
 
--spec mode(client|server, state()) -> {term(), state()}.
+-spec mode(client|server, state()) -> {term(), cb_state()}.
 mode(Mode, S=#state{name=Name, dirs=DirOpts}) ->
     Res = case Mode of
         client ->
@@ -34,19 +35,40 @@ mode(Mode, S=#state{name=Name, dirs=DirOpts}) ->
 
 %% @doc only callable from the client-side.
 peer(Local, Peer=Dir, S=#state{dirs=#{<<"peers">> := Peers}}) ->
-    #{Peer := Map} = Peers,
-    Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir)},
-    {revault_tcp_client:peer(Local, Peer, Map, Payload), {?MODULE, S}}.
+    case Peers of
+        #{Peer := Map} ->
+            Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir)},
+            {revault_tcp_client:peer(Local, Peer, Map, Payload), {?MODULE, S}};
+        _ ->
+            {{error, unknown_peer}, {?MODULE, S}}
+    end.
 
-unpeer(_, _, _) -> error(undef).
-send(_, _, _) -> error(undef).
+accept_peer(Remote, Marker, S=#state{name=Name}) ->
+    {ok, Conn} = revault_tcp_serv:accept_peer(Name, Remote, Marker),
+    {ok, {?MODULE, S#state{serv_conn=Conn}}}.
+
+unpeer(Name, Remote, S=#state{mode=client}) ->
+    {revault_tcp_client:unpeer(Name, Remote),
+     {?MODULE, S}};
+unpeer(Name, Remote, S=#state{mode=server, serv_conn=Conn}) ->
+    {revault_tcp_serv:unpeer(Name, Remote, Conn),
+     {?MODULE, S#state{serv_conn=undefined}}}.
+
+%% @doc only callable from the client-side, server always replies.
+send(Remote, Payload, S=#state{name=Name, mode=client}) ->
+    Marker = make_ref(),
+    Res = case revault_tcp_client:send(Name, Remote, Marker, Payload) of
+        ok -> {ok, Marker};
+        Other -> Other
+    end,
+    {Res, {?MODULE, S}}.
 
 % [Remote, Marker, revault_data_wrapper:ok()]),
 reply(Remote, Marker, Payload, S=#state{name=Name, mode=client}) ->
     {revault_tcp_client:reply(Name, Remote, Marker, Payload),
      {?MODULE, S}};
-reply(Remote, Marker, Payload, S=#state{name=Name, mode=server}) ->
-    {revault_tcp_serv:reply(Name, Remote, Marker, Payload),
+reply(Remote, Marker, Payload, S=#state{name=Name, mode=server, serv_conn=Conn}) ->
+    {revault_tcp_serv:reply(Name, Remote, Conn, Marker, Payload),
      {?MODULE, S}}.
 
 unpack(_, _) -> error(undef).

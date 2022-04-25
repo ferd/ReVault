@@ -485,7 +485,6 @@ client_sync_complete(_, _, Data) ->
 
 server(enter, _, Data = #data{callback=Cb}) ->
     {_Res, NewCb} = apply_cb(Cb, mode, [server]),
-    ct:pal("applying server mode: ~p", [_Res]),
     {keep_state, Data#data{callback=NewCb}};
 server({call, From}, {role, _}, Data) ->
     %% TODO: support switching to client role is not connected.
@@ -494,7 +493,8 @@ server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
 server(info, {revault, Marker, {peer, Remote}}, Data=#data{sub=undefined, callback=Cb}) ->
     %% TODO: handle error
-    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, revault_data_wrapper:ok()]),
+    {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
+    {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
     {keep_state, Data#data{callback=NewCb, sub=#server{remote=Remote}}};
 server(info, {revault, Marker, {peer, Remote}}, Data=#data{callback=Cb}) ->
     %% TODO: consider postponing the message to respond later?

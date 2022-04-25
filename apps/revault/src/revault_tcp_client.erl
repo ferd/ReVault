@@ -3,7 +3,7 @@
 %% makes no sense.
 -module(revault_tcp_client).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
--export([peer/4, reply/4]).
+-export([peer/4, unpeer/2, send/4, reply/4]).
 -export([callback_mode/0, init/1, handle_event/4, terminate/3]).
 -behaviour(gen_statem).
 
@@ -30,6 +30,12 @@ update_dirs(Name, DirOpts) ->
 peer(Name, Dir, Auth, Payload) ->
     gen_statem:call(?CLIENT(Name), {connect, {Dir,Auth}, Payload}, infinity).
 
+unpeer(Name, _Dir) ->
+    gen_statem:call(?CLIENT(Name), disconnect, infinity).
+
+send(Name, _Dir, Marker, Payload) ->
+    gen_statem:call(?CLIENT(Name), {revault, Marker, Payload}, infinity).
+
 reply(Name, _Dir, Marker, Payload) ->
     %% Ignore `Dir' because we should already be connected to one
     gen_statem:call(?CLIENT(Name), {revault, Marker, Payload}, infinity).
@@ -53,8 +59,14 @@ handle_event({call, From}, {connect, {Dir,Auth}, Msg}, disconnected, Data) ->
         {ok, NewData} ->
             handle_event({call, From}, Msg, connected, NewData);
         {error, Reason} ->
-            exit({error, Reason})
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
     end;
+handle_event({call, From}, disconnect, disconnected, Data) ->
+    {keep_state, Data, [{reply, From, ok}]};
+handle_event({call, From}, disconnect, connected, Data=#client{sock=Sock}) ->
+    gen_tcp:close(Sock),
+    {next_state, disconnected, Data#client{sock=undefined},
+     [{reply, From, ok}]};
 handle_event({call, From}, Msg, disconnected, Data=#client{dir=Dir, auth=Auth}) ->
     case connect(Data, Dir, Auth) of
         {ok, NewData} ->

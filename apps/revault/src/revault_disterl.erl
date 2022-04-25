@@ -13,7 +13,7 @@
 %%% concrete data that can then be handed off to some format-specific
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
--export([callback/1, mode/1, peer/2, unpeer/2, send/2, reply/3, unpack/1]).
+-export([callback/1, mode/1, peer/2, accept_peer/2, unpeer/2, send/2, reply/3, unpack/1]).
 -define(VSN, 1).
 -type state() :: ?MODULE.
 -export_type([state/0]).
@@ -40,6 +40,10 @@ peer(FromName, {ToName, ToNode}) ->
                     {error, disterl_connection}
             end
     end.
+
+accept_peer(_ToName, _Marker) ->
+    %% No need to actually track any sort of data
+    ok.
 
 unpeer(_FromName, _ToName) ->
     %% No need to actually unset any sort of connections over distributed erlang.

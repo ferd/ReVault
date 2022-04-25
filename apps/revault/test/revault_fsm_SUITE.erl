@@ -36,9 +36,22 @@ init_per_group(tcp, Config) ->
             }}
         }})
     end},
-    {peer, fun(_Name) -> <<"test">> end}  | Config];
+    {nohost_callback, fun(Name) ->
+        revault_tcp:callback({Name, #{
+            <<"peers">> => #{
+                <<"test">> => #{
+                    <<"sync">> => [<<"test">>],
+                    <<"url">> => <<"localhost:33333">>,
+                    <<"auth">> => #{<<"type">> => <<"none">>}
+                }
+            },
+            <<"server">> => #{}
+        }})
+    end},
+    {peer, fun(_Name) -> <<"test">> end} | Config];
 init_per_group(disterl, Config) ->
     [{callback, fun revault_disterl:callback/1},
+     {nohost_callback, fun revault_disterl:callback/1},
      {peer, fun(Name) -> {Name, node()} end} | Config];
 init_per_group(_, Config) ->
     Config.
@@ -181,14 +194,14 @@ client_no_server() ->
      {timetrap, timer:seconds(30)}].
 client_no_server(Config) ->
     Name = ?config(name, Config),
-    Remote = {"does not exist", node()}, % using distributed erlang
+    Remote = (?config(peer, Config))(<<"does not exist">>),
     {ok, Sup} = revault_sup:start_link(),
     {ok, _} = revault_fsm_sup:start_fsm(
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
         ?config(interval, Config),
-        (?config(callback, Config))(Name)
+        (?config(nohost_callback, Config))(Name)
     ),
     %% How to specify what sort of client we are? to which server?
     ok = revault_fsm:client(Name),
