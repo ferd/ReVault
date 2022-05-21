@@ -66,8 +66,9 @@ a `ReVault/config.toml` file (using the XDG standard of `~/.config/ReVault/confi
   sync = ["images"]
   url = "leetzone.ca:8022"
     [peers.vps.auth]
-    type = "ssh"
-    cert = "~/.ssh/id_rsa"
+    type = "tls"
+    certfile = "/path/to/cert"
+    fingerprint_sha = "AEAEFDFB..." # server's cert fingerprint
 
   # Localhost copy running
   [peers.local]
@@ -77,20 +78,21 @@ a `ReVault/config.toml` file (using the XDG standard of `~/.config/ReVault/confi
 
 [server]
     [server.auth.none]
+    status = "disabled"
     port = 9999
     sync = ["images", "music"]
     mode = "read/write"
 
-    [server.auth.ssh]
-    status = "disabled"
+    [server.auth.tls]
     port = 8022
-    [server.auth.ssh.authorized_keys]
-        [server.auth.ssh.authorized_keys.vps]
-        public_key = "...."
+    certfile = "/path/to/cert"
+    [server.auth.tls.authorized]
+        [server.auth.tls.authorized.vps]
+        fingerprint_sha = "DEADBEEF..." # client cert fingerprint
         sync = ["images", "music"]
 
-        [server.auth.ssh.authorized_keys.friendo]
-        public_key = "...."
+        [server.auth.ssh.authorized.friendo]
+        fingerprint_sha = "DEADBEEF..." # client cert fingerprint
         sync = ["music"]
         mode = "read"
 ```

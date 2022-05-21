@@ -41,8 +41,9 @@ literal(Config) ->
                 <<"sync">> := [<<"images">>],
                 <<"url">> := <<"leetzone.ca:8022">>,
                 <<"auth">> := #{
-                    <<"type">> := <<"ssh">>,
-                    <<"cert">> := <<_/binary>>
+                    <<"type">> := <<"tls">>,
+                    <<"certfile">> := <<_/binary>>,
+                    <<"fingerprint_sha">> := <<_/binary>>
                 }
             },
             <<"local">> := #{
@@ -56,22 +57,23 @@ literal(Config) ->
          <<"server">> := #{
             <<"auth">> := #{
                 <<"none">> := #{
-                    <<"status">> := enabled,
+                    <<"status">> := disabled,
                     <<"port">> := 9999,
                     <<"sync">> := [<<"images">>, <<"music">>],
                     <<"mode">> := read_write
                 },
-                <<"ssh">> := #{
-                    <<"status">> := disabled,
+                <<"tls">> := #{
+                    <<"status">> := enabled,
                     <<"port">> := 8022,
-                    <<"authorized_keys">> := #{
+                    <<"certfile">> := <<_/binary>>,
+                    <<"authorized">> := #{
                         <<"vps">> := #{
-                            <<"public_key">> := <<_/binary>>,
+                            <<"fingerprint_sha">> := <<_/binary>>,
                             <<"sync">> := [<<"images">>, <<"music">>],
                             <<"mode">> := read_write
                         },
                         <<"friendo">> := #{
-                            <<"public_key">> := <<_/binary>>,
+                            <<"fingerprint_sha">> := <<_/binary>>,
                             <<"sync">> := [<<"music">>],
                             <<"mode">> := read
                         }

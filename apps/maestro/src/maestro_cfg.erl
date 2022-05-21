@@ -86,8 +86,9 @@ normalize_peer_auth(Map) ->
 
 normalize_peer_auth(<<"none">>, Map) ->
     Map;
-normalize_peer_auth(<<"ssh">>, Map) ->
-    _ = maps:get(<<"cert">>, Map),
+normalize_peer_auth(<<"tls">>, Map) ->
+    _ = maps:get(<<"certfile">>, Map),
+    _ = maps:get(<<"fingerprint_sha">>, Map),
     Map.
 
 normalize_serv_auth(Map, Dirnames) ->
@@ -101,23 +102,24 @@ normalize_serv_auth(<<"none">>, Map, Acc, Dirnames) ->
         <<"sync">> => maps:get(<<"sync">>, Map, Dirnames),
         <<"port">> => maps:get(<<"port">>, Map)
     }};
-normalize_serv_auth(<<"ssh">>, Map, Acc, Dirnames) ->
-    Acc#{<<"ssh">> => #{
+normalize_serv_auth(<<"tls">>, Map, Acc, Dirnames) ->
+    Acc#{<<"tls">> => #{
         <<"status">> => status(maps:get(<<"status">>, Map, <<"enabled">>)),
         <<"port">> => maps:get(<<"port">>, Map),
-        <<"authorized_keys">> =>
-            auth_keys(maps:get(<<"authorized_keys">>, Map), Dirnames)
+        <<"certfile">> => maps:get(<<"certfile">>, Map),
+        <<"authorized">> =>
+            auth_certs(maps:get(<<"authorized">>, Map), Dirnames)
     }}.
 
-auth_keys(Map, Dirnames) ->
-    maps:fold(fun(K, V, Acc) -> auth_keys(K, V, Acc, Dirnames) end,
+auth_certs(Map, Dirnames) ->
+    maps:fold(fun(K, V, Acc) -> auth_certs(K, V, Acc, Dirnames) end,
               #{}, Map).
 
-auth_keys(Name, Map, Acc, Dirnames) ->
+auth_certs(Name, Map, Acc, Dirnames) ->
     Acc#{Name => #{
         <<"mode">> => mode(maps:get(<<"mode">>, Map, <<"read/write">>)),
         <<"sync">> => maps:get(<<"sync">>, Map, Dirnames),
-        <<"public_key">> => maps:get(<<"public_key">>, Map)
+        <<"fingerprint_sha">> => maps:get(<<"fingerprint_sha">>, Map)
     }}.
 
 dirnames(Map) -> maps:keys(Map).

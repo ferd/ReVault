@@ -17,8 +17,9 @@
   sync = ["images"]
   url = "leetzone.ca:8022"
     [peers.vps.auth]
-    type = "ssh"
-    cert = "~/.ssh/id_rsa"
+    type = "tls"
+    certfile = "/some/fake/path.crt"
+    fingerprint_sha = "D79F076110B39293E349AC89845B0380C19E2F8B"
 
   # Localhost copy running
   [peers.local]
@@ -28,21 +29,22 @@
 
 [server]
     [server.auth.none]
-    # status = "disabled"
+    status = "disabled"
     port = 9999
     sync = ["images", "music"]
     mode = "read/write"
 
-    [server.auth.ssh]
-    status = "disabled"
+    [server.auth.tls]
+    # status = "disabled"
     port = 8022
-    [server.auth.ssh.authorized_keys]
-        [server.auth.ssh.authorized_keys.vps]
-        public_key = "...."
+    certfile = "/path/to/fake/key"
+    [server.auth.tls.authorized]
+        [server.auth.tls.authorized.vps]
+        fingerprint_sha = "...."
         sync = ["images", "music"]
 
-        [server.auth.ssh.authorized_keys.friendo]
-        public_key = "...."
+        [server.auth.tls.authorized.friendo]
+        fingerprint_sha = "...."
         sync = ["music"]
         mode = "read"
 
