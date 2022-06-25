@@ -8,7 +8,8 @@
     stdlib,
     gproc,
     itc,
-    uuid
+    uuid,
+    ssl, public_key, tak
    ]},
   {env,[]},
   {modules, []},

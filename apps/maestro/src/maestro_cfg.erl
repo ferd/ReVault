@@ -88,6 +88,8 @@ normalize_peer_auth(<<"none">>, Map) ->
     Map;
 normalize_peer_auth(<<"tls">>, Map) ->
     _ = maps:get(<<"certfile">>, Map),
+    _ = maps:get(<<"keyfile">>, Map),
+    _ = maps:get(<<"peer_certfile">>, Map),
     Map.
 
 normalize_serv_auth(Map, Dirnames) ->

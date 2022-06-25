@@ -18,7 +18,9 @@
   url = "leetzone.ca:8022"
     [peers.vps.auth]
     type = "tls"
-    certfile = "/some/fake/path.crt"
+    certfile = "/path/to/fake/cert"
+    keyfile = "/path/to/fake/key"
+    peer_certfile = "/some/fake/path.crt"
 
   # Localhost copy running
   [peers.local]

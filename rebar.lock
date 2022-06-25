@@ -5,7 +5,7 @@
  {<<"recon">>,{pkg,<<"recon">>,<<"2.3.6">>},0},
  {<<"tak">>,
   {git,"https://github.com/ferd/tak.git",
-       {ref,"89e20aa407a9e135cdf7e4c0d6932db06da03a63"}},
+       {ref,"9ae3e3e8ffe78c1475e64c427e6db300e3d5a45f"}},
   0},
  {<<"tomerl">>,{pkg,<<"tomerl">>,<<"0.4.0">>},0},
  {<<"uuid">>,{pkg,<<"uuid_erl">>,<<"2.0.0">>},0}]}.

@@ -42,7 +42,9 @@ literal(Config) ->
                 <<"url">> := <<"leetzone.ca:8022">>,
                 <<"auth">> := #{
                     <<"type">> := <<"tls">>,
-                    <<"certfile">> := <<_/binary>>
+                    <<"certfile">> := <<_/binary>>,
+                    <<"keyfile">> := <<_/binary>>,
+                    <<"peer_certfile">> := <<_/binary>>
                 }
             },
             <<"local">> := #{

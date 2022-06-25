@@ -105,7 +105,7 @@ unpinned_server(Config) ->
     _ServerKey = filename:join(?config(cert_dir, Config), "server.key"),
     Client1Cert = filename:join(?config(cert_dir, Config), "client1.crt"),
     Client1Key = filename:join(?config(cert_dir, Config), "client1.key"),
-    Client2Cert = filename:join(?config(cert_dir, Config), "client2.crt"),
+    _Client2Cert = filename:join(?config(cert_dir, Config), "client2.crt"),
     _Client2Key = filename:join(?config(cert_dir, Config), "client2.key"),
     OtherKey = filename:join(?config(cert_dir, Config), "other.key"),
     OtherCert = filename:join(?config(cert_dir, Config), "other.crt"),
