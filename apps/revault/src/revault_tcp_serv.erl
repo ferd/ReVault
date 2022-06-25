@@ -154,7 +154,7 @@ worker_init(LocalName, Opts) ->
     end.
 
 worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
-    %% TODO: wrap the marker into a local one so that the responses
+    %% wrap the marker into a local one so that the responses
     %% can come to the proper connection process. There can be multiple
     %% TCP servers active for a single one and the responses must go
     %% to the right place.

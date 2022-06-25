@@ -88,7 +88,6 @@ normalize_peer_auth(<<"none">>, Map) ->
     Map;
 normalize_peer_auth(<<"tls">>, Map) ->
     _ = maps:get(<<"certfile">>, Map),
-    _ = maps:get(<<"fingerprint_sha">>, Map),
     Map.
 
 normalize_serv_auth(Map, Dirnames) ->
@@ -107,6 +106,7 @@ normalize_serv_auth(<<"tls">>, Map, Acc, Dirnames) ->
         <<"status">> => status(maps:get(<<"status">>, Map, <<"enabled">>)),
         <<"port">> => maps:get(<<"port">>, Map),
         <<"certfile">> => maps:get(<<"certfile">>, Map),
+        <<"keyfile">> => maps:get(<<"keyfile">>, Map),
         <<"authorized">> =>
             auth_certs(maps:get(<<"authorized">>, Map), Dirnames)
     }}.
@@ -119,7 +119,7 @@ auth_certs(Name, Map, Acc, Dirnames) ->
     Acc#{Name => #{
         <<"mode">> => mode(maps:get(<<"mode">>, Map, <<"read/write">>)),
         <<"sync">> => maps:get(<<"sync">>, Map, Dirnames),
-        <<"fingerprint_sha">> => maps:get(<<"fingerprint_sha">>, Map)
+        <<"certfile">> => maps:get(<<"certfile">>, Map)
     }}.
 
 dirnames(Map) -> maps:keys(Map).

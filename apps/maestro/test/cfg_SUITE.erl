@@ -42,8 +42,7 @@ literal(Config) ->
                 <<"url">> := <<"leetzone.ca:8022">>,
                 <<"auth">> := #{
                     <<"type">> := <<"tls">>,
-                    <<"certfile">> := <<_/binary>>,
-                    <<"fingerprint_sha">> := <<_/binary>>
+                    <<"certfile">> := <<_/binary>>
                 }
             },
             <<"local">> := #{
@@ -66,14 +65,15 @@ literal(Config) ->
                     <<"status">> := enabled,
                     <<"port">> := 8022,
                     <<"certfile">> := <<_/binary>>,
+                    <<"keyfile">> := <<_/binary>>,
                     <<"authorized">> := #{
                         <<"vps">> := #{
-                            <<"fingerprint_sha">> := <<_/binary>>,
+                            <<"certfile">> := <<_/binary>>,
                             <<"sync">> := [<<"images">>, <<"music">>],
                             <<"mode">> := read_write
                         },
                         <<"friendo">> := #{
-                            <<"fingerprint_sha">> := <<_/binary>>,
+                            <<"certfile">> := <<_/binary>>,
                             <<"sync">> := [<<"music">>],
                             <<"mode">> := read
                         }

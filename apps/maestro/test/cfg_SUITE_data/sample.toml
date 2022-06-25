@@ -19,7 +19,6 @@
     [peers.vps.auth]
     type = "tls"
     certfile = "/some/fake/path.crt"
-    fingerprint_sha = "D79F076110B39293E349AC89845B0380C19E2F8B"
 
   # Localhost copy running
   [peers.local]
@@ -37,14 +36,15 @@
     [server.auth.tls]
     # status = "disabled"
     port = 8022
-    certfile = "/path/to/fake/key"
+    certfile = "/path/to/fake/cert"
+    keyfile = "/path/to/fake/key"
     [server.auth.tls.authorized]
         [server.auth.tls.authorized.vps]
-        fingerprint_sha = "...."
+        certfile = "...."
         sync = ["images", "music"]
 
         [server.auth.tls.authorized.friendo]
-        fingerprint_sha = "...."
+        certfile = "...."
         sync = ["music"]
         mode = "read"
 

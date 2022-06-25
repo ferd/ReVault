@@ -3,6 +3,10 @@
  {<<"itc">>,{pkg,<<"interval_tree_clocks">>,<<"1.0.0">>},0},
  {<<"quickrand">>,{pkg,<<"quickrand">>,<<"2.0.0">>},1},
  {<<"recon">>,{pkg,<<"recon">>,<<"2.3.6">>},0},
+ {<<"tak">>,
+  {git,"https://github.com/ferd/tak.git",
+       {ref,"89e20aa407a9e135cdf7e4c0d6932db06da03a63"}},
+  0},
  {<<"tomerl">>,{pkg,<<"tomerl">>,<<"0.4.0">>},0},
  {<<"uuid">>,{pkg,<<"uuid_erl">>,<<"2.0.0">>},0}]}.
 [

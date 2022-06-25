@@ -1,6 +1,3 @@
-%% TODO: wrap caller-side events into calls, within which the failures
-%% and retries are attempted. Without that synchronous mode, error-handling
-%% makes no sense.
 -module(revault_tcp_client).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
 -export([peer/4, unpeer/2, send/4, reply/4]).
