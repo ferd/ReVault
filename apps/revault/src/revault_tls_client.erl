@@ -84,7 +84,7 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, Data=#client{
             {next_state, disconnected, Data#client{sock=undefined},
              [{reply, From, {error, Reason}}]}
     end;
-handle_event(info, {tcp, Sock, Bin}, connected, Data=#client{sock=Sock, buf=Buf0}) ->
+handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{sock=Sock, buf=Buf0}) ->
     ssl:setopts(Sock, [{active, once}]),
     case revault_tls:unwrap(TmpBuf = <<Buf0/binary, Bin/binary>>) of
         {error, incomplete} ->
@@ -94,10 +94,10 @@ handle_event(info, {tcp, Sock, Bin}, connected, Data=#client{sock=Sock, buf=Buf0
             revault_tls:send_local(Name, Msg),
             {next_state, connected, Data#client{buf=NewBuf}}
     end;
-handle_event(info, {tcp_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
+handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
     %% TODO: Log
     {next_state, disconnected, Data#client{sock=undefined}};
-handle_event(info, {tcp_closed, Sock}, connected, Data=#client{sock=Sock}) ->
+handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
     {next_state, disconnected, Data#client{sock=undefined}}.
 
 terminate(_Reason, _State, _Data) ->

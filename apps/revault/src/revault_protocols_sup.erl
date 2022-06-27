@@ -35,6 +35,9 @@ init([]) ->
     {ok, {{one_for_one, 1, 1}, [
         #{id => revault_tcp,
           start => {revault_protocols_tcp_sup, start_link, []},
+          type => supervisor},
+        #{id => revault_tls,
+          start => {revault_protocols_tls_sup, start_link, []},
           type => supervisor}
     ]}}.
 

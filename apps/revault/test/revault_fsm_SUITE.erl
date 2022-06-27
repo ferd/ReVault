@@ -7,11 +7,13 @@
 all() ->
     [start_hierarchy,
      {group, disterl},
-     {group, tcp}].
+     {group, tcp},
+     {group, tls}].
 
 groups() ->
     [{disterl, [], [{group, syncs}]},
      {tcp, [], [{group, syncs}]},
+     {tls, [], [{group, syncs}]},
      {syncs, [], [client_id, client_no_server,
                   fork_server_save, basic_sync, too_many_clients,
                   overwrite_sync_clash]}].
@@ -35,8 +37,8 @@ init_per_group(tcp, Config) ->
                 }
             }}
         }})
-    end},
-    {nohost_callback, fun(Name) ->
+     end},
+     {nohost_callback, fun(Name) ->
         revault_tcp:callback({Name, #{
             <<"peers">> => #{
                 <<"test">> => #{
@@ -53,6 +55,57 @@ init_per_group(disterl, Config) ->
     [{callback, fun revault_disterl:callback/1},
      {nohost_callback, fun revault_disterl:callback/1},
      {peer, fun(Name) -> {Name, node()} end} | Config];
+init_per_group(tls, Config) ->
+    CertDir = ?config(data_dir, Config),
+    [{callback, fun(Name) ->
+        revault_tls:callback({Name, #{
+            <<"peers">> => #{
+                <<"test">> => #{
+                    <<"sync">> => [<<"test">>],
+                    <<"url">> => <<"localhost:8889">>,
+                    <<"auth">> => #{
+                        <<"type">> => <<"tls">>,
+                        <<"certfile">> => filename:join(CertDir, "key_a.crt"),
+                        <<"keyfile">> => filename:join(CertDir, "key_a.key"),
+                        <<"peer_certfile">> => filename:join(CertDir, "key_b.crt")
+                    }
+                }
+            },
+            <<"server">> => #{<<"auth">> => #{
+                <<"tls">> => #{
+                    <<"status">> => enabled,
+                    <<"port">> => 8889,
+                    <<"certfile">> => filename:join(CertDir, "key_b.crt"),
+                    <<"keyfile">> => filename:join(CertDir, "key_b.key"),
+                    <<"authorized">> => #{
+                        <<"test">> => #{
+                            <<"certfile">> => filename:join(CertDir, "key_a.crt"),
+                            <<"sync">> => [<<"test">>],
+                            <<"mode">> => read_write
+                        }
+                    }
+                }
+            }}
+        }})
+    end},
+    {nohost_callback, fun(Name) ->
+        revault_tls:callback({Name, #{
+            <<"peers">> => #{
+                <<"test">> => #{
+                    <<"sync">> => [<<"test">>],
+                    <<"url">> => <<"localhost:33333">>,
+                    <<"auth">> => #{
+                        <<"type">> => <<"tls">>,
+                        <<"certfile">> => filename:join(CertDir, "key_a.crt"),
+                    <<"keyfile">> => filename:join(CertDir, "key_a.key"),
+                    <<"peer_certfile">> => filename:join(CertDir, "key_b.crt")
+                    }
+                }
+            },
+            <<"server">> => #{}
+        }})
+    end},
+    {peer, fun(_Name) -> <<"test">> end} | Config];
 init_per_group(_, Config) ->
     Config.
 

@@ -42,6 +42,7 @@
     keyfile = "/path/to/fake/key"
     [server.auth.tls.authorized]
         [server.auth.tls.authorized.vps]
+        # each peer should have a unique peer certificate to auth it
         certfile = "...."
         sync = ["images", "music"]
 

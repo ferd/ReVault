@@ -52,7 +52,7 @@ init([]) ->
 %%====================================================================
 start_child(Mod, Name, Args) ->
     supervisor:start_child(?SERVER, #{
-        id => {client, Name},
+        id => {Mod, Name},
         start => {Mod, start_link, Args},
         type => worker
     }).

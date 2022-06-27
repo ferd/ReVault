@@ -127,9 +127,10 @@ handle_cast(_Info, State) ->
 handle_info(accept, S=#serv{name=Name, sock=LSock, dirs=Opts, workers=W}) ->
     case ssl:transport_accept(LSock, ?ACCEPT_WAIT) of
         {ok, HSock} ->
-            case ssl:handshake(HSock, ?ACCEPT_WAIT) of
+            case ssl:handshake(HSock, ?HANDSHAKE_WAIT) of
                 {error, _Reason} -> % don't crash on bad TLS, this is super common
                     self() ! accept,
+                    ssl:close(HSock),
                     {noreply, S};
                 {ok, Sock} ->
                     Worker = start_linked_worker(Name, Sock, Opts),
@@ -164,7 +165,11 @@ start_linked_worker(LocalName, Sock, Opts) ->
 worker_init(LocalName, Opts) ->
     receive
         {ready, Sock} ->
-            worker_dispatch(#conn{localname=LocalName, sock=Sock, dirs=Opts})
+            %% TODO: Figure out the certificate to know which directories are accessible
+            %%       to this cert; remove the unaccessible dirs from the config.
+            {ok, Cert} = ssl:peercert(Sock),
+            NewOpts = match_cert(Cert, Opts),
+            worker_dispatch(#conn{localname=LocalName, sock=Sock, dirs=NewOpts})
     end.
 
 worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
@@ -173,7 +178,7 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
     %% TLS servers active for a single one and the responses must go
     %% to the right place.
     {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
-    #{<<"sync">> := DirNames} = Dirs,
+    #{<<"authorized">> := #{<<"sync">> := DirNames}} = Dirs,
     case Msg of
         {revault, Marker, {peer, Dir}} ->
             case lists:member(Dir, DirNames) of
@@ -182,7 +187,7 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
                     revault_tls:send_local(Name, {revault, {self(),Marker}, {peer, self()}}),
                     worker_loop(Dir, C#conn{buf=NewBuf});
                 false ->
-                    ssl:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),
+                    ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
             end;
         _ ->
@@ -205,7 +210,7 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
         disconnect ->
             ssl:close(Sock),
             exit(normal);
-        {tcp, Sock, Data} ->
+        {ssl, Sock, Data} ->
             ssl:setopts(Sock, [{active, once}]),
             case revault_tls:unwrap(<<Buf0/binary, Data/binary>>) of
                 {error, incomplete} ->
@@ -215,9 +220,9 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
                     revault_tls:send_local(Name, {revault, {self(), Marker}, Msg}),
                     worker_loop(Dir, C#conn{buf = NewBuf})
             end;
-        {tcp_error, Sock, Reason} ->
+        {ssl_error, Sock, Reason} ->
             exit(Reason);
-        {tcp_closed, Sock} ->
+        {ssl_closed, Sock} ->
             exit(normal)
     end.
 
@@ -245,3 +250,21 @@ next_msg(Sock, Buf) ->
             end
     end.
 
+%% TODO: cache and pre-load certificates from disk to avoid the
+%% reading and decoding cost every time.
+match_cert(Cert, Opts = #{<<"authorized">> := Entries}) ->
+    case lists:search(fun({_, #{<<"certfile">> := File}}) ->
+                              Cert =:= decode_cert(File)
+                      end, maps:to_list(Entries)) of
+        {value, {_PeerName, SubMap}} ->
+            Opts#{<<"authorized">> => SubMap};
+        false ->
+            Opts#{<<"authorized">> => #{<<"sync">> => []}}
+    end.
+
+decode_cert(FileName) ->
+    %% assume the cert is already DER encoded.
+    {ok, Cert} = file:read_file(FileName),
+    public_key:pkix_encode('OTPCertificate',
+                           tak:peer_cert(tak:pem_to_cert_chain(Cert)),
+                           otp).
