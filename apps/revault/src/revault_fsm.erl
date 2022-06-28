@@ -464,6 +464,24 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
         NewAcc ->
             {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
     end;
+client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
+    #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
+    %% TODO: handle the file being corrupted vs its own hash
+    TmpF = filename:join("/tmp", F),
+    filelib:ensure_dir(TmpF),
+    ok = file:write_file(TmpF, Bin),
+    revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
+    file:delete(TmpF),
+    case CountLeft =:= 0 andalso Acc -- [WorkF] of
+        false ->
+            %% more of the same conflict file to come
+            {keep_state, Data};
+        [] ->
+            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+             [{next_event, internal, sync_complete}]};
+        NewAcc ->
+            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+    end;
 client_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
@@ -538,7 +556,8 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
     handle_file_sync(Name, Id, F, Meta, Bin),
     {keep_state, Data};
-server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, Meta, Bin}}, Data) ->
+server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, _CountLeft, Meta, Bin}}, Data) ->
+    %% TODO: handle the file being corrupted vs its own hash
     TmpF = filename:join("/tmp", F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
@@ -707,16 +726,16 @@ handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
             %% Stream all the files, mark as conflicts?
             %% just inefficiently read the whole freaking thing at once
             %% TODO: optimize to better read and send file parts
-            Cb2 = lists:foldl(
-                fun(Hash, CbAcc1) ->
+            {Cb2, _} = lists:foldl(
+                fun(Hash, {CbAcc1, Ct}) ->
                     FHash = make_conflict_path(F, Hash),
                     {ok, Bin} = file:read_file(filename:join(Path, FHash)),
-                    NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Vsn, Hash, Bin),
+                    NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
                     %% TODO: track failing or succeeding transfers?
                     {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
-                    CbAcc2
+                    {CbAcc2, Ct-1}
                 end,
-                Cb1,
+                {Cb1, length(Hashes)-1},
                 Hashes
             ),
             Data#data{callback=Cb2};

@@ -109,8 +109,8 @@ unpack({manifest, ?VSN, Data}) -> {manifest, Data};
 unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
 unpack({fetch, ?VSN, Path}) -> {fetch, Path};
 unpack({sync_complete, ?VSN}) -> sync_complete;
-unpack({conflict_file, ?VSN, WorkPath, Path, Meta, Bin}) ->
-    {conflict_file, WorkPath, Path, Meta, Bin};
+unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
+    {conflict_file, WorkPath, Path, Count, Meta, Bin};
 unpack(Term) ->
     Term.
 

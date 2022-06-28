@@ -16,7 +16,7 @@ groups() ->
      {tls, [], [{group, syncs}]},
      {syncs, [], [client_id, client_no_server,
                   fork_server_save, basic_sync, too_many_clients,
-                  overwrite_sync_clash]}].
+                  overwrite_sync_clash, conflict_sync]}].
 
 init_per_group(tcp, Config) ->
     [{callback, fun(Name) ->
@@ -364,7 +364,6 @@ basic_sync(Config) ->
     %% TODO: should we go back to idle mode and re-force setting a client here?
     ct:pal("RE-SYNC"),
     ok = revault_fsm:sync(Client, Remote),
-    %% TODO: check with a 3rd party for extra transitive conflicts
     %% the following should be moved to a lower-level test:
     %% Check again
     ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
@@ -492,6 +491,85 @@ overwrite_sync_clash(Config) ->
     end,
     ?assertNotEqual({ok, <<"corrupted">>},
                     file:read_file(filename:join([ClientPath, "shared"]))),
+    ok.
+
+conflict_sync() ->
+    [{doc, "A conflict file can be sync'd to a third party"},
+     {timetrap, timer:seconds(30)}].
+conflict_sync(Config) ->
+    Client = ?config(name, Config),
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    %% Set up a second client; because of how config works in the test, it needs
+    Client2 = Client ++ "_2",
+    Priv = ?config(priv_dir, Config),
+    DbDir2 = filename:join([Priv, "db_2"]),
+    ClientPath2 = filename:join([Priv, "data", "client_2"]),
+    filelib:ensure_dir(filename:join([DbDir2, "fakefile"])),
+    filelib:ensure_dir(filename:join([ClientPath2, "fakefile"])),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir2, Client2, ClientPath2, ?config(interval, Config),
+                                        (?config(callback, Config))(Client2)),
+    ok = revault_fsm:client(Client2),
+    ?assertMatch({ok, _}, revault_fsm:id(Client2, Remote)),
+    %% now in initialized mode
+    %% Write files
+    ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
+    ok = file:write_file(filename:join([ServerPath, "server-only"]), "s1"),
+    ok = file:write_file(filename:join([ServerPath, "shared"]), "sh1"),
+    ok = file:write_file(filename:join([ClientPath, "shared"]), "sh2"),
+    %% Track em
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Sync em
+    ok = revault_fsm:sync(Client, Remote),
+    %% See the result
+    %% 1. all unmodified files are left in place
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    %% 2. conflicting files are marked, with the working files left intact
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual(
+        {ok, <<"1C56416E18E2FE12E55CB8DE8AB3BB54DEDEC94C942520403CCD2E8DCA7BF8D5\n"
+               "D6BE7FB89A392FE342033E3ECCFF9CADFC4A58A19316E162E079D662762CE8B8">>},
+        file:read_file(filename:join([ServerPath, "shared.conflict"]))
+    ),
+    ?assertEqual(
+        {ok, <<"1C56416E18E2FE12E55CB8DE8AB3BB54DEDEC94C942520403CCD2E8DCA7BF8D5\n"
+               "D6BE7FB89A392FE342033E3ECCFF9CADFC4A58A19316E162E079D662762CE8B8">>},
+        file:read_file(filename:join([ClientPath, "shared.conflict"]))
+    ),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ServerPath, "shared.1C56416E"]))),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared.D6BE7FB8"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
+
+    %% Now when client 2 syncs, it gets the files and conflict files as well
+    ct:pal("SECOND SYNC", []),
+    ok = revault_fsm:sync(Client2, Remote),
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath2, "client-only"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ClientPath2, "server-only"]))),
+    %% conflicting files are marked, but working files aren't sync'd since they didn't exist here
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath2, "shared"]))),
+    ?assertEqual(
+        {ok, <<"1C56416E18E2FE12E55CB8DE8AB3BB54DEDEC94C942520403CCD2E8DCA7BF8D5\n"
+               "D6BE7FB89A392FE342033E3ECCFF9CADFC4A58A19316E162E079D662762CE8B8">>},
+        file:read_file(filename:join([ClientPath2, "shared.conflict"]))
+    ),
+    ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath2, "shared.D6BE7FB8"]))),
+    ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath2, "shared.1C56416E"]))),
     ok.
 
 %% TODO: add a UUID per server that creates its own ID

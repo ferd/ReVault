@@ -8,6 +8,6 @@ all() ->
     [start_stop].
 
 start_stop(_Config) ->
-    {ok, Apps} = application:ensure_all_started(revault),
+    {ok, Apps} = application:ensure_all_started(maestro),
     [ok = application:stop(A) || A <- Apps],
     ok.

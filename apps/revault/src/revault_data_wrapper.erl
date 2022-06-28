@@ -32,8 +32,8 @@ manifest(Data) ->
 send_file(Path, Vsn, Hash, Bin) ->
     {file, ?VSN, Path, {Vsn, Hash}, Bin}.
 
-send_conflict_file(WorkPath, Path, Vsn, Hash, Bin) ->
-    {conflict_file, ?VSN, WorkPath, Path, Vsn, Hash, Bin}.
+send_conflict_file(WorkPath, Path, ConflictsLeft, Meta, Bin) ->
+    {conflict_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, Bin}.
 
 fetch_file(Path) ->
     {fetch, ?VSN, Path}.
