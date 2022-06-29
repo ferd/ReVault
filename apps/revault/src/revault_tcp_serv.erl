@@ -31,7 +31,7 @@ start_link(Name, DirOpts) ->
 start_link(Name, DirOpts, TcpOpts) ->
     MandatoryOpts = [{mode, binary}, {packet, raw}, {active, false}],
     AllTcpOpts = MandatoryOpts ++ TcpOpts,
-    gen_server:start_link(?SERVER(Name), ?MODULE, {Name, DirOpts, AllTcpOpts}, []).
+    gen_server:start_link(?SERVER(Name), ?MODULE, {Name, DirOpts, AllTcpOpts}, [{debug, [trace]}]).
 
 stop(Name) ->
     gen_server:call(?SERVER(Name), stop).
@@ -142,7 +142,7 @@ terminate(_Reason, #serv{workers=W}) ->
 %%%%%%%%%%%%%%%%%%%
 start_linked_worker(LocalName, Sock, Opts) ->
     %% TODO: stick into a supervisor
-    Pid = spawn_link(fun() -> worker_init(LocalName, Opts) end),
+    Pid = proc_lib:spawn_link(fun() -> worker_init(LocalName, Opts) end),
     _ = gen_tcp:controlling_process(Sock, Pid),
     Pid ! {ready, Sock},
     Pid.
@@ -179,10 +179,6 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
 
 worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
     receive
-        {revault, _From, Msg} ->
-            Payload = revault_tcp:wrap(Msg),
-            gen_tcp:send(Sock, Payload),
-            worker_loop(Dir, C);
         {fwd, From, Msg} ->
             Payload = revault_tcp:wrap(Msg),
             Res = gen_tcp:send(Sock, Payload),
@@ -193,20 +189,28 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             exit(normal);
         {tcp, Sock, Data} ->
             inet:setopts(Sock, [{active, once}]),
-            case revault_tcp:unwrap(<<Buf0/binary, Data/binary>>) of
-                {error, incomplete} ->
-                    worker_loop(Dir, C#conn{buf = <<Buf0/binary, Data/binary>>});
-                {ok, ?VSN, Payload, NewBuf} ->
-                    {revault, Marker, Msg} = Payload,
-                    revault_tcp:send_local(Name, {revault, {self(), Marker}, Msg}),
-                    worker_loop(Dir, C#conn{buf = NewBuf})
-            end;
+            {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
+            [revault_tcp:send_local(Name, {revault, {self(), Marker}, Msg})
+             || {revault, Marker, Msg} <- Unwrapped],
+            worker_loop(Dir, C#conn{buf = IncompleteBuf});
         {tcp_error, Sock, Reason} ->
             exit(Reason);
         {tcp_closed, Sock} ->
-            exit(normal)
+            exit(normal);
+        Other ->
+            error({unexpected, Other})
     end.
 
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tcp:unwrap(Buf) of
+        {error, incomplete} ->
+            {lists:reverse(Acc), Buf};
+        {ok, ?VSN, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
+    end.
 
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%

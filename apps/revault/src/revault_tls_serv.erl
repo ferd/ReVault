@@ -13,6 +13,9 @@
 %%% or fragmenting their content to fit memory or throughput limits; this
 %%% is possible because we do not expect explicit acks and want to deal
 %%% with interrupts and broken transfers with end-to-end retries.
+
+%% TODO: turn the accept loop into a distinct worker to avoid messing
+%% with raciness too much.
 -module(revault_tls_serv).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
 -export([accept_peer/3, unpeer/3, reply/5]).
@@ -198,10 +201,6 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
 
 worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
     receive
-        {revault, _From, Msg} ->
-            Payload = revault_tls:wrap(Msg),
-            ssl:send(Sock, Payload),
-            worker_loop(Dir, C);
         {fwd, From, Msg} ->
             Payload = revault_tls:wrap(Msg),
             Res = ssl:send(Sock, Payload),
@@ -212,18 +211,25 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             exit(normal);
         {ssl, Sock, Data} ->
             ssl:setopts(Sock, [{active, once}]),
-            case revault_tls:unwrap(<<Buf0/binary, Data/binary>>) of
-                {error, incomplete} ->
-                    worker_loop(Dir, C#conn{buf = <<Buf0/binary, Data/binary>>});
-                {ok, ?VSN, Payload, NewBuf} ->
-                    {revault, Marker, Msg} = Payload,
-                    revault_tls:send_local(Name, {revault, {self(), Marker}, Msg}),
-                    worker_loop(Dir, C#conn{buf = NewBuf})
-            end;
+            {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
+            [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
+             || {revault, Marker, Msg} <- Unwrapped],
+            worker_loop(Dir, C#conn{buf = IncompleteBuf});
         {ssl_error, Sock, Reason} ->
             exit(Reason);
         {ssl_closed, Sock} ->
             exit(normal)
+    end.
+
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tls:unwrap(Buf) of
+        {error, incomplete} ->
+            {lists:reverse(Acc), Buf};
+        {ok, ?VSN, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
     end.
 
 

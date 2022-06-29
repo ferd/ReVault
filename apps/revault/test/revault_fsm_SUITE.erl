@@ -171,7 +171,7 @@ end_per_testcase(_, Config) ->
 
 start_hierarchy() ->
     [{doc, "Starting the sync FSM starts the whole overall mechanism."},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 start_hierarchy(Config) ->
     Name = ?config(name, Config),
     {ok, Sup} = revault_sup:start_link(),
@@ -204,7 +204,7 @@ start_hierarchy(Config) ->
 
 client_id() ->
     [{doc, "Starting a client means it can get its ID from an online server."},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 client_id(Config) ->
     Name = ?config(name, Config),
     Server=?config(server, Config),
@@ -244,7 +244,7 @@ client_id(Config) ->
 
 client_no_server() ->
     [{doc, "A server not being available makes the ID fetching error out"},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 client_no_server(Config) ->
     Name = ?config(name, Config),
     Remote = (?config(peer, Config))(<<"does not exist">>),
@@ -269,7 +269,7 @@ client_no_server(Config) ->
 fork_server_save() ->
     [{doc, "A server forking its ID saves it to disk and its workers "
            "have it live-updated."},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 fork_server_save(Config) ->
     Name = ?config(name, Config),
     Server=?config(server, Config),
@@ -297,7 +297,7 @@ fork_server_save(Config) ->
 
 basic_sync() ->
     [{doc, "Basic file synchronization works"},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 basic_sync(Config) ->
     Client = ?config(name, Config),
     Server=?config(server, Config),
@@ -383,7 +383,7 @@ basic_sync(Config) ->
 too_many_clients() ->
     [{doc, "Make sure that a given server does not get confused by connecting "
            "with too many clients at once."},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 too_many_clients(Config) ->
     Client = ?config(name, Config),
     Server=?config(server, Config),
@@ -446,7 +446,7 @@ too_many_clients(Config) ->
 overwrite_sync_clash() ->
     [{doc, "A file being overwritten during a transfer doesn't end up "
            "corrupting it at the call-site. Aborting is accepted."},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 overwrite_sync_clash(Config) ->
     Client = ?config(name, Config),
     Server=?config(server, Config),
@@ -495,7 +495,7 @@ overwrite_sync_clash(Config) ->
 
 conflict_sync() ->
     [{doc, "A conflict file can be sync'd to a third party"},
-     {timetrap, timer:seconds(30)}].
+     {timetrap, timer:seconds(5)}].
 conflict_sync(Config) ->
     Client = ?config(name, Config),
     Server=?config(server, Config),
