@@ -5,5 +5,5 @@
 -define(SERVER(Name), {via, gproc, {n, l, {tcp, serv, Name}}}).
 -define(CLIENT(Name), {via, gproc, {n, l, {tcp, client, Name}}}).
 -record(client, {name, dirs, dir, auth, opts, sock, buf = <<>>}).
--record(serv, {name, dirs, opts, sock, workers=#{}}).
+-record(serv, {name, dirs, opts, sock, acceptor, workers=#{}}).
 -record(conn, {localname, sock, dirs, buf = <<>>}).

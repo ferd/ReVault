@@ -13,9 +13,6 @@
 %%% or fragmenting their content to fit memory or throughput limits; this
 %%% is possible because we do not expect explicit acks and want to deal
 %%% with interrupts and broken transfers with end-to-end retries.
-
-%% TODO: turn the accept loop into a distinct worker to avoid messing
-%% with raciness too much.
 -module(revault_tls_serv).
 -export([start_link/2, start_link/3, update_dirs/2, stop/1]).
 -export([accept_peer/3, unpeer/3, reply/5]).
@@ -80,8 +77,10 @@ init({Name, #{<<"server">> := #{<<"auth">> := #{<<"tls">> := DirOpts}}}, TlsOpts
                     {stop, {listen,Reason}};
                 {ok, LSock} ->
                     process_flag(trap_exit, true),
-                    self() ! accept,
-                    {ok, #serv{name=Name, dirs=DirOpts, opts=TlsOpts, sock=LSock}}
+                    Parent = self(),
+                    Acceptor = proc_lib:spawn_link(fun() -> acceptor(Parent, LSock) end),
+                    {ok, #serv{name=Name, dirs=DirOpts, opts=TlsOpts, sock=LSock,
+                               acceptor=Acceptor}}
             end;
         disabled ->
             {stop, disabled}
@@ -121,32 +120,18 @@ handle_call({fwd, Pid, Msg}, From, S=#serv{}) ->
 handle_call(stop, _From, S=#serv{}) ->
     NewS = stop_server(S),
     {stop, {shutdown, stop}, ok, NewS};
+handle_call({accepted, Pid, Sock}, _From, S=#serv{name=Name, dirs=Opts, workers=W,
+                                                  acceptor=Pid}) ->
+    Worker = start_linked_worker(Name, Sock, Opts),
+    {reply, ok, S#serv{workers=W#{Worker => Sock}}};
 handle_call(_, _From, State) ->
     {noreply, State}.
 
 handle_cast(_Info, State) ->
     {noreply, State}.
 
-handle_info(accept, S=#serv{name=Name, sock=LSock, dirs=Opts, workers=W}) ->
-    case ssl:transport_accept(LSock, ?ACCEPT_WAIT) of
-        {ok, HSock} ->
-            case ssl:handshake(HSock, ?HANDSHAKE_WAIT) of
-                {error, _Reason} -> % don't crash on bad TLS, this is super common
-                    self() ! accept,
-                    ssl:close(HSock),
-                    {noreply, S};
-                {ok, Sock} ->
-                    Worker = start_linked_worker(Name, Sock, Opts),
-                    self() ! accept,
-                    {noreply, S#serv{workers=W#{Worker => Sock}}}
-            end;
-        {error, timeout} ->
-            %% self-interrupt to let other code have an access to things
-            self() ! accept,
-            {noreply, S};
-        {error, Reason} ->
-            {stop, {accept, Reason}}
-    end;
+handle_info({'EXIT', Acceptor, Reason}, S=#serv{acceptor=Acceptor}) ->
+    {stop, {acceptor, Reason}, S};
 handle_info({'EXIT', Worker, _}, S=#serv{workers=W}) ->
     Workers = maps:remove(Worker, W),
     {noreply, S#serv{workers=Workers}}.
@@ -154,6 +139,31 @@ handle_info({'EXIT', Worker, _}, S=#serv{workers=W}) ->
 terminate(_Reason, #serv{workers=W}) ->
     [exit(Pid, shutdown) || Pid <- maps:keys(W)],
     ok.
+
+%%%%%%%%%%%%%%%%%%%%%
+%%% ACCEPTOR LOOP %%%
+%%%%%%%%%%%%%%%%%%%%%
+acceptor(Parent, LSock) ->
+    receive
+        stop ->
+            exit(normal)
+        after 0 ->
+            ok
+    end,
+    case ssl:transport_accept(LSock, ?ACCEPT_WAIT) of
+        {error, _Reason} -> % don't crash on bad TLS, this is super common
+            acceptor(Parent, LSock);
+        {ok, HSock} ->
+            case ssl:handshake(HSock, ?HANDSHAKE_WAIT) of
+                {error, _Reason} ->
+                    ssl:close(HSock),
+                    acceptor(Parent, LSock);
+                {ok, Sock} ->
+                    ssl:controlling_process(Sock, Parent),
+                    gen_server:call(Parent, {accepted, self(), Sock}, infinity),
+                    acceptor(Parent, LSock)
+            end
+    end.
 
 %%%%%%%%%%%%%%%%%%%
 %%% WORKER LOOP %%%
@@ -274,3 +284,4 @@ decode_cert(FileName) ->
     public_key:pkix_encode('OTPCertificate',
                            tak:peer_cert(tak:pem_to_cert_chain(Cert)),
                            otp).
+

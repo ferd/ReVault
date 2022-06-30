@@ -84,16 +84,11 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, Data=#client{
             {next_state, disconnected, Data#client{sock=undefined},
              [{reply, From, {error, Reason}}]}
     end;
-handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{sock=Sock, buf=Buf0}) ->
+handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     ssl:setopts(Sock, [{active, once}]),
-    case revault_tls:unwrap(TmpBuf = <<Buf0/binary, Bin/binary>>) of
-        {error, incomplete} ->
-            {next_state, connected, Data#client{buf=TmpBuf}};
-        {ok, ?VSN, Msg, NewBuf} ->
-            #client{name=Name} = Data,
-            revault_tls:send_local(Name, Msg),
-            {next_state, connected, Data#client{buf=NewBuf}}
-    end;
+    {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Bin/binary>>),
+    [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
+    {next_state, connected, Data#client{buf=IncompleteBuf}};
 handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
     %% TODO: Log
     {next_state, disconnected, Data#client{sock=undefined}};
@@ -126,3 +121,13 @@ connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Dir, Auth) when Dir 
 connect(Data=#client{sock=Sock}, _, _) when Sock =/= undefined ->
     {ok, Data}.
 
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tls:unwrap(Buf) of
+        {error, incomplete} ->
+            {lists:reverse(Acc), Buf};
+        {ok, ?VSN, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
+    end.

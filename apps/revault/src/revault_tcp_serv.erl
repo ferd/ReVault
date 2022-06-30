@@ -69,8 +69,10 @@ init({Name, #{<<"server">> := #{<<"auth">> := #{<<"none">> := DirOpts}}}, TcpOpt
                     {stop, {listen,Reason}};
                 {ok, LSock} ->
                     process_flag(trap_exit, true),
-                    self() ! accept,
-                    {ok, #serv{name=Name, dirs=DirOpts, opts=TcpOpts, sock=LSock}}
+                    Parent = self(),
+                    Acceptor = proc_lib:spawn_link(fun() -> acceptor(Parent, LSock) end),
+                    {ok, #serv{name=Name, dirs=DirOpts, opts=TcpOpts, sock=LSock,
+                               acceptor=Acceptor}}
             end;
         disabled ->
             {stop, disabled}
@@ -110,25 +112,18 @@ handle_call({fwd, Pid, Msg}, From, S=#serv{}) ->
 handle_call(stop, _From, S=#serv{}) ->
     NewS = stop_server(S),
     {stop, {shutdown, stop}, ok, NewS};
+handle_call({accepted, Pid, Sock}, _From, S=#serv{name=Name, dirs=Opts, workers=W,
+                                                  acceptor=Pid}) ->
+    Worker = start_linked_worker(Name, Sock, Opts),
+    {reply, ok, S#serv{workers=W#{Worker => Sock}}};
 handle_call(_, _From, State) ->
     {noreply, State}.
 
 handle_cast(_Info, State) ->
     {noreply, State}.
 
-handle_info(accept, S=#serv{name=Name, sock=LSock, dirs=Opts, workers=W}) ->
-    case gen_tcp:accept(LSock, ?ACCEPT_WAIT) of
-        {ok, Sock} ->
-            Worker = start_linked_worker(Name, Sock, Opts),
-            self() ! accept,
-            {noreply, S#serv{workers=W#{Worker => Sock}}};
-        {error, timeout} ->
-            %% self-interrupt to let other code have an access to things
-            self() ! accept,
-            {noreply, S};
-        {error, Reason} ->
-            {stop, {accept, Reason}}
-    end;
+handle_info({'EXIT', Acceptor, Reason}, S=#serv{acceptor=Acceptor}) ->
+    {stop, {acceptor, Reason}, S};
 handle_info({'EXIT', Worker, _}, S=#serv{workers=W}) ->
     Workers = maps:remove(Worker, W),
     {noreply, S#serv{workers=Workers}}.
@@ -136,6 +131,27 @@ handle_info({'EXIT', Worker, _}, S=#serv{workers=W}) ->
 terminate(_Reason, #serv{workers=W}) ->
     [exit(Pid, shutdown) || Pid <- maps:keys(W)],
     ok.
+
+%%%%%%%%%%%%%%%%%%%%%
+%%% ACCEPTOR LOOP %%%
+%%%%%%%%%%%%%%%%%%%%%
+acceptor(Parent, LSock) ->
+    receive
+        stop ->
+            exit(normal)
+    after 0 ->
+        ok
+    end,
+    case gen_tcp:accept(LSock, ?ACCEPT_WAIT) of
+        {ok, Sock} ->
+            gen_tcp:controlling_process(Sock, Parent),
+            gen_server:call(Parent, {accepted, self(), Sock}, infinity),
+            acceptor(Parent, LSock);
+        {error, timeout} ->
+            acceptor(Parent, LSock);
+        {error, Reason} ->
+            error({accept, Reason})
+    end.
 
 %%%%%%%%%%%%%%%%%%%
 %%% WORKER LOOP %%%
