@@ -177,7 +177,8 @@ subject(#'OTPCertificate'{ tbsCertificate = TBS }) ->
     public_key:pkix_normalize_name(TBS#'OTPTBSCertificate'.subject).
 
 make_selfsigned_cert(Dir, CertName) ->
-    %% Using OpenSSL >= 1.1.1
+    check_openssl_vsn(),
+
     Key = filename:join(Dir, CertName ++ ".key"),
     Cert = filename:join(Dir, CertName ++ ".crt"),
     ok = filelib:ensure_dir(Cert),
@@ -188,3 +189,31 @@ make_selfsigned_cert(Dir, CertName) ->
         [Key, Cert] % TODO: escape quotes
     ),
     os:cmd(Cmd).
+
+check_openssl_vsn() ->
+    Vsn = os:cmd("openssl version"),
+    VsnMatch = "(Open|Libre)SSL ([0-9]+)\\.([0-9]+)\\.([0-9]+)",
+    case re:run(Vsn, VsnMatch, [{capture, all_but_first, list}]) of
+        {match, [Type, Major, Minor, Patch]} ->
+            try
+                check_openssl_vsn(Type, list_to_integer(Major),
+                                  list_to_integer(Minor),
+                                  list_to_integer(Patch))
+            catch
+                error:bad_vsn ->
+                    error({openssl_vsn, Vsn})
+            end;
+        _ ->
+            error({openssl_vsn, Vsn})
+    end.
+
+%% Using OpenSSL >= 1.1.1 or LibreSSL >= 3.1.0
+check_openssl_vsn("Libre", A, B, _) when A > 3;
+                                         A == 3, B >= 1 ->
+    ok;
+check_openssl_vsn("Open", A, B, C) when A > 1;
+                                        A == 1, B > 1;
+                                        A == 1, B == 1, C >= 1 ->
+    ok;
+check_openssl_vsn(_, _, _, _) ->
+    error(bad_vsn).
