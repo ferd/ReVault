@@ -8,7 +8,8 @@
 
 -spec parse(unicode:chardata()) -> {ok, t()} | {error, term()}.
 parse(Chardata) ->
-    case tomerl:parse(Chardata) of
+    Bin = <<_/binary>> = unicode:characters_to_binary(Chardata),
+    case tomerl:parse(Bin) of
         {ok, Cfg} -> normalize(Cfg);
         {error, Reason} -> {error, Reason}
     end.
@@ -18,7 +19,7 @@ parse_file() ->
     %% ensure the call is mockable for tests by making it fully qualified.
     parse_file(?MODULE:config_path()).
 
--spec parse_file(file:filename()) -> {ok, t()} | {error, term()}.
+-spec parse_file(file:filename_all()) -> {ok, t()} | {error, term()}.
 parse_file(FileName) ->
     case tomerl:read_file(FileName) of
         {ok, Cfg} -> normalize(Cfg);
@@ -132,7 +133,7 @@ status(<<"enabled">>) -> enabled.
 mode(<<"read/write">>) -> read_write;
 mode(<<"read">>) -> read.
 
--spec config_path() -> file:filename().
+-spec config_path() -> file:filename_all().
 config_path() ->
     filename:join(config_dir(), "config.toml").
 

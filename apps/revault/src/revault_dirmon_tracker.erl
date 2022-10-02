@@ -14,19 +14,19 @@
 
 %% optimization hint: replace the queue by an ordered_set ETS table?
 -record(state, {
-    snapshot = #{} :: #{file:filename() =>
+    snapshot = #{} :: #{file:filename_all() =>
                         {stamp(),
                          revault_dirmon_poll:hash() | deleted |
                          {conflict,
                           %% known conflicts, track for syncs
-                          [revault_dirmon_poll:hash(), ...],
+                          [revault_dirmon_poll:hash()],
                           %% Last known working file; track to know what hash to
                           %% pick when resolving the conflict, but do not use in
                           %% actual conflict syncs
                           revault_dirmon_poll:hash() | deleted}
                         }},
-    dir :: file:filename(),
-    storage = undefined :: file:filename() | undefined,
+    dir :: file:filename_all(),
+    storage = undefined :: file:filename_all() | undefined,
     itc_id :: itc:id()
 }).
 
@@ -46,7 +46,7 @@ stop(Name) ->
 update_id(Name, Id) ->
     gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
 
--spec conflict(term(), file:filename(), file:filename(),
+-spec conflict(term(), file:filename_all(), file:filename_all(),
                {stamp(), revault_dirmon_poll:hash()}) -> ok.
 conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
@@ -96,7 +96,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
                     CStamp = conflict_stamp(Id, Stamp, NewStamp),
                     {CStamp, {conflict, ConflictHashes, WorkingHash}};
                 false ->
-                    ConflictingFile = Work ++ "." ++ hexname(NewHash),
+                    ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
                     %% TODO: use a copy+rename to avoid corrupting files mid-crash
                     {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
                     NewHashes = lists:usort([NewHash|ConflictHashes]),
@@ -105,7 +105,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             end;
         #{Work := {Stamp, WorkingHash}} ->
             %% No conflict, create it
-            ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
             %% TODO: use a copy+rename to avoid corrupting files mid-crash
             {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             NewHashes = case WorkingHash of
@@ -114,7 +114,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
                 _ when NewHash =:= WorkingHash ->
                     [NewHash];
                 _ ->
-                    ConflictingWork = Work ++ "." ++ hexname(WorkingHash),
+                    ConflictingWork = extension(Work, "." ++ hexname(WorkingHash)),
                     {ok, _} = file:copy(filename:join(Dir, Work), filename:join(Dir, ConflictingWork)),
                     lists:sort([NewHash, WorkingHash])
             end,
@@ -122,7 +122,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             {CStamp, {conflict, NewHashes, WorkingHash}};
         _ when not is_map_key(Work, Map) ->
             %% No file, create a conflict
-            ConflictingFile = Work ++ "." ++ hexname(NewHash),
+            ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
             %% TODO: use a copy+rename to avoid corrupting files mid-crash
             {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             {NewStamp, {conflict, [NewHash], NewHash}}
@@ -318,14 +318,14 @@ save_snapshot(#state{snapshot = Snap, storage = File}) ->
     %% from working.
     RandVal = float_to_list(rand:uniform()),
     SnapshotName = File ++ RandVal,
-    SnapshotBlob = unicode:characters_to_binary(
+    SnapshotBlob = <<_/binary>> = unicode:characters_to_binary(
         io_lib:format("~tp.~n", [Snap])
     ),
     ok = file:write_file(SnapshotName, SnapshotBlob, [sync]),
     ok = file:rename(SnapshotName, File).
 
 conflict_file(Dir, WorkingFile) ->
-    filename:join(Dir, WorkingFile) ++ ".conflict".
+    extension(filename:join(Dir, WorkingFile), ".conflict").
 
 write_conflict_file(Dir, WorkingFile, {_, {conflict, Hashes, _}}) ->
     %% We don't care about the rename trick here, it's informational
@@ -344,6 +344,7 @@ hex(Hash) ->
 hexname(Hash) ->
     unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
 
+-spec conflict_stamp(itc:id(), itc:event(), itc:event()) -> stamp().
 conflict_stamp(Id, C1, C2) ->
     %% Merge all things, potential conflicts are handled by merging all
     %% conflict info in parent calls.
@@ -392,6 +393,15 @@ is_hex([C|T]) when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
 is_hex(L) when is_list(L) -> false.
 
 resolve_conflict(Dir, BaseFile, Hashes) ->
-    [file:delete(filename:join(Dir, BaseFile) ++ "." ++ hexname(ConflictHash))
+    [file:delete(extension(filename:join(Dir, BaseFile),
+                           "." ++ hexname(ConflictHash)))
      || ConflictHash <- Hashes],
     ok.
+
+%% just go and please Gradualizer
+-spec extension(file:filename_all(), string()) -> file:filename_all().
+extension(Path, Ext) when is_list(Path) ->
+    Path ++ Ext;
+extension(Path, Ext) when is_binary(Path) ->
+    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
+    <<Path/binary, BinExt/binary>>.

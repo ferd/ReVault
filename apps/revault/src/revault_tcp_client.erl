@@ -101,10 +101,8 @@ terminate(_Reason, _State, _Data) ->
 %%%%%%%%%%%%%%%
 connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Dir, Auth) when Dir =/= undefined ->
     #{<<"peers">> := #{Dir := #{<<"url">> := Url}}} = Dirs,
-    [Host, PortBin] = binary:split(Url, <<":">>),
-    case gen_tcp:connect(unicode:characters_to_list(Host),
-                         binary_to_integer(PortBin),
-                         Opts) of
+    {Host, Port} = parse_url(Url),
+    case gen_tcp:connect(Host, Port, Opts) of
         {ok, Sock} ->
             {ok, Data#client{sock=Sock, dir=Dir, auth=Auth}};
         {error, Reason} ->
@@ -112,6 +110,17 @@ connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Dir, Auth) when Dir 
     end;
 connect(Data=#client{sock=Sock}, _, _) when Sock =/= undefined ->
     {ok, Data}.
+
+-spec parse_url(binary()) -> {inet:hostname(), 0..65535}.
+parse_url(Url) when is_binary(Url) ->
+    [HostBin, PortBin] = binary:split(Url, <<":">>),
+    Host = [_|_] = unicode:characters_to_list(HostBin),
+    Port = port_range(binary_to_integer(PortBin)),
+    {Host, Port}.
+
+%% please gradualizer type conversions with this stuff...
+-spec port_range(integer()) -> 0..65535.
+port_range(N) when N >= 0, N =< 65535 -> N.
 
 unwrap_all(Buf) ->
     unwrap_all(Buf, []).
