@@ -135,7 +135,10 @@ mode(<<"read">>) -> read.
 
 -spec config_path() -> file:filename_all().
 config_path() ->
-    filename:join(config_dir(), "config.toml").
+    case os:getenv("REVAULT_CONFIG") of
+        false -> filename:join(config_dir(), "config.toml");
+        Path -> filename:join([Path])
+    end.
 
 default_db_path() ->
     filename:join(config_dir(), "db").

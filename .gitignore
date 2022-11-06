@@ -6,6 +6,7 @@ _*
 *.plt
 *.swp
 *.swo
+.DS_Store
 .erlang.cookie
 ebin
 log

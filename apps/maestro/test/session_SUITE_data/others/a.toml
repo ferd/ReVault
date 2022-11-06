@@ -1,0 +1,20 @@
+[db]
+  path = "./db/a/"
+
+[dirs]
+  [dirs.test]
+  interval = 60
+  path = "./a"
+
+[server]
+    [server.auth.tls]
+    # status = "disabled"
+    port = 8022
+    certfile = "./others/certs/a.crt"
+    keyfile = "./others/certs/a.key"
+    [server.auth.tls.authorized]
+        [server.auth.tls.authorized.b]
+        # each peer should have a unique peer certificate to auth it
+        certfile = "./others/certs/b.crt"
+        sync = ["test"]
+
