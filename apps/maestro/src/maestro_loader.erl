@@ -43,6 +43,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 handle_continue(load_config, State=#state{cfg_path=Path, cfg=OldCfg}) ->
+    io:format("loading cfg at ~p~n", [Path]),
     NewState = case maestro_cfg:parse_file(Path) of
         {error, Reason} ->
             handle_cfg_parse_error(Reason, Path),
@@ -134,7 +135,18 @@ annotate_dir(Dir, ServersAuthMap, PeersMap) ->
                     annotate_peers(Dir, PeersMap)).
 
 annotate_servers(Dir, ServersAuthMap) ->
-    maps:fold(fun(Type, V=#{<<"sync">> := List}, M) ->
+    maps:fold(
+      fun(<<"tls">>, V=#{<<"authorized">> := Map}, M) ->
+              List = lists:append([maps:get(<<"sync">>, Opts)
+                                   || {_, Opts} <- maps:to_list(Map)]),
+            case lists:member(Dir, List) of
+                true ->
+                    maps:update_with(<<"server">>, fun(L) -> [{<<"tls">>, V}|L] end,
+                                     [{<<"tls">>, V}], M);
+                false ->
+                    M
+            end;
+          (Type, V=#{<<"sync">> := List}, M) ->
             case lists:member(Dir, List) of
                 true ->
                     maps:update_with(<<"server">>, fun(L) -> [{Type, V}|L] end,

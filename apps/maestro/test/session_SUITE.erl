@@ -8,7 +8,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 
-all() -> [setup_works].
+all() -> [setup_works, copy_and_sync].
 
 %% These values are hardcoded in the toml config files in the suite's
 %% data_dir; changing them here requires changing them there too.
@@ -76,6 +76,15 @@ end_per_testcase(_, Config) ->
 %% To check: first setup, working while offline/online, how to sync.
 setup_works(_Config) ->
     ok.
+
+copy_and_sync(Config) ->
+    %% make maestro boot all the things right on its own
+    %% then just expose a call to sync on demand
+    ok.
+
+%%%%%%%%%%%%%%%
+%%% HELPERS %%%
+%%%%%%%%%%%%%%%
 
 %% @doc copy an entire directory to another location.
 copy(From, To) ->

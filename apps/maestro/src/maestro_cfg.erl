@@ -29,15 +29,15 @@ parse_file(FileName) ->
 normalize(Cfg) ->
     try
         Db = normalize_db(Cfg),
-        {ok, Dirs} = tomerl:get(Cfg, [<<"dirs">>]),
-        {ok, Peers} = tomerl:get(Cfg, [<<"peers">>]),
-        {ok, Server} = tomerl:get(Cfg, [<<"server">>]),
+        {ok, Dirs} = tomerl_val(Cfg, [<<"dirs">>]),
+        {ok, Peers} = tomerl_val(Cfg, [<<"peers">>], #{}),
+        {ok, Server} = tomerl_val(Cfg, [<<"server">>], #{}),
         NormDirs = normalize_dirs(Dirs),
         DirNames = dirnames(NormDirs),
         {ok, Cfg#{<<"db">> => Db,
                   <<"dirs">> := NormDirs,
-                  <<"peers">> := normalize_peers(Peers, DirNames),
-                  <<"server">> := normalize_server(Server, DirNames)}}
+                  <<"peers">> => normalize_peers(Peers, DirNames),
+                  <<"server">> => normalize_server(Server, DirNames)}}
     catch
         error:badmatch -> {error, missing_section};
         error:{badkey, K}:S -> {error, {missing_key, K, S}};
@@ -61,7 +61,7 @@ normalize_peers(Map, Dirnames) ->
 
 normalize_server(Map, Dirnames) ->
     Map#{<<"auth">> => normalize_serv_auth(
-            maps:get(<<"auth">>, Map),
+            maps:get(<<"auth">>, Map, #{}),
             Dirnames)
     }.
 
@@ -126,6 +126,19 @@ auth_certs(Name, Map, Acc, Dirnames) ->
     }}.
 
 dirnames(Map) -> maps:keys(Map).
+
+tomerl_val(Section, Path) ->
+    case tomerl:get(Section, Path) of
+        {error, not_found} -> {error, {missing_section, Path}};
+        {ok, Val} -> {ok, Val}
+    end.
+
+
+tomerl_val(Section, Path, Default) ->
+    case tomerl:get(Section, Path) of
+        {error, not_found} -> {ok, Default};
+        {ok, Val} -> {ok, Val}
+    end.
 
 status(<<"disabled">>) -> disabled;
 status(<<"enabled">>) -> enabled.

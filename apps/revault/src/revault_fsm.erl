@@ -635,7 +635,6 @@ diff_manifests(Id, LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap)
 
 diff_manifests(Id, [H|Loc], [H|Rem], LAcc, RAcc) ->
     diff_manifests(Id, Loc, Rem, LAcc, RAcc);
-%% TODO: handle conflicts
 diff_manifests(Id, [{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
     case compare(Id, LVsn, RVsn) of
         equal ->
