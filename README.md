@@ -5,7 +5,11 @@ ReVault
 
 ReVault is a peer-to-peer self-hosted file synchronization project.
 
-The main goal of the project is to allow seemless, mostly-offline, and transparent update of directories and files whenever possible. Basically, provide something that could be a bit of a DropBox alternative where you don't actually have to set anything up with a third party to work, and that could work as well between all-local computers, or using a laptop and a VPS.
+The main goal of the project is for me to spend time, fiddle with things, and explore a few random concepts.
+
+The secondary goal of the project is to allow seemless, mostly-offline, and transparent update of directories and files whenever possible. Basically, provide something that could be a bit of a DropBox alternative where you don't actually have to set anything up with a third party to work, and that could work as well between all-local computers, or using a laptop and a VPS.
+
+If you really are looking for production-ready software, you probably want [syncthing](https://docs.syncthing.net/).
 
 Rationale
 ---
@@ -17,93 +21,44 @@ Currently, there's little code written. I've had various sample apps where I tri
 Approach
 ---
 
-Move slow and don't break things. Backward compatibility is going to be a possibility, but changes to this code should be done:
+Step 1:
 
-- Ethically: no backdoors, safe by default settings, with limitations clearly exposed. Developer logs should be anonymized by default to prevent leaking undue information
-- With a concern for Quality: no files should be lost or corrupted, and this project should be able to act as an example good Erlang application for the community
+- Explore, figure things out. Until this is done, stability and safety are hard to guarantee, and performance is likely to be bad.
+
+That's where we are right now.
+
+Step 2:
+
+- no files should be lost or corrupted, and this project should be able to act as an example good Erlang application for the community
   - solid unit tests
   - comprehensive property-based tests
   - type checks
   - linting
   - commented code
-- An Emphasis on Clarity: things should be well-documented, and the software should aim to cause no undue user surprises
-- Invisible: while you may need somewhat technical knowledge to set things up, it should require no special knowledge to have the software running over your regular directories
-- Operable: layered and structured logs, with a clear concern and distinction between what the user wants to know when debugging, and what developers want to know when debugging
+- Have the software possible to operate and understand before it reaches stability. I'd like to wire up OTel stuff in here.
+
+Step 3:
+
+- An Emphasis on Clarity: things should be well-documented, and the software should aim to cause no undue user surprises, although we know surprises can't be avoided fully
+- While you may need somewhat technical knowledge to set things up, it should require no special knowledge to have the software running over your regular directories
+
+In General:
+
 - Respectfully: there is a code of conduct which I (@ferd) will enforce strictly. I will obviously not kick myself out of my repository, but will expect call-outs when/if misbehaving, and will accept forks without a complaint on my part
 
 Invariants to Maintain
 ---
 
 - Never modify a file that a user created other than by synchronization
-- a "dry run" mode cannot touch the tracked directory's filesystem
-- security is critical (ensure to lock down EPMD, do proper SSH validation, etc.)
+- a "dry run" mode cannot touch the tracked directory's filesystem [dry-run mode not existing yet]
+- security is critical (allow cert pinning) though we can't guarantee it yet
 - correctness over performance
-- be portable across Linux, OSX, and Windows (at various efficiency costs)
+- be portable across Linux, OSX, and Windows (at various efficiency costs, also I don't frequently use Windows)
 
 Using
 -----
 
-Specify some configuration. By default, we look into your home directory for
-a `ReVault/config.toml` file (using the XDG standard of `~/.config/ReVault/config.toml` on both Linux and OSX). The format of the config file is:
-
-```
-[db]
-  path = "/Users/ferd/.config/ReVault/db/"
-
-[dirs]
-  [dirs.music]
-  interval = 60
-  path = "~/Music"
-  
-  [dirs.images]
-  interval = 60
-  path = "/Users/ferd/images/"
-  ignore = [] # regexes on full path
-
-[peers]
-  # VPS copy running
-  [peers.vps]
-  sync = ["images"]
-  url = "leetzone.ca:8022"
-    [peers.vps.auth]
-    type = "tls"
-    certfile = "/path/to/cert"
-    fingerprint_sha = "AEAEFDFB..." # server's cert fingerprint
-
-  # Localhost copy running
-  [peers.local]
-  url = "localhost:8888"
-    [peers.local.auth]
-    type = "none"
-
-[server]
-    [server.auth.none]
-    status = "disabled"
-    port = 9999
-    sync = ["images", "music"]
-    mode = "read/write"
-
-    [server.auth.tls]
-    port = 8022
-    certfile = "/path/to/cert"
-    [server.auth.tls.authorized]
-        [server.auth.tls.authorized.vps]
-        fingerprint_sha = "DEADBEEF..." # client cert fingerprint
-        sync = ["images", "music"]
-
-        [server.auth.ssh.authorized.friendo]
-        fingerprint_sha = "DEADBEEF..." # client cert fingerprint
-        sync = ["music"]
-        mode = "read"
-```
-
-The file path can be overridden by using environment variables, calling the release with arguments such as:
-
-```
-./_build/default/rel/revault/bin/revault console -revault config '"some/path"'
-```
-
-Note the nested quoting around the path. A helper script hiding this implementation detail should eventually be added.
+This isn't usable yet, so don't even try.
 
 Roadmap
 ---
