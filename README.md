@@ -1,8 +1,6 @@
 ReVault
 =====
 
-[![CircleCI](https://circleci.com/gh/ferd/ReVault.svg?style=svg)](https://circleci.com/gh/ferd/ReVault)
-
 ReVault is a peer-to-peer self-hosted file synchronization project.
 
 The main goal of the project is for me to spend time, fiddle with things, and explore a few random concepts.
