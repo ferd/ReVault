@@ -6,7 +6,10 @@
   {applications,
    [kernel,
     stdlib,
-    gproc
+    gproc,
+    itc,
+    uuid,
+    ssl, public_key, tak
    ]},
   {env,[]},
   {modules, []},

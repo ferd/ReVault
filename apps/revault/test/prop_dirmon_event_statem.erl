@@ -176,7 +176,7 @@ process_ops(Map, Snapshot) ->
     {lists:sort(Del), lists:sort(Add), lists:sort(Mod)}.
 
 hash({Del, Add, Mod}) ->
-    F = fun({F, Content}) -> {F, crypto:hash(sha256, Content)} end,
+    F = fun({F, Content}) -> {revault_file:make_relative(?DIR, F), crypto:hash(sha256, Content)} end,
     {lists:map(F, Del), lists:map(F, Add), lists:map(F, Mod)}.
 
 listener() ->

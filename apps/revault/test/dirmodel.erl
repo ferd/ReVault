@@ -92,7 +92,7 @@
 -module(dirmodel).
 -include_lib("proper/include/proper.hrl").
          %% meta calls for property writers
--export([new/0, apply_call/3, has_files/1, type/3, hashes/2,
+-export([new/0, apply_call/3, has_files/1, type/3, hashes/1, hashes/2,
          %% mutation calls for propery writers
          file_add/2, file_add_insensitive_conflict/2,
          file_add_long_path/2,
@@ -247,10 +247,21 @@ type(Dir, Tree, Path) ->
         undefined -> undefined
     end.
 
-%% @doc Returns a list of all files paths in `Tree' (prefixed
-%% with `Dir') along with their hashes.
+%% @doc Returns a list of all files paths in `Tree'
+%% along with their hashes.
 %% Designed to be compatible with the "polling set" of
 %% directory monitoring modules.
+hashes(Tree) ->
+    Paths = file_paths(Tree),
+    lists:sort(
+      [{filename:join(drop_cwd(Path)), Hash}
+       || Path <- Paths,
+          {ok, #file{hash=Hash}} <- [at(Tree, Path)]]
+    ).
+
+%% @doc Returns a list of all files paths in `Tree' (prefixed
+%% with `Dir') along with their hashes.
+%% Designed to work on absolute paths for validation.
 hashes(Dir, Tree) ->
     Paths = file_paths(Tree),
     lists:sort(
@@ -258,6 +269,9 @@ hashes(Dir, Tree) ->
        || Path <- Paths,
           {ok, #file{hash=Hash}} <- [at(Tree, Path)]]
      ).
+
+drop_cwd(["."|Path]) -> Path;
+drop_cwd(Path) -> Path.
 
 %%%%%%%%%%%%%%%%%%%%%%%
 %%% PRIVATE EXPORTS %%%

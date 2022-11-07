@@ -1,0 +1,53 @@
+[db]
+  path = "/Users/ferd/.config/ReVault/db/"
+
+[dirs]
+  [dirs.music]
+  interval = 60
+  path = "~/Music"
+
+  [dirs.images]
+  interval = 60
+  path = "/Users/ferd/images/"
+  ignore = [] # regexes on full path
+
+[peers]
+  # VPS copy running
+  [peers.vps]
+  sync = ["images"]
+  url = "leetzone.ca:8022"
+    [peers.vps.auth]
+    type = "tls"
+    certfile = "/path/to/fake/cert"
+    keyfile = "/path/to/fake/key"
+    peer_certfile = "/some/fake/path.crt"
+
+  # Localhost copy running
+  [peers.local]
+  url = "localhost:8888"
+    [peers.local.auth]
+    type = "none"
+
+[server]
+    [server.auth.none]
+    status = "disabled"
+    port = 9999
+    sync = ["images", "music"]
+    mode = "read/write"
+
+    [server.auth.tls]
+    # status = "disabled"
+    port = 8022
+    certfile = "/path/to/fake/cert"
+    keyfile = "/path/to/fake/key"
+    [server.auth.tls.authorized]
+        [server.auth.tls.authorized.vps]
+        # each peer should have a unique peer certificate to auth it
+        certfile = "...."
+        sync = ["images", "music"]
+
+        [server.auth.tls.authorized.friendo]
+        certfile = "...."
+        sync = ["music"]
+        mode = "read"
+

@@ -1,0 +1,19 @@
+{application, maestro,
+ [{description, "In charge of handling configuration and booting revault "
+                "components that deal with synchronization. Brisge between "
+                "the user and ReVault internals."},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {maestro_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    revault,
+    tomerl
+   ]},
+  {env, []},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
