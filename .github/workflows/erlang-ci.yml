@@ -11,6 +11,9 @@ permissions:
 
 env:
   ERL_AFLAGS: +pc unicode -enable-feature all
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  LC_CTYPE: C.UTF-8
 
 jobs:
 
