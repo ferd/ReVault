@@ -1,0 +1,30 @@
+name: Erlang CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+env:
+  ERL_AFLAGS: +pc unicode -enable-feature all
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    container:
+      image: erlang:25.1.1
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Run validation checks
+      run: rebar3 check
+    - name: Release can be built
+      run: rebar3 do release, tar
+
