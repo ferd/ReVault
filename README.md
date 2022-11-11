@@ -52,6 +52,7 @@ Invariants to Maintain
 - security is critical (allow cert pinning) though we can't guarantee it yet
 - correctness over performance
 - be portable across Linux, OSX, and Windows (at various efficiency costs, also I don't frequently use Windows)
+ - assumes a filesystem that supports UTF-8 file paths
 
 Using
 -----
