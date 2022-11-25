@@ -14,27 +14,29 @@
 %% callbacks from within the FSM
 -export([callback/1, mode/2, peer/3, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 
--record(state, {name, dirs, mode, serv_conn}).
+-record(state, {proc, name, dirs, mode, serv_conn}).
 -type state() :: term().
 -type cb_state() :: {?MODULE, state()}.
 -export_type([state/0]).
 
 -spec callback(term()) -> state().
 callback({Name, DirOpts}) ->
-    {?MODULE, #state{name=Name, dirs=DirOpts}}.
+    {?MODULE, #state{proc=Name, name=Name, dirs=DirOpts}};
+callback({Proc, Name, DirOpts}) ->
+    {?MODULE, #state{proc=Proc, name=Name, dirs=DirOpts}}.
 
 -spec mode(client|server, state()) -> {term(), cb_state()}.
-mode(Mode, S=#state{name=Name, dirs=DirOpts}) ->
+mode(Mode, S=#state{proc=Proc, dirs=DirOpts}) ->
     Res = case Mode of
         client ->
-            revault_protocols_tcp_sup:start_client(Name, DirOpts);
+            revault_protocols_tcp_sup:start_client(Proc, DirOpts);
         server ->
-            revault_protocols_tcp_sup:start_server(Name, DirOpts)
+            revault_protocols_tcp_sup:start_server(Proc, DirOpts)
     end,
     {Res, {?MODULE, S#state{mode=Mode}}}.
 
 %% @doc only callable from the client-side.
-peer(Local, Peer=Dir, S=#state{dirs=#{<<"peers">> := Peers}}) ->
+peer(Local, Peer, S=#state{name=Dir, dirs=#{<<"peers">> := Peers}}) ->
     case Peers of
         #{Peer := Map} ->
             Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir)},
@@ -43,32 +45,32 @@ peer(Local, Peer=Dir, S=#state{dirs=#{<<"peers">> := Peers}}) ->
             {{error, unknown_peer}, {?MODULE, S}}
     end.
 
-accept_peer(Remote, Marker, S=#state{name=Name}) ->
-    {ok, Conn} = revault_tcp_serv:accept_peer(Name, Remote, Marker),
+accept_peer(Remote, Marker, S=#state{proc=Proc}) ->
+    {ok, Conn} = revault_tcp_serv:accept_peer(Proc, Remote, Marker),
     {ok, {?MODULE, S#state{serv_conn=Conn}}}.
 
-unpeer(Name, Remote, S=#state{mode=client}) ->
-    {revault_tcp_client:unpeer(Name, Remote),
+unpeer(Proc, Remote, S=#state{mode=client}) ->
+    {revault_tcp_client:unpeer(Proc, Remote),
      {?MODULE, S}};
-unpeer(Name, Remote, S=#state{mode=server, serv_conn=Conn}) ->
-    {revault_tcp_serv:unpeer(Name, Remote, Conn),
+unpeer(Proc, Remote, S=#state{mode=server, serv_conn=Conn}) ->
+    {revault_tcp_serv:unpeer(Proc, Remote, Conn),
      {?MODULE, S#state{serv_conn=undefined}}}.
 
 %% @doc only callable from the client-side, server always replies.
-send(Remote, Payload, S=#state{name=Name, mode=client}) ->
+send(Remote, Payload, S=#state{proc=Proc, mode=client}) ->
     Marker = make_ref(),
-    Res = case revault_tcp_client:send(Name, Remote, Marker, Payload) of
+    Res = case revault_tcp_client:send(Proc, Remote, Marker, Payload) of
         ok -> {ok, Marker};
         Other -> Other
     end,
     {Res, {?MODULE, S}}.
 
 % [Remote, Marker, revault_data_wrapper:ok()]),
-reply(Remote, Marker, Payload, S=#state{name=Name, mode=client}) ->
-    {revault_tcp_client:reply(Name, Remote, Marker, Payload),
+reply(Remote, Marker, Payload, S=#state{proc=Proc, mode=client}) ->
+    {revault_tcp_client:reply(Proc, Remote, Marker, Payload),
      {?MODULE, S}};
-reply(Remote, Marker, Payload, S=#state{name=Name, mode=server, serv_conn=Conn}) ->
-    {revault_tcp_serv:reply(Name, Remote, Conn, Marker, Payload),
+reply(Remote, Marker, Payload, S=#state{proc=Proc, mode=server, serv_conn=Conn}) ->
+    {revault_tcp_serv:reply(Proc, Remote, Conn, Marker, Payload),
      {?MODULE, S}}.
 
 unpack(_, _) -> error(undef).
@@ -114,5 +116,5 @@ unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
 unpack(Term) ->
     Term.
 
-send_local(Name, Payload) ->
-    gproc:send({n, l, {revault_fsm, Name}}, Payload).
+send_local(Proc, Payload) ->
+    gproc:send({n, l, {revault_fsm, Proc}}, Payload).

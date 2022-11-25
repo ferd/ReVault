@@ -317,7 +317,7 @@ save_snapshot(#state{snapshot = Snap, storage = File}) ->
     %% end up on two distinct filesystems, which then blocks renaming
     %% from working.
     RandVal = float_to_list(rand:uniform()),
-    SnapshotName = File ++ RandVal,
+    SnapshotName = extension(File, RandVal),
     SnapshotBlob = <<_/binary>> = unicode:characters_to_binary(
         io_lib:format("~tp.~n", [Snap])
     ),
@@ -365,15 +365,17 @@ get_file(FileName, SetMap) ->
             end
     end.
 
-conflict_ext(File, ".conflict", Map) ->
-    BasePath = drop_suffix(File, ".conflict"),
+
+conflict_ext(File, ConflictExt, Map) when ConflictExt == ".conflict"
+                                        ; ConflictExt == <<".conflict">> ->
+    BasePath = drop_suffix(File, ConflictExt),
     case maps:find(BasePath, Map) of
         {ok, {Ct, Conflict = {conflict, _, _}}} ->
             {marker, BasePath, {Ct, Conflict}};
         _ -> conflict_extension
     end;
 conflict_ext(File, Ext, Map) ->
-    case length(Ext) == 9 andalso is_hex(tl(Ext)) of
+    case string:length(Ext) == 9 andalso is_hex(drop_period(Ext)) of
         true ->
             BasePath = drop_suffix(File, Ext),
             case maps:find(BasePath, Map) of
@@ -388,9 +390,18 @@ conflict_ext(File, Ext, Map) ->
 drop_suffix(Suffix, Suffix) -> [];
 drop_suffix([H|T], Suffix) -> [H|drop_suffix(T, Suffix)].
 
-is_hex([C]) when C >= $A, C =< $F; C >= $0, C =< $9 -> true;
-is_hex([C|T]) when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
-is_hex(L) when is_list(L) -> false.
+drop_period(Ext) ->
+    case string:next_grapheme(Ext) of
+        [$.|Rest] -> Rest;
+        _ -> error({invalid_ext, Ext})
+    end.
+
+is_hex(Str) ->
+    case string:next_grapheme(Str) of
+        [C] when C >= $A, C =< $F; C >= $0, C =< $9 -> true;
+        [C|T] when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
+        _ -> false
+    end.
 
 resolve_conflict(Dir, BaseFile, Hashes) ->
     [file:delete(extension(filename:join(Dir, BaseFile),

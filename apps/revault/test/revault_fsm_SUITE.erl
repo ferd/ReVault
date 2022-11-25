@@ -20,7 +20,7 @@ groups() ->
 
 init_per_group(tcp, Config) ->
     [{callback, fun(Name) ->
-        revault_tcp:callback({Name, #{
+        revault_tcp:callback({Name, <<"test">>, #{
             <<"peers">> => #{
                 <<"test">> => #{
                     <<"sync">> => [<<"test">>],
@@ -39,7 +39,7 @@ init_per_group(tcp, Config) ->
         }})
      end},
      {nohost_callback, fun(Name) ->
-        revault_tcp:callback({Name, #{
+        revault_tcp:callback({Name, <<"test">>, #{
             <<"peers">> => #{
                 <<"test">> => #{
                     <<"sync">> => [<<"test">>],
@@ -58,7 +58,7 @@ init_per_group(disterl, Config) ->
 init_per_group(tls, Config) ->
     CertDir = ?config(data_dir, Config),
     [{callback, fun(Name) ->
-        revault_tls:callback({Name, #{
+        revault_tls:callback({Name, <<"test">>, #{
             <<"peers">> => #{
                 <<"test">> => #{
                     <<"sync">> => [<<"test">>],
@@ -89,7 +89,7 @@ init_per_group(tls, Config) ->
         }})
     end},
     {nohost_callback, fun(Name) ->
-        revault_tls:callback({Name, #{
+        revault_tls:callback({Name, <<"test">>, #{
             <<"peers">> => #{
                 <<"test">> => #{
                     <<"sync">> => [<<"test">>],
