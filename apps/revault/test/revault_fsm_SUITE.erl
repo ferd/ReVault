@@ -256,6 +256,7 @@ client_no_server(Config) ->
         ?config(interval, Config),
         (?config(nohost_callback, Config))(Name)
     ),
+    ?assertEqual(undefined, revault_fsm:id(Name)),
     %% How to specify what sort of client we are? to which server?
     ok = revault_fsm:client(Name),
     ?assertEqual({error, busy}, revault_fsm:client(Name)),

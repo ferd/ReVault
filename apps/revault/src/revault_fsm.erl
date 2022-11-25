@@ -168,7 +168,7 @@ init({DbDir, Name, Path, Interval, Callback}) ->
 uninitialized(enter, _, Data) ->
     {keep_state, Data};
 uninitialized({call, From}, id, Data) ->
-    {next_state, initialized, Data, [{reply, From, undefined}]};
+    {next_state, uninitialized, Data, [{reply, From, undefined}]};
 uninitialized({call, From}, {role, server}, Data) ->
     %% Something external telling us we're gonna be in server mode
     {next_state, server_init, Data,
