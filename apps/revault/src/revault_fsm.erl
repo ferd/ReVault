@@ -651,7 +651,7 @@ diff_manifests(Id, [{F, {LVsn, _}}|Loc], [{F, {RVsn, _}}|Rem], LAcc, RAcc) ->
             diff_manifests(Id, Loc, Rem, [{send, F}|LAcc], RAcc);
         lesser ->
             %% Remote's newer
-            diff_manifests(Id, Loc, Rem, LAcc, [{fetch, F}, RAcc])
+            diff_manifests(Id, Loc, Rem, LAcc, [{fetch, F}|RAcc])
     end;
 diff_manifests(Id, [{LF, _}=L|Loc], [{RF, _}=R|Rem], LAcc, RAcc) ->
     if LF < RF ->
@@ -749,7 +749,7 @@ handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
     end.
 
 make_conflict_path(F, Hash) ->
-    F ++ "." ++ hexname(Hash).
+    extension(F, "." ++ hexname(Hash)).
 
 %% TODO: extract shared definition with revault_dirmon_tracker
 hex(Hash) ->
@@ -759,3 +759,10 @@ hex(Hash) ->
 hexname(Hash) ->
     unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
 
+%% TODO: extract shared definition with revault_dirmon_tracker
+-spec extension(file:filename_all(), string()) -> file:filename_all().
+extension(Path, Ext) when is_list(Path) ->
+    Path ++ Ext;
+extension(Path, Ext) when is_binary(Path) ->
+    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
+    <<Path/binary, BinExt/binary>>.

@@ -98,6 +98,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
                 false ->
                     ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
                     %% TODO: use a copy+rename to avoid corrupting files mid-crash
+                    %% TODO: cover ensure call for nested conflicts
                     {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
                     NewHashes = lists:usort([NewHash|ConflictHashes]),
                     CStamp = conflict_stamp(Id, Stamp, NewStamp),
@@ -107,6 +108,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             %% No conflict, create it
             ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
             %% TODO: use a copy+rename to avoid corrupting files mid-crash
+            %% TODO: cover ensure call for nested conflicts
             {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             NewHashes = case WorkingHash of
                 deleted ->
@@ -124,6 +126,7 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             %% No file, create a conflict
             ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
             %% TODO: use a copy+rename to avoid corrupting files mid-crash
+            %% TODO: cover ensure call for nested conflicts
             {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             {NewStamp, {conflict, [NewHash], NewHash}}
     end,
@@ -141,7 +144,9 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
                            {Stamp, conflict}, {NewStamp, update_file}});
                 lesser -> % sync resolves conflict
                     %% TODO: use a copy+rename to avoid corrupting files mid-crash
-                    {ok, _} = file:copy(Source, filename:join(Dir, Work)),
+                    Dest = filename:join(Dir, Work),
+                    filelib:ensure_dir(Dest),
+                    {ok, _} = file:copy(Source, Dest),
                     resolve_conflict(Dir, Work, Hashes),
                     delete_conflict_file(Dir, Work),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
@@ -158,7 +163,9 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
                     handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
                 lesser ->
                     %% TODO: use a copy+rename to avoid corrupting files mid-crash
-                    {ok, _} = file:copy(Source, filename:join(Dir, Work)),
+                    Dest = filename:join(Dir, Work),
+                    filelib:ensure_dir(Dest),
+                    {ok, _} = file:copy(Source, Dest),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
                     save_snapshot(NewState),
                     {reply, ok, NewState};
@@ -167,7 +174,9 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
             end;
         _ when not is_map_key(Work, Map) ->
             %% TODO: use a copy+rename to avoid corrupting files mid-crash
-            {ok, _} = file:copy(Source, filename:join(Dir, Work)),
+            Dest = filename:join(Dir, Work),
+            filelib:ensure_dir(Dest),
+            {ok, _} = file:copy(Source, Dest),
             NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
             save_snapshot(NewState),
             {reply, ok, NewState}
@@ -372,7 +381,8 @@ conflict_ext(File, ConflictExt, Map) when ConflictExt == ".conflict"
     case maps:find(BasePath, Map) of
         {ok, {Ct, Conflict = {conflict, _, _}}} ->
             {marker, BasePath, {Ct, Conflict}};
-        _ -> conflict_extension
+        _ ->
+            conflict_extension
     end;
 conflict_ext(File, Ext, Map) ->
     case string:length(Ext) == 9 andalso is_hex(drop_period(Ext)) of
@@ -381,14 +391,18 @@ conflict_ext(File, Ext, Map) ->
             case maps:find(BasePath, Map) of
                 {ok, {Ct, Conflict = {conflict, _, _}}} ->
                     {conflicting, BasePath, {Ct, Conflict}};
-                _ -> conflict_extension
+                _ ->
+                    conflict_extension
             end;
         false ->
             false
     end.
 
-drop_suffix(Suffix, Suffix) -> [];
-drop_suffix([H|T], Suffix) -> [H|drop_suffix(T, Suffix)].
+drop_suffix(Path, Suffix) ->
+    case string:split(Path, Suffix, trailing) of
+        [Prefix, Tail] when Tail == <<>>; Tail == [] -> Prefix;
+        _ -> Path
+    end.
 
 drop_period(Ext) ->
     case string:next_grapheme(Ext) of
@@ -398,8 +412,12 @@ drop_period(Ext) ->
 
 is_hex(Str) ->
     case string:next_grapheme(Str) of
-        [C] when C >= $A, C =< $F; C >= $0, C =< $9 -> true;
-        [C|T] when C >= $A, C =< $F; C >= $0, C =< $9 -> is_hex(T);
+        [C|T] when C >= $A, C =< $F; C >= $0, C =< $9 ->
+            case T of
+                [] -> true;
+                <<>> -> true;
+                _ -> is_hex(T)
+            end;
         _ -> false
     end.
 

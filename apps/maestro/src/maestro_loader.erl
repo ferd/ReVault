@@ -56,7 +56,6 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 handle_continue(load_config, State=#state{cfg_path=Path, cfg=OldCfg}) ->
-    io:format("loading cfg at ~p~n", [Path]),
     NewState = case maestro_cfg:parse_file(Path) of
         {error, Reason} ->
             handle_cfg_parse_error(Reason, Path),
