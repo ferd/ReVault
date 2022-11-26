@@ -7,6 +7,7 @@
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 all() -> [setup_works, copy_and_sync].
 
@@ -49,8 +50,8 @@ init_per_testcase(set_up_peers, ConfigTmp) ->
         name => b, longnames => true, host => "127.0.0.1",
         env => [{"REVAULT_CONFIG", ?config(conf_b, Config)}]
     }),
-    ok = rpc:call(NodeA, file, set_cwd, [?config(dir_a, Config)]),
-    ok = rpc:call(NodeA, file, set_cwd, [?config(dir_b, Config)]),
+    ok = rpc:call(NodeA, file, set_cwd, [?config(priv_dir, Config)]),
+    ok = rpc:call(NodeB, file, set_cwd, [?config(priv_dir, Config)]),
     [{peer_a, {PidA, NodeA}}, {peer_b, {PidB, NodeB}} | Config];
 init_per_testcase(_, ConfigTmp) ->
     Config = init_per_testcase(set_up_peers, ConfigTmp),
@@ -62,8 +63,15 @@ init_per_testcase(_, ConfigTmp) ->
     rpc:call(NodeA, code, add_pathsa, [Paths]),
     rpc:call(NodeB, code, add_pathsa, [Paths]),
     %% Boot the software.
+    ct:pal("booting A"),
     {ok, _} = rpc:call(NodeA, application, ensure_all_started, [maestro]),
+    ct:pal("syncing on A"),
+    current = rpc:call(NodeA, maestro_loader, status, []),
+    ct:pal("booting B"),
     {ok, _} = rpc:call(NodeB, application, ensure_all_started, [maestro]),
+    ct:pal("syncing on B"),
+    current = rpc:call(NodeB, maestro_loader, status, []),
+    ct:pal("init complete"),
     Config.
 
 end_per_testcase(_, Config) ->
@@ -74,7 +82,19 @@ end_per_testcase(_, Config) ->
     Config.
 
 %% To check: first setup, working while offline/online, how to sync.
-setup_works(_Config) ->
+setup_works(Config) ->
+    {_, ServerNode} = ?config(peer_a, Config),
+    {_, ClientNode} = ?config(peer_b, Config),
+    Dir = <<"test">>,
+    ?assertMatch({ok, _}, rpc:call(ServerNode, revault_fsm, id, [Dir])),
+    %% initialize the client
+    case rpc:call(ClientNode, revault_fsm, id, [Dir]) of
+        undefined ->
+            ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, id, [Dir, <<"a">>])),
+            ?assertMatch({ok, _}, rpc:call(ClientNode, revault_fsm, id, [Dir]));
+        {ok, _} ->
+            ok
+    end,
     ok.
 
 copy_and_sync(Config) ->
