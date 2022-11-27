@@ -467,7 +467,7 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
     %% TODO: handle the file being corrupted vs its own hash
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
@@ -558,7 +558,7 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
     {keep_state, Data};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, _CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
@@ -696,7 +696,7 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
             case compare(Id, LVsn, Vsn) of
                 conflict ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
-                    TmpF = filename:join("/tmp", FHash),
+                    TmpF = revault_file:tmp(FHash),
                     file:write_file(TmpF, Bin),
                     revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
                     file:delete(TmpF);
@@ -706,7 +706,7 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
     end.
 
 update_file(Name, F, Meta, Bin) ->
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
