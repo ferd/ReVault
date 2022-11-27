@@ -81,6 +81,9 @@ end_per_testcase(_, Config) ->
     peer:stop(PidB),
     Config.
 
+setup_works() ->
+    [{doc, "The initialized peer nodes are running valid initialized FSMs"},
+     {timetrap, timer:seconds(5)}].
 setup_works(Config) ->
     {_, ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
@@ -89,7 +92,9 @@ setup_works(Config) ->
     ok = init_client(ClientNode, Dir, <<"a">>),
     ok.
 
-%% No conflicts in this one yet
+copy_and_sync() ->
+    [{doc, "Copying files end-to-end works fine, with conflicts omitted."},
+     {timetrap, timer:seconds(5)}].
 copy_and_sync(Config) ->
     {_, _ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
@@ -111,6 +116,10 @@ copy_and_sync(Config) ->
     ?assertEqual(tree(DirA), tree(DirB)),
     ok.
 
+conflict_and_sync() ->
+    [{doc, "Copying files end-to-end works fine, including conflicts "
+           "and resolution."},
+     {timetrap, timer:seconds(5)}].
 conflict_and_sync(Config) ->
     {_, ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),

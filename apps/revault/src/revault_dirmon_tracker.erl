@@ -96,42 +96,36 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
                     CStamp = conflict_stamp(Id, Stamp, NewStamp),
                     {CStamp, {conflict, ConflictHashes, WorkingHash}};
                 false ->
-                    ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
-                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
-                    %% TODO: cover ensure call for nested conflicts
-                    {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
+                    ConflictingFile = revault_conflict_file:conflicting(Work, NewHash),
+                    ok = revault_file:copy(Conflict, filename:join(Dir, ConflictingFile)),
                     NewHashes = lists:usort([NewHash|ConflictHashes]),
                     CStamp = conflict_stamp(Id, Stamp, NewStamp),
                     {CStamp, {conflict, NewHashes, WorkingHash}}
             end;
         #{Work := {Stamp, WorkingHash}} ->
             %% No conflict, create it
-            ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
-            %% TODO: use a copy+rename to avoid corrupting files mid-crash
-            %% TODO: cover ensure call for nested conflicts
-            {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
+            ConflictingFile = revault_conflict_file:conflicting(Work, NewHash),
+            ok = revault_file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             NewHashes = case WorkingHash of
                 deleted ->
                     [NewHash];
                 _ when NewHash =:= WorkingHash ->
                     [NewHash];
                 _ ->
-                    ConflictingWork = extension(Work, "." ++ hexname(WorkingHash)),
-                    {ok, _} = file:copy(filename:join(Dir, Work), filename:join(Dir, ConflictingWork)),
+                    ConflictingWork = revault_conflict_file:conflicting(Work, WorkingHash),
+                    ok = revault_file:copy(filename:join(Dir, Work), filename:join(Dir, ConflictingWork)),
                     lists:sort([NewHash, WorkingHash])
             end,
             CStamp = conflict_stamp(Id, Stamp, NewStamp),
             {CStamp, {conflict, NewHashes, WorkingHash}};
         _ when not is_map_key(Work, Map) ->
             %% No file, create a conflict
-            ConflictingFile = extension(Work, "." ++ hexname(NewHash)),
-            %% TODO: use a copy+rename to avoid corrupting files mid-crash
-            %% TODO: cover ensure call for nested conflicts
-            {ok, _} = file:copy(Conflict, filename:join(Dir, ConflictingFile)),
+            ConflictingFile = revault_conflict_file:conflicting(Work, NewHash),
+            ok = revault_file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             {NewStamp, {conflict, [NewHash], NewHash}}
     end,
     NewState = State#state{snapshot=Map#{Work => NewConflict}},
-    ok = write_conflict_file(Dir, Work, NewConflict),
+    ok = write_conflict_marker(Dir, Work, NewConflict),
     save_snapshot(NewState),
     {reply, ok, NewState};
 handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
@@ -143,12 +137,10 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
                     error({stamp_shared_for_conflicting_operations,
                            {Stamp, conflict}, {NewStamp, update_file}});
                 lesser -> % sync resolves conflict
-                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
                     Dest = filename:join(Dir, Work),
-                    filelib:ensure_dir(Dest),
-                    {ok, _} = file:copy(Source, Dest),
+                    ok = revault_file:copy(Source, Dest),
                     resolve_conflict(Dir, Work, Hashes),
-                    delete_conflict_file(Dir, Work),
+                    delete_conflict_marker(Dir, Work),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
                     save_snapshot(NewState),
                     {reply, ok, NewState};
@@ -162,10 +154,8 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
                 conflict ->
                     handle_call({conflict, Work, Source, {NewStamp, NewHash}}, _From, State);
                 lesser ->
-                    %% TODO: use a copy+rename to avoid corrupting files mid-crash
                     Dest = filename:join(Dir, Work),
-                    filelib:ensure_dir(Dest),
-                    {ok, _} = file:copy(Source, Dest),
+                    ok = revault_file:copy(Source, Dest),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
                     save_snapshot(NewState),
                     {reply, ok, NewState};
@@ -173,10 +163,8 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
                     {reply, ok, State}
             end;
         _ when not is_map_key(Work, Map) ->
-            %% TODO: use a copy+rename to avoid corrupting files mid-crash
             Dest = filename:join(Dir, Work),
-            filelib:ensure_dir(Dest),
-            {ok, _} = file:copy(Source, Dest),
+            ok = revault_file:copy(Source, Dest),
             NewState = State#state{snapshot=Map#{Work => {NewStamp, NewHash}}},
             save_snapshot(NewState),
             {reply, ok, NewState}
@@ -192,7 +180,7 @@ handle_call({delete_file, Work, {NewStamp, deleted}}, _From,
                 lesser -> % sync resolves conflict
                     _ = file:delete(filename:join(Dir, Work)),
                     resolve_conflict(Dir, Work, Hashes),
-                    delete_conflict_file(Dir, Work),
+                    delete_conflict_marker(Dir, Work),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
                     save_snapshot(NewState),
                     {reply, ok, NewState};
@@ -282,9 +270,9 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC, Dir) ->
             %% scanner moved and reaped files at once.
             %% As such, updating the conflict files if it's gone overwrites the
             %% user's change.
-            case filelib:is_file(conflict_file(Dir, BaseFile)) of
+            case filelib:is_file(conflict_marker(Dir, BaseFile)) of
                 true ->
-                    write_conflict_file(Dir, BaseFile, {Ct, {conflict, Hashes, WorkingHash}});
+                    write_conflict_marker(Dir, BaseFile, {Ct, {conflict, Hashes, WorkingHash}});
                 false ->
                     ok
             end,
@@ -326,32 +314,26 @@ save_snapshot(#state{snapshot = Snap, storage = File}) ->
     %% end up on two distinct filesystems, which then blocks renaming
     %% from working.
     RandVal = float_to_list(rand:uniform()),
-    SnapshotName = extension(File, RandVal),
+    SnapshotName = revault_file:extension(File, RandVal),
     SnapshotBlob = <<_/binary>> = unicode:characters_to_binary(
         io_lib:format("~tp.~n", [Snap])
     ),
     ok = file:write_file(SnapshotName, SnapshotBlob, [sync]),
     ok = file:rename(SnapshotName, File).
 
-conflict_file(Dir, WorkingFile) ->
-    extension(filename:join(Dir, WorkingFile), ".conflict").
+conflict_marker(Dir, WorkingFile) ->
+    revault_conflict_file:marker(filename:join(Dir, WorkingFile)).
 
-write_conflict_file(Dir, WorkingFile, {_, {conflict, Hashes, _}}) ->
+write_conflict_marker(Dir, WorkingFile, {_, {conflict, Hashes, _}}) ->
     %% We don't care about the rename trick here, it's informational
     %% but all the critical data is tracked in the snapshot
     file:write_file(
-        conflict_file(Dir, WorkingFile),
-        lists:join($\n, [hex(Hash) || Hash <- Hashes])
+        conflict_marker(Dir, WorkingFile),
+        lists:join($\n, [revault_conflict_file:hex(Hash) || Hash <- Hashes])
     ).
 
-delete_conflict_file(Dir, WorkingFile) ->
-    file:delete(conflict_file(Dir, WorkingFile)).
-
-hex(Hash) ->
-    binary:encode_hex(Hash).
-
-hexname(Hash) ->
-    unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
+delete_conflict_marker(Dir, WorkingFile) ->
+    file:delete(conflict_marker(Dir, WorkingFile)).
 
 -spec conflict_stamp(itc:id(), itc:event(), itc:event()) -> stamp().
 conflict_stamp(Id, C1, C2) ->
@@ -368,69 +350,29 @@ get_file(FileName, SetMap) ->
         {ok, {Ct, Hash}} ->
             {ok, {Ct, Hash}};
         error ->
-            case conflict_ext(FileName, filename:extension(FileName), SetMap) of
+            case conflict_ext(FileName, SetMap) of
                 false -> unknown;
                 Other -> Other
             end
     end.
 
-
-conflict_ext(File, ConflictExt, Map) when ConflictExt == ".conflict"
-                                        ; ConflictExt == <<".conflict">> ->
-    BasePath = drop_suffix(File, ConflictExt),
-    case maps:find(BasePath, Map) of
-        {ok, {Ct, Conflict = {conflict, _, _}}} ->
-            {marker, BasePath, {Ct, Conflict}};
-        _ ->
-            conflict_extension
-    end;
-conflict_ext(File, Ext, Map) ->
-    case string:length(Ext) == 9 andalso is_hex(drop_period(Ext)) of
-        true ->
-            BasePath = drop_suffix(File, Ext),
+conflict_ext(FileName, Map) ->
+    case revault_conflict_file:working(FileName) of
+        {Type, BasePath} ->
             case maps:find(BasePath, Map) of
                 {ok, {Ct, Conflict = {conflict, _, _}}} ->
-                    {conflicting, BasePath, {Ct, Conflict}};
+                    {Type, BasePath, {Ct, Conflict}};
                 _ ->
                     conflict_extension
             end;
-        false ->
+        undefined ->
             false
     end.
 
-drop_suffix(Path, Suffix) ->
-    case string:split(Path, Suffix, trailing) of
-        [Prefix, Tail] when Tail == <<>>; Tail == [] -> Prefix;
-        _ -> Path
-    end.
-
-drop_period(Ext) ->
-    case string:next_grapheme(Ext) of
-        [$.|Rest] -> Rest;
-        _ -> error({invalid_ext, Ext})
-    end.
-
-is_hex(Str) ->
-    case string:next_grapheme(Str) of
-        [C|T] when C >= $A, C =< $F; C >= $0, C =< $9 ->
-            case T of
-                [] -> true;
-                <<>> -> true;
-                _ -> is_hex(T)
-            end;
-        _ -> false
-    end.
-
 resolve_conflict(Dir, BaseFile, Hashes) ->
-    [file:delete(extension(filename:join(Dir, BaseFile),
-                           "." ++ hexname(ConflictHash)))
-     || ConflictHash <- Hashes],
+    [file:delete(revault_conflict_file:conflicting(
+        filename:join(Dir, BaseFile),
+        ConflictHash
+     )) || ConflictHash <- Hashes],
     ok.
 
-%% just go and please Gradualizer
--spec extension(file:filename_all(), string()) -> file:filename_all().
-extension(Path, Ext) when is_list(Path) ->
-    Path ++ Ext;
-extension(Path, Ext) when is_binary(Path) ->
-    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
-    <<Path/binary, BinExt/binary>>.
