@@ -467,7 +467,7 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
     %% TODO: handle the file being corrupted vs its own hash
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
@@ -558,7 +558,7 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
     {keep_state, Data};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, _CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
@@ -695,8 +695,8 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
         {LVsn, _HashOrStatus} ->
             case compare(Id, LVsn, Vsn) of
                 conflict ->
-                    FHash = make_conflict_path(F, Hash),
-                    TmpF = filename:join("/tmp", FHash),
+                    FHash = revault_conflict_file:conflicting(F, Hash),
+                    TmpF = revault_file:tmp(FHash),
                     file:write_file(TmpF, Bin),
                     revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
                     file:delete(TmpF);
@@ -706,7 +706,7 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
     end.
 
 update_file(Name, F, Meta, Bin) ->
-    TmpF = filename:join("/tmp", F),
+    TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
     ok = file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
@@ -727,7 +727,7 @@ handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
             %% TODO: optimize to better read and send file parts
             {Cb2, _} = lists:foldl(
                 fun(Hash, {CbAcc1, Ct}) ->
-                    FHash = make_conflict_path(F, Hash),
+                    FHash = revault_conflict_file:conflicting(F, Hash),
                     {ok, Bin} = file:read_file(filename:join(Path, FHash)),
                     NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
                     %% TODO: track failing or succeeding transfers?
@@ -747,22 +747,3 @@ handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
             {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
             Data#data{callback=Cb2}
     end.
-
-make_conflict_path(F, Hash) ->
-    extension(F, "." ++ hexname(Hash)).
-
-%% TODO: extract shared definition with revault_dirmon_tracker
-hex(Hash) ->
-    binary:encode_hex(Hash).
-
-%% TODO: extract shared definition with revault_dirmon_tracker
-hexname(Hash) ->
-    unicode:characters_to_list(string:slice(hex(Hash), 0, 8)).
-
-%% TODO: extract shared definition with revault_dirmon_tracker
--spec extension(file:filename_all(), string()) -> file:filename_all().
-extension(Path, Ext) when is_list(Path) ->
-    Path ++ Ext;
-extension(Path, Ext) when is_binary(Path) ->
-    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
-    <<Path/binary, BinExt/binary>>.

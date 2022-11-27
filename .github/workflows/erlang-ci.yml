@@ -10,7 +10,13 @@ permissions:
   contents: read
 
 env:
+  # Allow unicode output and enable features such as the maybe expression
   ERL_AFLAGS: +pc unicode -enable-feature all
+  # github actions does not have a shared filesystem between
+  # working files, the /tmp directory, or the ~/.cache directory
+  REVAULT_TMPDIR: ./tmp
+  # Force UTF-8 support since we need that for safe tests around
+  # roundtrip encoding.
   LANG: C.UTF-8
   LC_ALL: C.UTF-8
   LC_CTYPE: C.UTF-8

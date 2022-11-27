@@ -11,7 +11,7 @@
     uuid,
     ssl, public_key, tak
    ]},
-  {env,[]},
+  {env, []},
   {modules, []},
 
   {maintainers, ["Fred Hebert"]},
