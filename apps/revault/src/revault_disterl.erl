@@ -13,7 +13,7 @@
 %%% concrete data that can then be handed off to some format-specific
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
--export([callback/1, mode/1, peer/2, accept_peer/2, unpeer/2, send/2, reply/3, unpack/1]).
+-export([callback/1, mode/1, peer/2, peer/3, accept_peer/2, unpeer/2, send/2, reply/3, unpack/1]).
 -define(VSN, 1).
 -type state() :: ?MODULE.
 -export_type([state/0]).
@@ -29,6 +29,22 @@ peer(FromName, {ToName, ToNode}) ->
     %% TODO: change this to a Maybe construct in OTP-25
     FromNode = node(),
     Payload = revault_data_wrapper:peer({FromName, FromNode}),
+    case FromNode == ToNode orelse lists:member(ToNode, nodes()) of
+        true ->
+            send({ToName, ToNode}, Payload);
+        false ->
+            case net_adm:ping(ToNode) of
+                pong ->
+                    send({ToName, ToNode}, Payload);
+                pang ->
+                    {error, disterl_connection}
+            end
+    end.
+
+peer(FromName, {ToName, ToNode}, UUID) ->
+    %% TODO: change this to a Maybe construct in OTP-25
+    FromNode = node(),
+    Payload = revault_data_wrapper:peer({FromName, FromNode}, UUID),
     case FromNode == ToNode orelse lists:member(ToNode, nodes()) of
         true ->
             send({ToName, ToNode}, Payload);
@@ -71,6 +87,7 @@ reply(From, Ref, Payload) ->
 
 %% For this module, we just use raw erlang terms.
 unpack({peer, ?VSN, Remote}) -> {peer, Remote};
+unpack({peer, ?VSN, Remote, UUID}) -> {peer, Remote, UUID};
 unpack({ask, ?VSN}) -> ask;
 unpack({ok, ?VSN}) -> ok;
 unpack({error, ?VSN, R}) -> {error, R};

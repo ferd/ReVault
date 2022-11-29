@@ -4,6 +4,8 @@
          id_ask/2, id_reply/3, inspect_id/1]).
 -export([init/1, handle_call/3]).
 
+-define(UUID, <<158,169,164,144,204,120,74,163,181,249,87,231,157,44,17, 176>>).
+
 %% Fixtures for each test iteration, setting up and tearing down
 %% state.
 start_link() ->
@@ -25,9 +27,9 @@ id_ask(From, _To) ->
 
 id_reply(From, To, Id) ->
     _Msg = gen_server:call(To, {get, id_ask}),
-    {Keep, Resp} = revault_data_wrapper:fork(gen_server:call(From, {get, id})),
+    {Keep, Resp} = revault_data_wrapper:fork(gen_server:call(From, {get, id}), ?UUID),
     gen_server:call(From, {set, id, Keep}),
-    {reply, Id} = Resp,
+    {reply, {Id,_UUID}} = Resp,
     gen_server:call(To, {set, id, Id}),
     ok.
 

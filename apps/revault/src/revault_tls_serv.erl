@@ -203,6 +203,16 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
                     ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
             end;
+        {revault, Marker, {peer, Dir, UUID}} ->
+            case lists:member(Dir, DirNames) of
+                true ->
+                    ssl:setopts(Sock, [{active, once}]),
+                    revault_tls:send_local(Name, {revault, {self(),Marker}, {peer, self(), UUID}}),
+                    worker_loop(Dir, C#conn{buf=NewBuf});
+                false ->
+                    ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
+                    ssl:close(Sock)
+            end;
         _ ->
             Msg = {revault, internal, revault_data_wrapper:error(protocol)},
             ssl:send(Sock, revault_tls:wrap(Msg)),

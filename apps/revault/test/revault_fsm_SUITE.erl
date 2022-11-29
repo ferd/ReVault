@@ -3,6 +3,7 @@
 -include_lib("common_test/include/ct.hrl").
 -compile(export_all).
 
+-define(UUID_RECORD_POS, 4).
 
 all() ->
     [start_hierarchy,
@@ -16,7 +17,8 @@ groups() ->
      {tls, [], [{group, syncs}]},
      {syncs, [], [client_id, client_no_server,
                   fork_server_save, basic_sync, too_many_clients,
-                  overwrite_sync_clash, conflict_sync]}].
+                  overwrite_sync_clash, conflict_sync,
+                  prevent_server_clash]}].
 
 init_per_group(tcp, Config) ->
     [{callback, fun(Name) ->
@@ -301,7 +303,7 @@ basic_sync() ->
      {timetrap, timer:seconds(5)}].
 basic_sync(Config) ->
     Client = ?config(name, Config),
-    Server=?config(server, Config),
+    Server = ?config(server, Config),
     Remote = (?config(peer, Config))(Server),
     ClientPath = ?config(path, Config),
     ServerPath = ?config(server_path, Config),
@@ -573,8 +575,43 @@ conflict_sync(Config) ->
     ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath2, "shared.1C56416E"]))),
     ok.
 
-%% TODO: add a UUID per server that creates its own ID
-%%       and make sure two distinct servers can't peer into each other
+prevent_server_clash() ->
+    [{doc, "A client from a different server cannot connect to the wrong one "
+           "as it is protected by a UUID."},
+     {timetrap, timer:seconds(5)}].
+prevent_server_clash(Config) ->
+    Client = ?config(name, Config),
+    Server = ?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    ClientPath = ?config(path, Config),
+    ServerPid = ?config(fsm, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    %% Now here, to simulate connecting to a different server with a different ID,
+    %% we could set up a whole new harness with a varied config, more ports, and
+    %% get the client to try and connect to that one. Instead what we're going to
+    %% do is live-edit the server's state to give it a different UUID and see
+    %% that we're properly denying the connection.
+    {_, OldData} = sys:get_state(ServerPid),
+    OldUUID = element(?UUID_RECORD_POS, OldData),
+    NewUUID = uuid:get_v4(),
+    sys:replace_state(
+      ServerPid,
+      fun({State, Data}) -> {State, setelement(?UUID_RECORD_POS, Data, NewUUID)} end
+    ),
+    ct:pal("swapped ~p for ~p", [OldUUID, NewUUID]),
+    %% Try to connect the client to that server, and see it fail
+    ?assertMatch({error, {invalid_peer, OldUUID}}, revault_fsm:sync(Client, Remote)),
+    ok.
+
 %% TODO: dealing with interrupted connections?
 %% TODO: using OTel to create FSM-level traces via debug hooks and keeping
 %%       them distinct from specific request-long traces
