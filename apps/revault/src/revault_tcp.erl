@@ -12,7 +12,7 @@
 %% are not generic.
 -export([wrap/1, unwrap/1, send_local/2]).
 %% callbacks from within the FSM
--export([callback/1, mode/2, peer/3, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
+-export([callback/1, mode/2, peer/3, peer/4, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 
 -record(state, {proc, name, dirs, mode, serv_conn}).
 -type state() :: term().
@@ -40,6 +40,15 @@ peer(Local, Peer, S=#state{name=Dir, dirs=#{<<"peers">> := Peers}}) ->
     case Peers of
         #{Peer := Map} ->
             Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir)},
+            {revault_tcp_client:peer(Local, Peer, Map, Payload), {?MODULE, S}};
+        _ ->
+            {{error, unknown_peer}, {?MODULE, S}}
+    end.
+
+peer(Local, Peer, UUID, S=#state{name=Dir, dirs=#{<<"peers">> := Peers}}) ->
+    case Peers of
+        #{Peer := Map} ->
+            Payload = {revault, make_ref(), revault_data_wrapper:peer(Dir, UUID)},
             {revault_tcp_client:peer(Local, Peer, Map, Payload), {?MODULE, S}};
         _ ->
             {{error, unknown_peer}, {?MODULE, S}}
@@ -103,6 +112,7 @@ unwrap(<<_/binary>>) ->
     {error, incomplete}.
 
 unpack({peer, ?VSN, Remote}) -> {peer, Remote};
+unpack({peer, ?VSN, Remote, UUID}) -> {peer, Remote, UUID};
 unpack({ask, ?VSN}) -> ask;
 unpack({ok, ?VSN}) -> ok;
 unpack({error, ?VSN, R}) -> {error, R};

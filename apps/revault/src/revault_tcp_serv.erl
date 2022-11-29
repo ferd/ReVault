@@ -187,6 +187,16 @@ worker_dispatch(C=#conn{localname=Name, sock=Sock, dirs=Dirs, buf=Buf}) ->
                     gen_tcp:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),
                     gen_tcp:close(Sock)
             end;
+        {revault, Marker, {peer, Dir, UUID}} ->
+            case lists:member(Dir, DirNames) of
+                true ->
+                    inet:setopts(Sock, [{active, once}]),
+                    revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self(), UUID}}),
+                    worker_loop(Dir, C#conn{buf=NewBuf});
+                false ->
+                    gen_tcp:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),
+                    gen_tcp:close(Sock)
+            end;
         _ ->
             Msg = {revault, internal, revault_data_wrapper:error(protocol)},
             gen_tcp:send(Sock, revault_tcp:wrap(Msg)),

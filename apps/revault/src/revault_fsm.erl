@@ -222,8 +222,9 @@ client_init(_, _, Data) ->
 
 connecting(enter, _OldState, Data) ->
     {keep_state, Data};
-connecting(internal, {connect, Remote}, Data=#data{name=Name, callback=Cb, sub=Conn}) ->
-    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+connecting(internal, {connect, Remote},
+           Data=#data{name=Name, callback=Cb, sub=Conn, uuid=UUID}) ->
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, UUID]),
     case Res of
         {ok, Marker} ->
             %% Await confirmation from the peer
@@ -266,6 +267,8 @@ connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
     {next_state, disconnect, Data#data{sub=Disconnect},
      [{next_event, internal, {disconnect, Remote}}]};
 %% And now we unfortunately repeat the whole ordeal with the #uninit{} state record...
+%% There is one difference though, the uninitialized version does not pass a UUID for
+%% safety since until initialization, the client has none.
 connecting(internal, {connect, Remote}, Data=#uninit{name=Name, callback=Cb, sub=Conn}) ->
     {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
     case Res of
@@ -339,12 +342,10 @@ client_id_sync(info, {revault, Marker, {error, _R}},
     {next_state, disconnect, Data#uninit{sub=Disconnect},
      [{reply, From, {error, sync_failed}},
       {next_event, internal, {disconnect, Remote}}]};
-client_id_sync(info, {revault, Marker, {reply, NewId}},
+client_id_sync(info, {revault, Marker, {reply, {NewId,UUID}}},
                Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
     #uninit{db_dir=Dir, name=Name, path=Path, interval=Interval,
             callback=Cb} = Data,
-    %% TODO: weave in the UUID from the server
-    UUID = uuid:get_v4(),
     ok = store_uuid(Dir, Name, UUID),
     ok = store_id(Dir, Name, NewId),
     %% tracker couldn't have been booted yet
@@ -377,12 +378,20 @@ initialized(info, {revault, _Marker, {peer, _Remote}}, Data) ->
     %% consider this to be an implicit {role, server} shift;
     %% TODO: add a "wait_role" sort of call if this ends up
     %% preventing client calls from happening on a busy server?
+    {next_state, server, Data, [postpone]};
+initialized(info, {revault, _Marker, {peer, _Remote, _UUID}}, Data) ->
+    %% consider this to be an implicit {role, server} shift;
+    %% TODO: add a "wait_role" sort of call if this ends up
+    %% preventing client calls from happening on a busy server?
     {next_state, server, Data, [postpone]}.
 
 client(enter, _, Data = #data{callback=Cb}) ->
     {_, NewCb} = apply_cb(Cb, mode, [client]),
     {keep_state, Data#data{callback=NewCb}};
 client({call, From}, id, Data=#data{id=Id}) ->
+    {keep_state, Data, [{reply, From, {ok, Id}}]};
+client({call, From}, {id, _}, Data=#data{id=Id}) ->
+    %% Ignore the call for a remote and just send the ID we already know
     {keep_state, Data, [{reply, From, {ok, Id}}]};
 client({call, From}, {sync, Remote}, Data) ->
     {next_state, connecting,
@@ -519,6 +528,20 @@ server(info, {revault, Marker, {peer, Remote}}, Data=#data{callback=Cb}) ->
     Payload = revault_data_wrapper:error(peer_busy),
     {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
     {keep_state, Data#data{callback=NewCb}};
+server(info, {revault, Marker, {peer, Remote, UUID}}, Data=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
+    %% TODO: handle error
+    {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
+    {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
+    {keep_state, Data#data{callback=NewCb, sub=#server{remote=Remote}}};
+server(info, {revault, Marker, {peer, Remote, BadUUID}}, Data=#data{sub=undefined, callback=Cb}) ->
+    Payload = revault_data_wrapper:error({invalid_peer, BadUUID}),
+    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
+    {keep_state, Data#data{callback=NewCb}};
+server(info, {revault, Marker, {peer, Remote, _}}, Data=#data{callback=Cb}) ->
+    %% TODO: consider postponing the message to respond later?
+    Payload = revault_data_wrapper:error(peer_busy),
+    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
+    {keep_state, Data#data{callback=NewCb}};
 server(info, {revault, _Marker, ask}, Data=#data{sub=#server{}}) ->
     {next_state, server_id_sync, Data, [postpone]};
 server(info, {revault, _Marker, manifest}, Data=#data{sub=#server{}}) ->
@@ -527,9 +550,9 @@ server(info, {revault, _Marker, manifest}, Data=#data{sub=#server{}}) ->
 server_id_sync(enter, _, Data) ->
     {keep_state, Data};
 server_id_sync(info, {revault, Marker, ask},
-       Data=#data{name=Name, id=Id, callback=Cb,
+       Data=#data{name=Name, id=Id, uuid=UUID, callback=Cb,
                   db_dir=Dir, sub=#server{remote=R}}) ->
-    {NewId, Payload} = revault_data_wrapper:fork(Id),
+    {NewId, Payload} = revault_data_wrapper:fork(Id, UUID),
     %% Save NewId to disk before replying to avoid issues
     ok = store_id(Dir, Name, NewId),
     %% Inject the new ID into all the local handlers before replying
@@ -581,6 +604,11 @@ server_sync_files(info, {revault, Marker, sync_complete},
     {next_state, disconnect, Data#data{callback=Cb1, sub=Disconnect},
      [{next_event, internal, {disconnect, R}}]};
 server_sync_files(info, {revault, Marker, {peer, Peer}},
+                  Data=#data{callback=Cb}) ->
+    Payload = revault_data_wrapper:error(peer_busy),
+    {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
+    {keep_state, Data#data{callback=Cb2}};
+server_sync_files(info, {revault, Marker, {peer, Peer, _UUID}},
                   Data=#data{callback=Cb}) ->
     Payload = revault_data_wrapper:error(peer_busy),
     {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
