@@ -158,7 +158,6 @@ init({DbDir, Name, Path, Interval, Callback}) ->
              #uninit{db_dir=DbDir, name=Name, path=Path, interval=Interval,
                      callback=Callback}};
         _ ->
-            {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
             {ok, initialized,
              #data{db_dir=DbDir, name=Name, path=Path, interval=Interval,
                    id = Id, uuid = UUID,

@@ -135,7 +135,7 @@ start_client(DirName,
             _ = revault_fsm:id(DirName, PeerName),
             ok;
         _ ->
-            ok
+            ok = revault_fsm:client(DirName)
     end.
 
 start_servers(Cfg = #{<<"server">> := ServMap}) ->
@@ -165,7 +165,8 @@ start_server(DirName,
         undefined ->
             ok = revault_fsm:server(DirName);
         _ ->
-            ok
+            %% Set as server if not previously started as client
+            ok = revault_fsm:server(DirName)
     end.
 
 %% No pattern allows disterl to work as an option here. Only works for tests.
