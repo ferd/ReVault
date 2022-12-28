@@ -93,6 +93,9 @@ handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock
     %% TODO: Log
     {next_state, disconnected, Data#client{sock=undefined}};
 handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
+    %% TODO: Log
+    {next_state, disconnected, Data#client{sock=undefined}};
+handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
     {next_state, disconnected, Data#client{sock=undefined}}.
 
 terminate(_Reason, _State, _Data) ->
