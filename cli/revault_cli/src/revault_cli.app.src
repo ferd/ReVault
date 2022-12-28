@@ -1,0 +1,15 @@
+{application, revault_cli,
+ [{description, "An escript to interact with ReVault nodes"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib,
+    argparse
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["LGPL 3.0"]},
+  {links, []}
+ ]}.
