@@ -35,7 +35,7 @@ init([_Name, undefined, _Path, _Interval, _DbDir]) ->
     %% we can't track and stamp content.
     exit(undefined_itc);
 init([Name, Id, Path, Interval, DbDir]) ->
-    TrackFile = filename:join(DbDir, "tracker.snapshot"),
+    TrackFile = filename:join([DbDir, Name, "tracker.snapshot"]),
     {ok, {{rest_for_one, 1, 60}, [
         #{id => listener,
           start => {revault_dirmon_tracker, start_link, [Name, Path, TrackFile, Id]},

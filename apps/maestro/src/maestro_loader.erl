@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 -define(RELOAD_INTERVAL, timer:minutes(5)).
 
--export([start_link/0, status/0]).
+-export([start_link/0, current/0, status/0]).
 -export([init/1,
          handle_call/3, handle_cast/2, handle_info/2, handle_continue/2,
          terminate/2]).
@@ -20,6 +20,9 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+current() ->
+    gen_server:call(?MODULE, current, 10000).
+
 status() ->
     gen_server:call(?MODULE, status, 10000).
 
@@ -30,6 +33,8 @@ init([]) ->
     CfgPath = maestro_cfg:config_path(),
     {ok, #state{cfg_path = CfgPath}, {continue, load_config}}.
 
+handle_call(current, _From, State=#state{cfg=Current, cfg_path=Path}) ->
+    {reply, {ok, Path, Current}, State};
 handle_call(status, _From, State=#state{cfg=Current, cfg_path=Path}) ->
     case maestro_cfg:parse_file(Path) of
         {ok, Current} ->
@@ -84,6 +89,8 @@ handle_cfg_parse_error(Reason, Path) ->
        file => Path
     }).
 
+apply_cfg(Cfg, Cfg) ->
+    unchanged;
 apply_cfg(Cfg, undefined) ->
     start_workers(Cfg).
 
