@@ -9,7 +9,7 @@
 
 %% API
 -export([start_link/0,
-         start_server/2, start_server/3,
+         start_server/1, start_server/2,
          start_client/2, start_client/3]).
 
 %% Supervisor callbacks
@@ -30,11 +30,11 @@ start_client(Name, DirOpts) ->
 start_client(Name, DirOpts, TcpOpts) ->
     start_child(revault_tcp_client, Name, [Name, DirOpts, TcpOpts]).
 
-start_server(Name, DirOpts) ->
-    start_child(revault_tcp_serv, Name, [Name, DirOpts]).
+start_server(DirOpts) ->
+    start_child(revault_tcp_serv, shared, [DirOpts]).
 
-start_server(Name, DirOpts, TcpOpts) ->
-    start_child(revault_tcp_serv, Name, [Name, DirOpts, TcpOpts]).
+start_server(DirOpts, TcpOpts) ->
+    start_child(revault_tcp_serv, shared, [DirOpts, TcpOpts]).
 
 %%====================================================================
 %% Supervisor callbacks

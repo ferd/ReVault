@@ -34,8 +34,6 @@ mode(Mode, S=#state{proc=Proc, name=Name, dirs=DirOpts}) ->
         client ->
             revault_protocols_tls_sup:start_client(Proc, DirOpts);
         server ->
-            %% ensure_server
-            %% add_server_mapping(Name,Proc)
             %% Assumes that all servers have the full DirOpts view if this is the
             %% first place to start it.
             case revault_protocols_tls_sup:start_server(DirOpts) of
