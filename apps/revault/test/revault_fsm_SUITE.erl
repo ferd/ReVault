@@ -169,6 +169,7 @@ end_per_testcase(_, Config) ->
     unlink(?config(sup, Config)),
     gen_server:stop(?config(sup, Config)),
     [application:stop(App) || App <- ?config(apps, Config)],
+    wait_dead([revault_sup, revault_protocols_sup, revault_trackers_sup]),
     Config.
 
 start_hierarchy() ->
@@ -630,4 +631,23 @@ block_loop() ->
     case application:get_env(revault, ?MODULE, unblock) of
         block -> timer:sleep(10), block_loop();
         _ -> ok
+    end.
+
+wait_dead([]) ->
+    ok;
+wait_dead([Pid|Rest]) when is_pid(Pid) ->
+    case erlang:is_process_alive(Pid) of
+        true ->
+            timer:sleep(100),
+            wait_dead([Pid|Rest]);
+        false ->
+            wait_dead(Rest)
+    end;
+wait_dead([Name|Rest]) when is_atom(Name) ->
+    case whereis(Name) of
+        undefined ->
+            wait_dead(Rest);
+        _ ->
+            timer:sleep(100),
+            wait_dead([Name|Rest])
     end.
