@@ -72,9 +72,12 @@ system_tmpdir() ->
         undefined ->
             case os:getenv("REVAULT_TMPDIR") of
                 false ->
-                    application:set_env(revault, system_tmpdir, detect_tmpdir());
+                    Path = detect_tmpdir(),
+                    application:set_env(revault, system_tmpdir, Path),
+                    Path;
                 Path ->
-                    application:set_env(revault, system_tmpdir, Path)
+                    application:set_env(revault, system_tmpdir, Path),
+                    Path
             end
     end.
 

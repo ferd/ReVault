@@ -8,7 +8,7 @@
 
 
 %% Name of the main running host, as specified in `config/vm.args'
--define(DEFAULT_NODE, 'revault@127.0.0.1').
+-define(DEFAULT_NODE, "revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@")))).
 
 %%====================================================================
 %% API functions
@@ -22,13 +22,13 @@ cli() ->
     #{commands => #{
         "list" => #{
             arguments => [
-                #{name => node, nargs => 'maybe', type => atom, default => ?DEFAULT_NODE,
+                #{name => node, nargs => 'maybe', type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
                   long => "node", help => "ReVault instance to connect to"}
             ]
         },
         "scan" => #{
             arguments => [
-                #{name => node, nargs => 'maybe', type => atom, default => ?DEFAULT_NODE,
+                #{name => node, nargs => 'maybe', type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
                   long => "node", help => "ReVault instance to connect to"},
                 #{name => dirs, long => "dirs",
                   nargs => nonempty_list, type => binary, help => "Name of the directory to scan"}
@@ -36,7 +36,7 @@ cli() ->
         },
         "sync" => #{
             arguments => [
-                #{name => node, nargs => 'maybe', type => atom, default => ?DEFAULT_NODE,
+                #{name => node, nargs => 'maybe', type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
                   long => "node", help => "ReVault instance to connect to"},
                 #{name => peer, nargs => 1, type => binary,
                   long => "peer", help => "ReVault peer name with which to sync"},
@@ -46,14 +46,12 @@ cli() ->
         },
         "status" => #{
             arguments => [
-                #{name => node, nargs => 'maybe', type => atom, default => ?DEFAULT_NODE,
+                #{name => node, nargs => 'maybe', type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
                   long => "node", help => "ReVault instance to connect to"}
             ]
         },
         "generate-keys" => #{
             arguments => [
-                #{name => node, nargs => 'maybe', type => atom, default => ?DEFAULT_NODE,
-                  long => "node", help => "ReVault instance to connect to"},
                 #{name => certname, nargs => 'maybe', long => "name",
                   type => string, default => "revault",
                   help => "Name of the key files generated"},
@@ -68,7 +66,8 @@ cli() ->
 %%%%%%%%%%%%%%%%%%%%%%%%
 %%% BEHAVIOR EXPORTS %%%
 %%%%%%%%%%%%%%%%%%%%%%%%
-list(#{node := Node}) ->
+list(#{node := NodeStr}) ->
+    Node = list_to_atom(NodeStr),
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),
@@ -80,7 +79,8 @@ list(#{node := Node}) ->
             io:format("Erlang distribution connection to ~p failed.~n", [Node])
     end.
 
-scan(_Args = #{node := Node, dirs := Dirs}) ->
+scan(_Args = #{node := NodeStr, dirs := Dirs}) ->
+    Node = list_to_atom(NodeStr),
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),
@@ -91,7 +91,8 @@ scan(_Args = #{node := Node, dirs := Dirs}) ->
         {error, connection_failed} ->
             io:format("Erlang distribution connection to ~p failed.~n", [Node])
     end;
-scan(Args = #{node := Node}) ->
+scan(Args = #{node := NodeStr}) ->
+    Node = list_to_atom(NodeStr),
     %% find all directories allowed
     maybe
         ok ?= connect(Node),
@@ -103,7 +104,8 @@ scan(Args = #{node := Node}) ->
     end.
 
 
-sync(#{node := Node, dirs := Dirs = [_|_], peer := Peer}) ->
+sync(#{node := NodeStr, dirs := Dirs = [_|_], peer := Peer}) ->
+    Node = list_to_atom(NodeStr),
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),

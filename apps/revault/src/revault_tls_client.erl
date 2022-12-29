@@ -18,7 +18,7 @@ start_link(Name, DirOpts, TlsOpts) ->
     %% will fail otherwise.
     MandatoryOpts = [{mode, binary}, {packet, raw}, {active, once}],
     AllTlsOpts = MandatoryOpts ++ TlsOpts,
-    gen_statem:start_link(?CLIENT(Name), ?MODULE, {Name, DirOpts, AllTlsOpts}, [{debug, [trace]}]).
+    gen_statem:start_link(?CLIENT(Name), ?MODULE, {Name, DirOpts, AllTlsOpts}, []).
 
 stop(Name) ->
     gen_statem:call(?CLIENT(Name), stop).
@@ -93,9 +93,11 @@ handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock
     %% TODO: Log
     {next_state, disconnected, Data#client{sock=undefined}};
 handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
-    %% TODO: Log
     {next_state, disconnected, Data#client{sock=undefined}};
-handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
+handle_event(info, {ssl_closed, _Sock}, connected, Data=#client{}) ->
+    %% unrelated message from an old connection
+    {next_state, connected, Data};
+handle_event(info, {ssl_closed, _Sock}, disconnected, Data=#client{}) ->
     {next_state, disconnected, Data#client{sock=undefined}}.
 
 terminate(_Reason, _State, _Data) ->
