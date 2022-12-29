@@ -233,6 +233,7 @@ client_id(Config) ->
     ?assertNotEqual(ServId1, ClientId),
     %% Now shut down the client and restart it and make sure it works
     gen_server:stop(revault_fsm_sup, normal, 5000),
+    wait_dead([{n,l, {revault_dirmon_tracker, Name}}]),
     {ok, Pid} = revault_fsm:start_link(
         ?config(db_dir, Config),
         Name,
@@ -648,6 +649,14 @@ wait_dead([Pid|Rest]) when is_pid(Pid) ->
     end;
 wait_dead([Name|Rest]) when is_atom(Name) ->
     case whereis(Name) of
+        undefined ->
+            wait_dead(Rest);
+        _ ->
+            timer:sleep(100),
+            wait_dead([Name|Rest])
+    end;
+wait_dead([Name|Rest]) ->
+    case gproc:where(Name) of
         undefined ->
             wait_dead(Rest);
         _ ->
