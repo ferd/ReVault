@@ -111,6 +111,11 @@
                | #client_sync{} | #server{}
         }).
 
+-ifdef(TEST).
+-define(DEBUG_OPTS, [{debug, [trace]}]).
+-else.
+-define(DEBUG_OPTS, []).
+-endif.
 
 %  [dirs.images]
 %  interval = 60
@@ -120,7 +125,7 @@ start_link(DbDir, Name, Path, Interval) ->
     start_link(DbDir, Name, Path, Interval, revault_disterl).
 
 start_link(DbDir, Name, Path, Interval, Callback) ->
-    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, [{debug, [trace]}]).
+    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, ?DEBUG_OPTS).
 
 -spec server(name()) -> ok | {error, busy}.
 server(Name) ->
@@ -360,7 +365,8 @@ client_id_sync(info, {revault, Marker, {reply, {NewId,UUID}}},
 client_id_sync(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-initialized(enter, _, Data=#data{}) ->
+initialized(enter, _, Data=#data{name=Name, id=Id, path=Path, interval=Interval, db_dir=DbDir}) ->
+    _ = start_tracker(Name, Id, Path, Interval, DbDir),
     {keep_state, Data};
 initialized({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};

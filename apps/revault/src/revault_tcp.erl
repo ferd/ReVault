@@ -26,12 +26,21 @@ callback({Proc, Name, DirOpts}) ->
     {?MODULE, #state{proc=Proc, name=Name, dirs=DirOpts}}.
 
 -spec mode(client|server, state()) -> {term(), cb_state()}.
-mode(Mode, S=#state{proc=Proc, dirs=DirOpts}) ->
+mode(Mode, S=#state{proc=Proc, name=Name, dirs=DirOpts}) ->
     Res = case Mode of
         client ->
             revault_protocols_tcp_sup:start_client(Proc, DirOpts);
         server ->
-            revault_protocols_tcp_sup:start_server(Proc, DirOpts)
+            %% Assumes that all servers have the full DirOpts view if this is the
+            %% first place to start it.
+            case revault_protocols_tcp_sup:start_server(DirOpts) of
+                {ok, Pid} ->
+                    revault_tcp_serv:map(Name, Proc),
+                    {ok, Pid};
+                {error, {already_started, Pid}} ->
+                    revault_tcp_serv:map(Name, Proc),
+                    {ok, Pid}
+            end
     end,
     {Res, {?MODULE, S#state{mode=Mode}}}.
 
