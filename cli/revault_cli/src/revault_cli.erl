@@ -104,7 +104,7 @@ scan(Args = #{node := NodeStr}) ->
     end.
 
 
-sync(#{node := NodeStr, dirs := Dirs = [_|_], peer := Peer}) ->
+sync(#{node := NodeStr, dirs := Dirs = [_|_], peer := [Peer]}) ->
     Node = list_to_atom(NodeStr),
     maybe
         ok ?= connect(Node),

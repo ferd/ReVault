@@ -16,7 +16,8 @@ groups() ->
      {tcp, [], [{group, syncs}]},
      {tls, [], [{group, syncs}]},
      {syncs, [], [client_id, client_no_server,
-                  fork_server_save, basic_sync, too_many_clients,
+                  fork_server_save, basic_sync,
+                  delete_sync, too_many_clients,
                   overwrite_sync_clash, conflict_sync,
                   prevent_server_clash]}].
 
@@ -386,6 +387,55 @@ basic_sync(Config) ->
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.D6BE7FB8"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
+    ok.
+
+delete_sync() ->
+    [{doc, "Basic file synchronization works with deletions"},
+     {timetrap, timer:seconds(5)}].
+delete_sync(Config) ->
+    Client = ?config(name, Config),
+    Server = ?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    %% now in initialized mode
+    %% Write files
+    ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
+    ok = file:write_file(filename:join([ServerPath, "server-only"]), "s1"),
+    %% Track em
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Sync em
+    ok = revault_fsm:sync(Client, Remote),
+    %% See the result
+    %% 1. all unmodified files are left in place
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    %% The working file can be deleted.
+    ok = file:rename(filename:join([ClientPath, "client-only"]),
+                     filename:join([ClientPath, "client-moved"])),
+    ok = file:rename(filename:join([ServerPath, "server-only"]),
+                     filename:join([ServerPath, "server-moved"])),
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    ct:pal("RE-SYNC"),
+    ok = revault_fsm:sync(Client, Remote),
+    %% the following should be moved to a lower-level test:
+    %% Check again
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-moved"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-moved"]))),
     ok.
 
 too_many_clients() ->
