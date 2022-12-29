@@ -239,6 +239,9 @@ client_id(Config) ->
         ?config(path, Config),
         ?config(interval, Config)
     ),
+    %% See that we have a tracker going even without defining a role
+    wait_alive([{n,l, {revault_dirmon_tracker, Name}}]),
+    %% Define a role
     ok = revault_fsm:client(Name),
     ?assertEqual({ok, ClientId}, revault_fsm:id(Name)),
     unlink(Pid),
@@ -650,4 +653,23 @@ wait_dead([Name|Rest]) when is_atom(Name) ->
         _ ->
             timer:sleep(100),
             wait_dead([Name|Rest])
+    end.
+
+wait_alive([]) ->
+    ok;
+wait_alive([Name|Rest]) when is_atom(Name) ->
+    case whereis(Name) of
+        undefined ->
+            timer:sleep(100),
+            wait_alive([Name|Rest]);
+        _ ->
+            wait_alive(Rest)
+    end;
+wait_alive([Name|Rest]) ->
+    case gproc:where(Name) of
+        undefined ->
+            timer:sleep(100),
+            wait_alive([Name|Rest]);
+        _ ->
+            wait_alive(Rest)
     end.
