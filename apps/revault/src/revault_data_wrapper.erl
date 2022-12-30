@@ -10,7 +10,8 @@
 %%% protocol here does not need to know where or how.
 -module(revault_data_wrapper).
 -export([peer/1, peer/2, new/0, ask/0, ok/0, error/1, fork/2]).
--export([manifest/0, manifest/1, send_file/4, send_conflict_file/5, fetch_file/1,
+-export([manifest/0, manifest/1, send_file/4, send_deleted/2,
+         send_conflict_file/5, fetch_file/1,
          sync_complete/0]).
 -define(VSN, 1).
 
@@ -34,6 +35,9 @@ manifest(Data) ->
 
 send_file(Path, Vsn, Hash, Bin) ->
     {file, ?VSN, Path, {Vsn, Hash}, Bin}.
+
+send_deleted(Path, Vsn) ->
+    {deleted_file, ?VSN, Path, {Vsn, deleted}}.
 
 send_conflict_file(WorkPath, Path, ConflictsLeft, Meta, Bin) ->
     {conflict_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, Bin}.

@@ -6,7 +6,7 @@
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 -export([start_link/4, stop/1, file/2, files/1]).
--export([update_id/2, conflict/4, update_file/4, delete_file/3]).
+-export([update_id/2, conflict/3, conflict/4, update_file/4, delete_file/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -opaque stamp() :: itc:event().
@@ -45,6 +45,10 @@ stop(Name) ->
 
 update_id(Name, Id) ->
     gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
+
+-spec conflict(term(), file:filename_all(), {stamp(), deleted}) -> ok.
+conflict(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
+    gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, Vsn}, infinity).
 
 -spec conflict(term(), file:filename_all(), file:filename_all(),
                {stamp(), revault_dirmon_poll:hash()}) -> ok.
@@ -123,6 +127,31 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
             ConflictingFile = revault_conflict_file:conflicting(Work, NewHash),
             ok = revault_file:copy(Conflict, filename:join(Dir, ConflictingFile)),
             {NewStamp, {conflict, [NewHash], NewHash}}
+    end,
+    NewState = State#state{snapshot=Map#{Work => NewConflict}},
+    ok = write_conflict_marker(Dir, Work, NewConflict),
+    save_snapshot(NewState),
+    {reply, ok, NewState};
+handle_call({conflict, Work, {NewStamp, deleted}}, _From,
+            State = #state{snapshot=Map, dir=Dir, itc_id=Id}) ->
+    NewConflict = case Map of
+        #{Work := {Stamp, {conflict, ConflictHashes, WorkingHash}}} ->
+            %% A conflict already existed; nothing to do with the conflict
+            %% hashes since we don't have a file-based way to mark deletions,
+            %% but note the deletion stamp as part of the conflict.
+            CStamp = conflict_stamp(Id, Stamp, NewStamp),
+            {CStamp, {conflict, ConflictHashes, WorkingHash}};
+        #{Work := {Stamp, WorkingHash}} ->
+            %% No conflict, create it
+            ConflictingWork = revault_conflict_file:conflicting(Work, WorkingHash),
+            ok = revault_file:copy(filename:join(Dir, Work), filename:join(Dir, ConflictingWork)),
+            NewHashes = [WorkingHash],
+            CStamp = conflict_stamp(Id, Stamp, NewStamp),
+            {CStamp, {conflict, NewHashes, WorkingHash}};
+        _ when not is_map_key(Work, Map) ->
+            %% No file, creating a conflict is ambiguous. Let's make one and assume
+            %% further files will come in as part of the sync.
+            {NewStamp, {conflict, [], deleted}}
     end,
     NewState = State#state{snapshot=Map#{Work => NewConflict}},
     ok = write_conflict_marker(Dir, Work, NewConflict),

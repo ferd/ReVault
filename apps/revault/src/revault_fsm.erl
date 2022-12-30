@@ -444,12 +444,16 @@ client_sync_files(enter, _, Data) ->
 client_sync_files(internal, {send, File},
                   Data=#data{name=Name, path=Path, callback=Cb,
                              sub=#client_sync{remote=R}}) ->
-    {Vsn, Hash} = revault_dirmon_tracker:file(Name, File),
-    %% TODO: optimize to read and send files in parts rather than
-    %% just reading it all at once and loading everything in memory
-    %% and shipping it in one block
-    {ok, Bin} = file:read_file(filename:join(Path, File)),
-    Payload = revault_data_wrapper:send_file(File, Vsn, Hash, Bin),
+    Payload = case revault_dirmon_tracker:file(Name, File) of
+        {Vsn, deleted} ->
+            revault_data_wrapper:send_deleted(filename:join(Path, File), Vsn);
+        {Vsn, Hash} ->
+            %% TODO: optimize to read and send files in parts rather than
+            %% just reading it all at once and loading everything in memory
+            %% and shipping it in one block
+            {ok, Bin} = file:read_file(filename:join(Path, File)),
+            revault_data_wrapper:send_file(File, Vsn, Hash, Bin)
+    end,
     %% TODO: track the success or failures of transfers, detect disconnections
     {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
     {keep_state, Data#data{callback=NewCb}};
@@ -472,6 +476,16 @@ client_sync_files(internal, sync_complete, Data) ->
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
     handle_file_sync(Name, Id, F, Meta, Bin),
+    case Acc -- [F] of
+        [] ->
+            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+             [{next_event, internal, sync_complete}]};
+        NewAcc ->
+            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+    end;
+client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
+    #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
+    handle_delete_sync(Name, Id, F, Meta),
     case Acc -- [F] of
         [] ->
             {keep_state, Data#data{sub=S#client_sync{acc=[]}},
@@ -569,7 +583,7 @@ server_id_sync(info, {revault, Marker, ask},
     {next_state, disconnect, Data#data{id=NewId, callback=Cb1, sub=Disconnect},
      [{next_event, internal, {disconnect, R}}]}.
 
-server_sync(enter, _, Data) ->
+server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
        Data=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
@@ -584,6 +598,10 @@ server_sync_files(enter, _, Data) ->
 server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
     handle_file_sync(Name, Id, F, Meta, Bin),
+    {keep_state, Data};
+server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
+                  Data=#data{name=Name, id=Id}) ->
+    handle_delete_sync(Name, Id, F, Meta),
     {keep_state, Data};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, _CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
@@ -712,6 +730,20 @@ compare(Id, Ct1, Ct2) ->
         {false, true} -> greater
     end.
 
+handle_delete_sync(Name, Id, F, Meta = {Vsn, deleted}) ->
+    %% is this file a conflict or an update?
+    case revault_dirmon_tracker:file(Name, F) of
+        undefined ->
+            delete_file(Name, F, Meta);
+        {LVsn, _HashOrStatus} ->
+            case compare(Id, LVsn, Vsn) of
+                conflict ->
+                    revault_dirmon_tracker:conflict(Name, F, Meta);
+                _ ->
+                    delete_file(Name, F, Meta)
+            end
+    end.
+
 handle_file_sync(Name, Id, F, Meta = {_Vsn, Hash}, Bin) ->
     case validate_hash(Hash, Bin) of
         false ->
@@ -738,6 +770,13 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
                     update_file(Name, F, Meta, Bin)
             end
     end.
+
+delete_file(Name, F, Meta) ->
+    case file:delete(F) of
+        ok -> ok;
+        {error, enoent} -> ok
+    end,
+    revault_dirmon_tracker:delete_file(Name, F, Meta).
 
 update_file(Name, F, Meta, Bin) ->
     TmpF = revault_file:tmp(F),
@@ -771,6 +810,11 @@ handle_file_demand(F, Marker, Data=#data{name=Name, path=Path, callback=Cb1,
                 {Cb1, length(Hashes)-1},
                 Hashes
             ),
+            Data#data{callback=Cb2};
+        {Vsn, deleted} ->
+            NewPayload = revault_data_wrapper:send_deleted(F, Vsn),
+            %% TODO: track failing or succeeding transfers?
+            {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
             Data#data{callback=Cb2};
         {Vsn, Hash} ->
             %% just inefficiently read the whole freaking thing at once
