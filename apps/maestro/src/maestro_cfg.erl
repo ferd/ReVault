@@ -68,7 +68,7 @@ normalize_server(Map, Dirnames) ->
 normalize_dir(Key, Map, Acc) ->
     Acc#{Key => #{
            <<"interval">> => maps:get(<<"interval">>, Map,
-                                      ?DEFAULT_INTERVAL_SECONDS),
+                                      ?DEFAULT_INTERVAL_SECONDS)*1000,
            <<"path">> => maps:get(<<"path">>, Map),
            <<"ignore">> => maps:get(<<"ignore">>, Map, [])
           }
