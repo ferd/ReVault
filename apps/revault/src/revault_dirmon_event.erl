@@ -33,12 +33,12 @@ stop(Name) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 init(#{directory := Dir, poll_interval := Time,
        name := Name, initial_sync := Mode}) ->
-    Ref = erlang:start_timer(Time, self(), poll),
+    {Set, Ref} = initial_sync(Mode, Name, Dir, Time),
     {ok, #state{name = Name,
                 directory = Dir,
                 poll_delay = Time,
                 poll_ref = Ref,
-                set = initial_sync(Mode, Name, Dir)}}.
+                set = Set}}.
 
 handle_call(force_scan, _From, S=#state{name=Name, directory=Dir, set=Set}) ->
     {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Set),
@@ -73,8 +73,13 @@ send_events(Name, {Del, Add, Mod}) ->
 
 make_event(Name, Event) -> {dirmon, Name, Event}.
 
-initial_sync(scan, _Name, Dir) ->
-    revault_dirmon_poll:scan(Dir);
-initial_sync(tracker, Name, _Dir) ->
+initial_sync(scan, _Name, Dir, Time) ->
+    {revault_dirmon_poll:scan(Dir),
+     erlang:start_timer(Time, self(), poll)};
+initial_sync(tracker, Name, _Dir, _Time) ->
     AllFiles = revault_dirmon_tracker:files(Name),
-    lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]).
+    Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]),
+    %% Fake a message to rescan asap on boot
+    Ref = make_ref(),
+    self() ! {timeout, Ref, poll},
+    {Set, Ref}.

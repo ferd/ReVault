@@ -26,12 +26,12 @@ literal(Config) ->
          },
          <<"dirs">> := #{
             <<"music">> := #{
-                <<"interval">> := 60,
+                <<"interval">> := 60000, % converted to ms
                 <<"path">> := <<"~/Music">>,
                 <<"ignore">> := []
             },
             <<"images">> := #{
-                <<"interval">> := 60,
+                <<"interval">> := 60000, % converted to ms
                 <<"path">> := <<"/Users/ferd/images/">>,
                 <<"ignore">> := []
             }
