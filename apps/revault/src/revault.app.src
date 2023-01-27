@@ -9,7 +9,8 @@
     gproc,
     itc,
     uuid,
-    ssl, public_key, tak
+    ssl, public_key, tak,
+    opentelemetry_api
    ]},
   {env, []},
   {modules, []},
