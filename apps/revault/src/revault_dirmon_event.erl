@@ -74,12 +74,23 @@ send_events(Name, {Del, Add, Mod}) ->
 make_event(Name, Event) -> {dirmon, Name, Event}.
 
 initial_sync(scan, _Name, Dir, Time) ->
+    %% Minimal use case to always start from a fresh state.
     {revault_dirmon_poll:scan(Dir),
      erlang:start_timer(Time, self(), poll)};
-initial_sync(tracker, Name, _Dir, _Time) ->
+initial_sync(tracker_manual, Name, _Dir, _Time) ->
+    %% Mostly used for tests, where we want to avoid scans interfering
+    %% with file changes asynchronously and ruin determinism.
     AllFiles = revault_dirmon_tracker:files(Name),
     Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]),
-    %% Fake a message to rescan asap on boot
+    %% Send in a fake ref, which prevents any timer from ever running
+    {Set, make_ref()};
+initial_sync(tracker, Name, _Dir, _Time) ->
+    %% Normal stateful mode, where we load files and scan ASAP to avoid
+    %% getting into modes where long delays mean we are unresponsive
+    %% to filesystem changes long after boot.
+    AllFiles = revault_dirmon_tracker:files(Name),
+    Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]),
+    %% Fake a message to rescan asap on start
     Ref = make_ref(),
     self() ! {timeout, Ref, poll},
     {Set, Ref}.

@@ -40,7 +40,7 @@ prop_test() ->
                 {ok, _} = revault_dirmon_event:start_link(
                     ?LISTENER_NAME,
                     #{directory => ?DIR,
-                      initial_sync => tracker,
+                      initial_sync => tracker_manual,
                       poll_interval => 6000000} % too long to interfere
                 ),
                 {History, State, Result} = run_commands(?MODULE, Cmds),
@@ -242,7 +242,7 @@ restart_event() ->
     revault_dirmon_event:start_link(
         ?LISTENER_NAME,
         #{directory => ?DIR,
-          initial_sync => tracker,
+          initial_sync => tracker_manual,
           poll_interval => 6000000} % too long to interfere
     ).
 
