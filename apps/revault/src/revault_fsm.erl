@@ -490,7 +490,7 @@ client_sync_files(internal, {send, File},
                              sub=#client_sync{remote=R}}) ->
     Payload = case revault_dirmon_tracker:file(Name, File) of
         {Vsn, deleted} ->
-            revault_data_wrapper:send_deleted(filename:join(Path, File), Vsn);
+            revault_data_wrapper:send_deleted(File, Vsn);
         {Vsn, Hash} ->
             %% TODO: optimize to read and send files in parts rather than
             %% just reading it all at once and loading everything in memory
