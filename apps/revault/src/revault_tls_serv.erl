@@ -23,6 +23,15 @@
 -behaviour(gen_server).
 
 -include("revault_tls.hrl").
+-include_lib("opentelemetry_api/include/otel_tracer.hrl").
+-define(str(T), unicode:characters_to_binary(io_lib:format("~tp", [T]))).
+-define(attrs(T), [{<<"module">>, ?MODULE},
+                   {<<"function">>, ?FUNCTION_NAME},
+                   {<<"line">>, ?LINE},
+                   {<<"node">>, node()},
+                   {<<"pid">>, ?str(self())}
+                   | attrs(T)]).
+
 
 %%%%%%%%%%%%%%%%%%
 %%% PUBLIC API %%%
@@ -200,24 +209,17 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"authorized">> := #{<<"sync">> := DirNames}} = Dirs,
     case Msg of
-        {revault, Marker, {peer, Dir}} ->
+        {revault, Marker, {peer, Dir, Attrs}} ->
             case lists:member(Dir, DirNames) of
                 true ->
-                    #{Dir := Name} = Names,
-                    ssl:setopts(Sock, [{active, once}]),
-                    revault_tls:send_local(Name, {revault, {self(),Marker}, {peer, self()}}),
-                    worker_loop(Dir, C#conn{localname=Name, buf=NewBuf});
-                false ->
-                    ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
-                    ssl:close(Sock)
-            end;
-        {revault, Marker, {peer, Dir, UUID}} ->
-            case lists:member(Dir, DirNames) of
-                true ->
-                    #{Dir := Name} = Names,
-                    ssl:setopts(Sock, [{active, once}]),
-                    revault_tls:send_local(Name, {revault, {self(),Marker}, {peer, self(), UUID}}),
-                    worker_loop(Dir, C#conn{localname=Name, buf=NewBuf});
+                    ?with_span(<<"tls_session">>, fun(SpanCtx) ->
+                        %% TODO: pass SpanCtx to FSM
+                        #{Dir := Name} = Names,
+                        ssl:setopts(Sock, [{active, once}]),
+                        revault_tls:send_local(Name, {revault, {self(),Marker},
+                                                      {peer, self(), Attrs#{ctx=>SpanCtx}}}),
+                        worker_loop(Dir, C#conn{localname=Name, buf=NewBuf})
+                    end);
                 false ->
                     ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
@@ -231,18 +233,26 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
 worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
     receive
         {fwd, _Name, From, Msg} ->
-            Payload = revault_tls:wrap(Msg),
-            Res = ssl:send(Sock, Payload),
-            gen_server:reply(From, Res),
+            ?with_span(<<"fwd">>, #{attributes => [{<<"msg">>, ?str(type(Msg))} | ?attrs(C)]},
+                       fun(_SpanCtx) ->
+                            Payload = revault_tls:wrap(Msg),
+                            Res = ssl:send(Sock, Payload),
+                            gen_server:reply(From, Res)
+                       end),
             worker_loop(Dir, C);
         disconnect ->
-            ssl:close(Sock),
+            ?with_span(<<"disconnect">>, #{attributes => ?attrs(C)},
+                       fun(_SpanCtx) -> ssl:close(Sock) end),
             exit(normal);
         {ssl, Sock, Data} ->
+            TmpC = start_span(<<"recv">>, C),
             ssl:setopts(Sock, [{active, once}]),
             {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
+            set_attributes([{<<"msgs">>, length(Unwrapped)},
+                            {<<"buf">>, byte_size(IncompleteBuf)} | ?attrs(C)]),
+            C = end_span(TmpC),
             worker_loop(Dir, C#conn{buf = IncompleteBuf});
         {ssl_error, Sock, Reason} ->
             exit(Reason);
@@ -304,3 +314,33 @@ decode_cert(FileName) ->
                            tak:peer_cert(tak:pem_to_cert_chain(Cert)),
                            otp).
 
+attrs(#conn{localname=Dir}) ->
+    [{<<"dir">>, Dir}].
+
+start_span(SpanName, Data=#conn{ctx=Stack}) ->
+    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
+    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
+    Token = otel_ctx:attach(Ctx),
+    set_attributes(attrs(Data)),
+    Data#conn{ctx=[{SpanCtx,Token}|Stack]}.
+
+set_attributes(Attrs) ->
+    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
+    otel_span:set_attributes(SpanCtx, Attrs).
+
+%set_attribute(Attr, Val) ->
+%    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
+%    otel_span:set_attribute(SpanCtx, Attr, Val).
+%
+%end_span(Data=#conn{ctx=[]}) ->
+%    Data;
+end_span(Data=#conn{ctx=[{SpanCtx,Token}|Stack]}) ->
+    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
+                                     otel_span:end_span(SpanCtx, undefined)),
+    otel_ctx:detach(Token),
+    Data#conn{ctx=Stack}.
+
+type({revault, _, T}) when is_tuple(T) ->
+    element(1,T);
+type(_) ->
+    undefined.

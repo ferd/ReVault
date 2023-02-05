@@ -7,5 +7,5 @@
 -define(CLIENT(Name), {via, gproc, {n, l, {tls, client, Name}}}).
 -record(client, {name, dirs, dir, auth, opts, sock, buf = <<>>}).
 -record(serv, {names=#{}, dirs, opts, sock, acceptor, workers=#{}}).
--record(conn, {localname, sock, dirs, buf = <<>>}).
+-record(conn, {localname, sock, dirs, buf = <<>>, ctx = []}).
 
