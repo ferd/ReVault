@@ -184,23 +184,12 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"sync">> := DirNames} = Dirs,
     case Msg of
-        {revault, Marker, {peer, Dir}} ->
+        {revault, Marker, {peer, Dir, Attrs}} ->
             case lists:member(Dir, DirNames) of
                 true ->
                     #{Dir := Name} = Names,
                     inet:setopts(Sock, [{active, once}]),
-                    revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self()}}),
-                    worker_loop(Dir, C#conn{localname=Name, buf=NewBuf});
-                false ->
-                    gen_tcp:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),
-                    gen_tcp:close(Sock)
-            end;
-        {revault, Marker, {peer, Dir, UUID}} ->
-            case lists:member(Dir, DirNames) of
-                true ->
-                    #{Dir := Name} = Names,
-                    inet:setopts(Sock, [{active, once}]),
-                    revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self(), UUID}}),
+                    revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self(), Attrs}}),
                     worker_loop(Dir, C#conn{localname=Name, buf=NewBuf});
                 false ->
                     gen_tcp:send(Sock, revault_tcp:wrap({revault, Marker, {error, eperm}})),

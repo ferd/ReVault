@@ -245,7 +245,7 @@ connecting(internal, {connect, Remote},
            DataTmp=#data{name=Name, callback=Cb, sub=Conn, uuid=UUID}) ->
     Data = start_span(<<"connect">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
-    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, UUID]),
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{uuid=>UUID}]),
     case Res of
         {ok, Marker} ->
             %% Await confirmation from the peer
@@ -301,7 +301,7 @@ connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
 connecting(internal, {connect, Remote}, DataTmp=#uninit{name=Name, callback=Cb, sub=Conn}) ->
     Data = start_span(<<"connect">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
-    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote]),
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{}]),
     case Res of
         {ok, Marker} ->
             %% Await confirmation from the peer
@@ -424,12 +424,7 @@ initialized({call, _From}, {id, _Remote}, Data) ->
 initialized({call, _From}, {sync, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
-initialized(info, {revault, _Marker, {peer, _Remote}}, Data) ->
-    %% consider this to be an implicit {role, server} shift;
-    %% TODO: add a "wait_role" sort of call if this ends up
-    %% preventing client calls from happening on a busy server?
-    {next_state, server, Data, [postpone]};
-initialized(info, {revault, _Marker, {peer, _Remote, _UUID}}, Data) ->
+initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
     %% consider this to be an implicit {role, server} shift;
     %% TODO: add a "wait_role" sort of call if this ends up
     %% preventing client calls from happening on a busy server?
@@ -582,31 +577,16 @@ server({call, From}, {role, _}, Data) ->
     {keep_state, Data, [{reply, From, {error, busy}}]};
 server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
-server(info, {revault, Marker, {peer, Remote}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
+server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
+       DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
     %% TODO: handle error
-    Data = start_span(<<"accept_peer">>, DataTmp),
+    Data = start_span(<<"accept_peer">>, maybe_add_ctx(Attrs, DataTmp)),
     set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
     {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
     {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
     NewData = end_span(Data),
     {keep_state, NewData#data{callback=NewCb, sub=#server{remote=Remote}}};
-server(info, {revault, Marker, {peer, Remote}}, DataTmp=#data{callback=Cb}) ->
-    %% TODO: consider postponing the message to respond later?
-    Data = start_span(<<"accept_peer">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, busy} | ?attrs(Data)]),
-    Payload = revault_data_wrapper:error(peer_busy),
-    {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb}};
-server(info, {revault, Marker, {peer, Remote, UUID}}, DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
-    %% TODO: handle error
-    Data = start_span(<<"accept_peer">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
-    {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
-    {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb, sub=#server{remote=Remote}}};
-server(info, {revault, Marker, {peer, Remote, BadUUID}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
+server(info, {revault, Marker, {peer, Remote, #{uuid:=BadUUID}}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
     Data = start_span(<<"accept_peer">>, DataTmp),
     set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, bad_uuid},
                      {<<"peer_uuid">>, BadUUID} | ?attrs(Data)]),
@@ -614,6 +594,14 @@ server(info, {revault, Marker, {peer, Remote, BadUUID}}, DataTmp=#data{sub=undef
     {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
     NewData = end_span(Data),
     {keep_state, NewData#data{callback=NewCb}};
+server(info, {revault, Marker, {peer, Remote, _Attrs}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
+    %% TODO: handle error
+    Data = start_span(<<"accept_peer">>, DataTmp),
+    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
+    {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
+    {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
+    NewData = end_span(Data),
+    {keep_state, NewData#data{callback=NewCb, sub=#server{remote=Remote}}};
 server(info, {revault, Marker, {peer, Remote, _}}, DataTmp=#data{callback=Cb}) ->
     %% TODO: consider postponing the message to respond later?
     Data = start_span(<<"accept_peer">>, DataTmp),
@@ -705,12 +693,7 @@ server_sync_files(info, {revault, Marker, sync_complete},
     Disconnect = #disconnect{next_state=initialized},
     {next_state, disconnect, Data#data{callback=Cb1, sub=Disconnect},
      [{next_event, internal, {disconnect, R}}]};
-server_sync_files(info, {revault, Marker, {peer, Peer}},
-                  Data=#data{callback=Cb}) ->
-    Payload = revault_data_wrapper:error(peer_busy),
-    {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
-    {keep_state, Data#data{callback=Cb2}};
-server_sync_files(info, {revault, Marker, {peer, Peer, _UUID}},
+server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
                   Data=#data{callback=Cb}) ->
     Payload = revault_data_wrapper:error(peer_busy),
     {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
@@ -914,6 +897,14 @@ attrs(#data{name=Dir, uuid=DirUUID}) ->
     [{<<"dir">>, Dir}, {<<"dir_uuid">>, DirUUID}];
 attrs(#uninit{name=Dir}) ->
     [{<<"dir">>, Dir}].
+
+maybe_add_ctx(#{ctx:=SpanCtx}, Data=#data{ctx=Stack}) ->
+    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
+    Token = otel_ctx:attach(Ctx),
+    set_attributes(attrs(Data)),
+    Data#data{ctx=[{SpanCtx,Token}|Stack]};
+maybe_add_ctx(_, Data) ->
+    Data.
 
 start_span(SpanName, Data=#data{ctx=Stack}) ->
     SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
