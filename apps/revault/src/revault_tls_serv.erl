@@ -212,14 +212,15 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
         {revault, Marker, {peer, Dir, Attrs}} ->
             case lists:member(Dir, DirNames) of
                 true ->
-                    ?with_span(<<"tls_session">>, fun(SpanCtx) ->
-                        %% TODO: pass SpanCtx to FSM
-                        #{Dir := Name} = Names,
-                        ssl:setopts(Sock, [{active, once}]),
-                        revault_tls:send_local(Name, {revault, {self(),Marker},
-                                                      {peer, self(), Attrs#{ctx=>SpanCtx}}}),
-                        worker_loop(Dir, C#conn{localname=Name, buf=NewBuf})
-                    end);
+                    ?with_span(<<"tls_session">>, #{attributes => ?attrs(C)},
+                        fun(SpanCtx) ->
+                            %% TODO: pass SpanCtx to FSM
+                            #{Dir := Name} = Names,
+                            ssl:setopts(Sock, [{active, once}]),
+                            revault_tls:send_local(Name, {revault, {self(),Marker},
+                                                        {peer, self(), Attrs#{ctx=>SpanCtx}}}),
+                            worker_loop(Dir, C#conn{localname=Name, buf=NewBuf})
+                        end);
                 false ->
                     ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
