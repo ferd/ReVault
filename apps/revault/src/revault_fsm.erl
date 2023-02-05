@@ -635,27 +635,32 @@ server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
        DataTmp=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
-    otel_ctx:clear(),
     Data = start_span(<<"server_sync">>, DataTmp),
-    ?with_span(<<"sent_manifest">>, fun(_SpanCtx) ->
-        Manifest = revault_dirmon_tracker:files(Name),
-        Payload = revault_data_wrapper:manifest(Manifest),
-        {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
-        {next_state, server_sync_files, Data#data{callback=Cb1}}
-    end).
+    set_attributes(?attrs(Data)),
+    ?with_span(<<"sent_manifest">>, #{attributes => ?attrs(Data)},
+        fun(_SpanCtx) ->
+            Manifest = revault_dirmon_tracker:files(Name),
+            Payload = revault_data_wrapper:manifest(Manifest),
+            {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
+            {next_state, server_sync_files, Data#data{callback=Cb1}}
+        end).
 
 
 server_sync_files(enter, _, Data) ->
     {keep_state, Data};
 server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
-    ?add_event(<<"file">>, [{<<"path">>, F}, {<<"size">>, byte_size(Bin)},
-                            {<<"meta">>, ?str(Meta)}]),
-    handle_file_sync(Name, Id, F, Meta, Bin),
+    ?with_span(<<"file_recv">>,
+        #{attributes => [{<<"path">>, F}, {<<"size">>, byte_size(Bin)},
+                         {<<"meta">>, ?str(Meta)} | ?attrs(Data)]},
+        fun(_SpanCtx) ->
+            handle_file_sync(Name, Id, F, Meta, Bin)
+        end),
     {keep_state, Data};
 server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
                   Data=#data{name=Name, id=Id}) ->
-    ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}]},
+    ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
+                                               | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
     {keep_state, Data};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
@@ -663,7 +668,7 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
     ?with_span(
        <<"conflict">>,
        #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)},
-                        {<<"count">>, CountLeft}]},
+                        {<<"count">>, CountLeft} | ?attrs(Data)]},
        fun(_SpanCtx) ->
            TmpF = revault_file:tmp(F),
            filelib:ensure_dir(TmpF),
@@ -683,9 +688,10 @@ server_sync_files(info, {revault, Marker, sync_complete},
     %% users start modifying them. Might not be relevant when things like
     %% filesystem watchers are used, but I'm starting to like the idea of
     %% on-demand scan/sync only.
-    ?with_span(<<"force_scan">>, fun(_SpanCtx) ->
-        ok = revault_dirmon_event:force_scan(Name, infinity)
-    end),
+    ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
+        fun(_SpanCtx) ->
+            ok = revault_dirmon_event:force_scan(Name, infinity)
+        end),
     NewPayload = revault_data_wrapper:sync_complete(),
     {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
     Data = end_span(DataTmp),
