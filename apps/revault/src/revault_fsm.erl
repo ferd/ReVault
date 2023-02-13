@@ -245,7 +245,8 @@ connecting(internal, {connect, Remote},
            DataTmp=#data{name=Name, callback=Cb, sub=Conn, uuid=UUID}) ->
     Data = start_span(<<"connect">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
-    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{uuid=>UUID}]),
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{uuid=>UUID,
+                                                       ctx=>get_span(DataTmp)}]),
     case Res of
         {ok, Marker} ->
             %% Await confirmation from the peer
@@ -257,6 +258,7 @@ connecting(internal, {connect, Remote},
             %% Bail out
             ?add_event(<<"connection_failed">>, [{<<"error">>, Reason}]),
             NewData = end_span(Data),
+            otel_ctx:clear(),
             #connecting{fail_state=State, fail_payload=Payload} = Conn,
             {next_state, State,
              NewData#data{callback=NewCb, sub=undefined},
@@ -275,6 +277,7 @@ connecting(info, {revault, Marker, Err},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
     ?add_event(<<"connection_failed">>, [{<<"error">>, Err}]),
     NewData = end_span(Data),
+    otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload, remote=Remote} = S,
     Disconnect = #disconnect{
         next_state=State,
@@ -288,6 +291,7 @@ connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
     %% a late {revault, Marker, ok} message out of this.
     ?add_event(<<"connection_timeout">>, []),
     NewData = end_span(Data),
+    otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload} = S,
     Disconnect = #disconnect{
         next_state=State,
@@ -313,6 +317,7 @@ connecting(internal, {connect, Remote}, DataTmp=#uninit{name=Name, callback=Cb, 
             %% Bail out
             ?add_event(<<"connection_failed">>, [{<<"error">>, Reason}]),
             NewData = end_span(Data),
+            otel_ctx:clear(),
             #connecting{fail_state=State, fail_payload=Payload} = Conn,
             {next_state, State,
              NewData#uninit{callback=NewCb, sub=undefined},
@@ -331,6 +336,7 @@ connecting(info, {revault, Marker, Err},
            Data=#uninit{sub=S=#connecting{marker=Marker}}) ->
     ?add_event(<<"connection_failed">>, [{<<"error">>, Err}]),
     NewData = end_span(Data),
+    otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload, remote=Remote} = S,
     Disconnect = #disconnect{
         next_state=State,
@@ -344,6 +350,7 @@ connecting(state_timeout, {connect, Remote}, Data=#uninit{sub=S}) ->
     %% a late {revault, Marker, ok} message out of this.
     ?add_event(<<"connection_timeout">>, []),
     NewData = end_span(Data),
+    otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload} = S,
     Disconnect = #disconnect{
         next_state=State,
@@ -438,7 +445,9 @@ client({call, From}, id, Data=#data{id=Id}) ->
 client({call, From}, {id, _}, Data=#data{id=Id}) ->
     %% Ignore the call for a remote and just send the ID we already know
     {keep_state, Data, [{reply, From, {ok, Id}}]};
-client({call, From}, {sync, Remote}, Data) ->
+client({call, From}, {sync, Remote}, DataTmp) ->
+    Data = start_span(<<"sync">>, DataTmp),
+    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
     {next_state, connecting,
      Data#data{sub=#connecting{
         next_state=client_sync_manifest,
@@ -453,7 +462,9 @@ client(internal, {connect, _, {call, From}, Reason}, Data) ->
 
 client_sync_manifest(enter, _, Data) ->
     {keep_state, Data};
-client_sync_manifest(internal, {connect, Remote, {call,From}}, Data=#data{callback=Cb}) ->
+client_sync_manifest(internal, {connect, Remote, {call,From}}, DataTmp=#data{callback=Cb}) ->
+    Data = start_span(<<"ask_manifest">>, DataTmp),
+    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:manifest()]),
     case Res of
         {ok, Marker} ->
@@ -468,12 +479,16 @@ client_sync_manifest(internal, {connect, Remote, {call,From}}, Data=#data{callba
               {next_event, internal, {disconnect, Remote}}]}
     end;
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
-                     Data=#data{sub=#client_sync{marker=Marker},
-                                name=Name, id=Id}) ->
+                     DataTmp=#data{sub=#client_sync{marker=Marker},
+                                   name=Name, id=Id}) ->
+    Data = start_span(<<"diff_manifest">>, end_span(DataTmp)),
     LManifest = revault_dirmon_tracker:files(Name),
     {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
     Actions = schedule_file_transfers(Local, Remote),
-    {next_state, client_sync_files, Data,
+    set_attributes([{<<"to_send">>, length(Local)},
+                    {<<"to_recv">>, length(Remote)} | ?attrs(Data)]),
+    NewData = end_span(Data),
+    {next_state, client_sync_files, NewData,
      Actions ++ [{next_event, internal, sync_complete}]};
 client_sync_manifest(_, _, Data) ->
     {keep_state, Data, [postpone]}.
@@ -481,8 +496,10 @@ client_sync_manifest(_, _, Data) ->
 client_sync_files(enter, _, Data) ->
     {keep_state, Data};
 client_sync_files(internal, {send, File},
-                  Data=#data{name=Name, path=Path, callback=Cb,
-                             sub=#client_sync{remote=R}}) ->
+                  DataTmp=#data{name=Name, path=Path, callback=Cb,
+                                sub=#client_sync{remote=R}}) ->
+    Data = start_span(<<"file_send">>, DataTmp),
+    set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File} | ?attrs(Data)]),
     Payload = case revault_dirmon_tracker:file(Name, File) of
         {Vsn, deleted} ->
             revault_data_wrapper:send_deleted(File, Vsn);
@@ -495,13 +512,18 @@ client_sync_files(internal, {send, File},
     end,
     %% TODO: track the success or failures of transfers, detect disconnections
     {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
-    {keep_state, Data#data{callback=NewCb}};
+    NewData = end_span(DataTmp),
+    {keep_state, NewData#data{callback=NewCb}};
 client_sync_files(internal, {fetch, File},
                   Data=#data{callback=Cb, sub=S=#client_sync{remote=R, acc=Acc}}) ->
-    Payload = revault_data_wrapper:fetch_file(File),
-    %% TODO: track the incoming transfers to know when we're done syncing
-    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
-    {keep_state, Data#data{callback=NewCb, sub=S#client_sync{acc=[File|Acc]}}};
+    ?with_span(<<"file_fetch">>,
+        #{attributes => [{<<"path">>, File}, {<<"peer">>, ?str(R)} | ?attrs(Data)]},
+        fun(_SpanCtx) ->
+            Payload = revault_data_wrapper:fetch_file(File),
+            %% TODO: track the incoming transfers to know when we're done syncing
+            {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+            {keep_state, Data#data{callback=NewCb, sub=S#client_sync{acc=[File|Acc]}}}
+        end);
 client_sync_files(internal, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
     #data{callback=Cb, sub=#client_sync{remote=R}} = Data,
     Payload = revault_data_wrapper:sync_complete(),
@@ -514,7 +536,12 @@ client_sync_files(internal, sync_complete, Data) ->
     {keep_state, Data};
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
-    handle_file_sync(Name, Id, F, Meta, Bin),
+    ?with_span(<<"file_recv">>,
+        #{attributes => [{<<"path">>, F}, {<<"size">>, byte_size(Bin)},
+                         {<<"meta">>, ?str(Meta)} | ?attrs(Data)]},
+        fun(_SpanCtx) ->
+            handle_file_sync(Name, Id, F, Meta, Bin)
+        end),
     case Acc -- [F] of
         [] ->
             {keep_state, Data#data{sub=S#client_sync{acc=[]}},
@@ -524,7 +551,9 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     end;
 client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
-    handle_delete_sync(Name, Id, F, Meta),
+    ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
+                                               | ?attrs(Data)]},
+               fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
     case Acc -- [F] of
         [] ->
             {keep_state, Data#data{sub=S#client_sync{acc=[]}},
@@ -534,12 +563,19 @@ client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     end;
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
-    %% TODO: handle the file being corrupted vs its own hash
-    TmpF = revault_file:tmp(F),
-    filelib:ensure_dir(TmpF),
-    ok = file:write_file(TmpF, Bin),
-    revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
-    file:delete(TmpF),
+    ?with_span(
+       <<"conflict">>,
+       #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)},
+                        {<<"count">>, CountLeft} | ?attrs(Data)]},
+       fun(_SpanCtx) ->
+           %% TODO: handle the file being corrupted vs its own hash
+           TmpF = revault_file:tmp(F),
+           filelib:ensure_dir(TmpF),
+           ok = file:write_file(TmpF, Bin),
+           revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
+           file:delete(TmpF)
+        end
+    ),
     case CountLeft =:= 0 andalso Acc -- [WorkF] of
         false ->
             %% more of the same conflict file to come
@@ -558,11 +594,16 @@ client_sync_complete(enter, _, Data=#data{name=Name}) ->
     %% users start modifying them. Might not be relevant when things like
     %% filesystem watchers are used, but I'm starting to like the idea of
     %% on-demand scan/sync only.
-    ok = revault_dirmon_event:force_scan(Name, infinity),
+    ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
+        fun(_SpanCtx) ->
+            ok = revault_dirmon_event:force_scan(Name, infinity)
+        end),
     {keep_state, Data};
 client_sync_complete(info, {revault, _Marker, sync_complete},
-                     Data=#data{sub=#client_sync{from=From, remote=Remote}}) ->
+                     DataTmp=#data{sub=#client_sync{from=From, remote=Remote}}) ->
     Disconnect = #disconnect{next_state=initialized},
+    Data = end_span(DataTmp),
+    otel_ctx:clear(),
     {next_state, disconnect, Data#data{sub=Disconnect},
      [{reply, From, ok},
       {next_event, internal, {disconnect, Remote}}]};
@@ -911,6 +952,9 @@ maybe_add_ctx(#{ctx:=SpanCtx}, Data=#data{ctx=Stack}) ->
     Data#data{ctx=[{SpanCtx,Token}|Stack]};
 maybe_add_ctx(_, Data) ->
     Data.
+
+get_span(#data{ctx=[{SpanCtx,_}|_]}) ->
+    SpanCtx.
 
 start_span(SpanName, Data=#data{ctx=Stack}) ->
     SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),

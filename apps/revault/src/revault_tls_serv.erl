@@ -210,17 +210,14 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     #{<<"authorized">> := #{<<"sync">> := DirNames}} = Dirs,
     case Msg of
         {revault, Marker, {peer, Dir, Attrs}} ->
+            Cn = maybe_add_ctx(Attrs, C),
             case lists:member(Dir, DirNames) of
                 true ->
-                    ?with_span(<<"tls_session">>, #{attributes => ?attrs(C)},
-                        fun(SpanCtx) ->
-                            %% TODO: pass SpanCtx to FSM
-                            #{Dir := Name} = Names,
-                            ssl:setopts(Sock, [{active, once}]),
-                            revault_tls:send_local(Name, {revault, {self(),Marker},
-                                                        {peer, self(), Attrs#{ctx=>SpanCtx}}}),
-                            worker_loop(Dir, C#conn{localname=Name, buf=NewBuf})
-                        end);
+                    #{Dir := Name} = Names,
+                    ssl:setopts(Sock, [{active, once}]),
+                    revault_tls:send_local(Name, {revault, {self(),Marker},
+                                                    {peer, self(), Attrs}}),
+                    worker_loop(Dir, Cn#conn{localname=Name, buf=NewBuf});
                 false ->
                     ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
@@ -325,16 +322,18 @@ start_span(SpanName, Data=#conn{ctx=Stack}) ->
     set_attributes(attrs(Data)),
     Data#conn{ctx=[{SpanCtx,Token}|Stack]}.
 
+maybe_add_ctx(#{ctx:=SpanCtx}, Data=#conn{ctx=Stack}) ->
+    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
+    Token = otel_ctx:attach(Ctx),
+    set_attributes(attrs(Data)),
+    Data#conn{ctx=[{SpanCtx,Token}|Stack]};
+maybe_add_ctx(_, Data) ->
+    Data.
+
 set_attributes(Attrs) ->
     SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
     otel_span:set_attributes(SpanCtx, Attrs).
 
-%set_attribute(Attr, Val) ->
-%    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
-%    otel_span:set_attribute(SpanCtx, Attr, Val).
-%
-%end_span(Data=#conn{ctx=[]}) ->
-%    Data;
 end_span(Data=#conn{ctx=[{SpanCtx,Token}|Stack]}) ->
     _ = otel_tracer:set_current_span(otel_ctx:get_current(),
                                      otel_span:end_span(SpanCtx, undefined)),
