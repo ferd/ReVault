@@ -5,7 +5,7 @@
 -define(HANDSHAKE_WAIT, 10000). % give up after 10 seconds
 -define(SERVER, {via, gproc, {n, l, {tls, serv, shared}}}).
 -define(CLIENT(Name), {via, gproc, {n, l, {tls, client, Name}}}).
--record(client, {name, dirs, dir, auth, opts, sock, buf = <<>>}).
+-record(client, {name, dirs, peer, dir, auth, opts, sock, buf = <<>>, ctx = []}).
 -record(serv, {names=#{}, dirs, opts, sock, acceptor, workers=#{}}).
 -record(conn, {localname, sock, dirs, buf = <<>>, ctx = []}).
 

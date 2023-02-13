@@ -11,7 +11,7 @@
 
 %% stack-specific calls to be made from an initializing process and that
 %% are not generic.
--export([wrap/1, unwrap/1, send_local/2]).
+-export([wrap/1, unwrap/1, unpack/1, send_local/2]).
 %% callbacks from within the FSM
 -export([callback/1, mode/2, peer/4, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 %% shared functions

@@ -5,6 +5,14 @@
 -behaviour(gen_statem).
 
 -include("revault_tls.hrl").
+-include_lib("opentelemetry_api/include/otel_tracer.hrl").
+-define(str(T), unicode:characters_to_binary(io_lib:format("~tp", [T]))).
+-define(attrs(T), [{<<"module">>, ?MODULE},
+                   {<<"function">>, ?FUNCTION_NAME},
+                   {<<"line">>, ?LINE},
+                   {<<"node">>, node()},
+                   {<<"pid">>, ?str(self())}
+                   | attrs(T)]).
 %%%%%%%%%%%%%%%%%%
 %%% PUBLIC API %%%
 %%%%%%%%%%%%%%%%%%
@@ -26,17 +34,17 @@ stop(Name) ->
 update_dirs(Name, DirOpts) ->
     gen_statem:call(?CLIENT(Name), {dirs, DirOpts}).
 
-peer(Name, Dir, Auth, Payload) ->
-    gen_statem:call(?CLIENT(Name), {connect, {Dir,Auth}, Payload}, infinity).
+peer(Name, Peer, Auth, Payload) ->
+    gen_statem:call(?CLIENT(Name), {connect, {Peer,Auth}, Payload}, infinity).
 
-unpeer(Name, _Dir) ->
+unpeer(Name, _Peer) ->
     gen_statem:call(?CLIENT(Name), disconnect, infinity).
 
-send(Name, _Dir, Marker, Payload) ->
+send(Name, _Peer, Marker, Payload) ->
     gen_statem:call(?CLIENT(Name), {revault, Marker, Payload}, infinity).
 
-reply(Name, _Dir, Marker, Payload) ->
-    %% Ignore `Dir' because we should already be connected to one
+reply(Name, _Peer, Marker, Payload) ->
+    %% Ignore `Peer' because we should already be connected to one
     gen_statem:call(?CLIENT(Name), {revault, Marker, Payload}, infinity).
 
 %%%%%%%%%%%%%%%%%%
@@ -53,9 +61,15 @@ handle_event({call, From}, {dirs, DirOpts}, _State, Data) ->
     %% TODO: maybe force disconnect if the options changed
     {keep_state, Data#client{dirs=DirOpts},
      [{reply, From, ok}]};
-handle_event({call, From}, {connect, {Dir,Auth}, Msg}, disconnected, Data) ->
-    case connect(Data, Dir, Auth) of
-        {ok, NewData} ->
+handle_event({call, From}, {connect, {Peer,Auth}, Msg}, disconnected, Data) ->
+    case connect(Data, Peer, Auth) of
+        {ok, ConnData} ->
+            NewData = case introspect(Msg) of
+                {peer, Dir, Attrs} ->
+                    maybe_add_ctx(Attrs, ConnData#client{dir=Dir});
+                _ ->
+                    ConnData
+            end,
             handle_event({call, From}, Msg, connected, NewData);
         {error, Reason} ->
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
@@ -64,41 +78,55 @@ handle_event({call, From}, disconnect, disconnected, Data) ->
     {keep_state, Data, [{reply, From, ok}]};
 handle_event({call, From}, disconnect, connected, Data=#client{sock=Sock}) ->
     ssl:close(Sock),
-    {next_state, disconnected, Data#client{sock=undefined},
+    otel_ctx:clear(),
+    {next_state, disconnected, Data#client{sock=undefined, dir=undefined},
      [{reply, From, ok}]};
-handle_event({call, From}, Msg, disconnected, Data=#client{dir=Dir, auth=Auth}) ->
-    case connect(Data, Dir, Auth) of
-        {ok, NewData} ->
+handle_event({call, From}, Msg, disconnected, Data=#client{peer=Peer, auth=Auth}) ->
+    case connect(Data, Peer, Auth) of
+        {ok, TmpData} ->
+            NewData = start_span(<<"tls_client">>, TmpData),
+            set_attributes(?attrs(NewData)),
             handle_event({call, From}, Msg, connected, NewData);
         {error, Reason} ->
             %% TODO: backoffs & retry, maybe add idle -> disconnected -> connected
             exit({error, Reason})
     end;
-handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, Data=#client{sock=Sock}) ->
+handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, TmpData=#client{sock=Sock}) ->
+    Data = start_span(<<"fwd">>, TmpData),
+    set_attributes([{<<"msg">>, ?str(type(Msg))} | ?attrs(Data)]),
     Payload = revault_tls:wrap(Msg),
-    case ssl:send(Sock, Payload) of
+    Res = ssl:send(Sock, Payload),
+    NewData = end_span(Data),
+    case Res of
         ok ->
             {next_state, connected, Data, [{reply, From, {ok, Marker}}]};
         {error, Reason} ->
             _ = ssl:close(Sock),
-            {next_state, disconnected, Data#client{sock=undefined},
+            otel_ctx:clear(),
+            {next_state, disconnected, NewData#client{sock=undefined, dir=undefined},
              [{reply, From, {error, Reason}}]}
     end;
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     ssl:setopts(Sock, [{active, once}]),
+    TmpData = start_span(<<"recv">>, Data),
     {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Bin/binary>>),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
-    {next_state, connected, Data#client{buf=IncompleteBuf}};
+    set_attributes([{<<"msgs">>, length(Unwrapped)},
+                    {<<"buf">>, byte_size(IncompleteBuf)} | ?attrs(TmpData)]),
+    NewData = end_span(TmpData),
+    {next_state, connected, NewData#client{buf=IncompleteBuf}};
 handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
     %% TODO: Log
-    {next_state, disconnected, Data#client{sock=undefined}};
+    otel_ctx:clear(),
+    {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};
 handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
-    {next_state, disconnected, Data#client{sock=undefined}};
+    otel_ctx:clear(),
+    {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};
 handle_event(info, {ssl_closed, _Sock}, connected, Data=#client{}) ->
     %% unrelated message from an old connection
     {next_state, connected, Data};
 handle_event(info, {ssl_closed, _Sock}, disconnected, Data=#client{}) ->
-    {next_state, disconnected, Data#client{sock=undefined}}.
+    {next_state, disconnected, Data#client{sock=undefined, dir=undefined}}.
 
 terminate(_Reason, _State, _Data) ->
     ok.
@@ -106,18 +134,18 @@ terminate(_Reason, _State, _Data) ->
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
 %%%%%%%%%%%%%%%
-connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Dir, Auth) when Dir =/= undefined ->
-    #{<<"peers">> := #{Dir := #{<<"url">> := Url,
-                                <<"auth">> := #{<<"type">> := <<"tls">>,
-                                                <<"certfile">> := Cert,
-                                                <<"keyfile">> := Key,
-                                                <<"peer_certfile">> := ServerCert}}}} = Dirs,
+connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Peer, Auth) when Peer =/= undefined ->
+    #{<<"peers">> := #{Peer := #{<<"url">> := Url,
+                                 <<"auth">> := #{<<"type">> := <<"tls">>,
+                                                 <<"certfile">> := Cert,
+                                                 <<"keyfile">> := Key,
+                                                 <<"peer_certfile">> := ServerCert}}}} = Dirs,
     PinOpts = revault_tls:pin_certfile_opts(ServerCert) ++
               [{certfile, Cert}, {keyfile, Key}],
     {Host, Port} = parse_url(Url),
     case ssl:connect(Host, Port, Opts++PinOpts) of
         {ok, Sock} ->
-            {ok, Data#client{sock=Sock, dir=Dir, auth=Auth}};
+            {ok, Data#client{sock=Sock, dir=undefined, peer=Peer, auth=Auth}};
         {error, Reason} ->
             {error, Reason}
     end;
@@ -145,3 +173,41 @@ unwrap_all(Buf, Acc) ->
         {ok, ?VSN, Payload, NewBuf} ->
             unwrap_all(NewBuf, [Payload|Acc])
     end.
+
+attrs(#client{peer=Peer, dir=Dir}) ->
+    [{<<"peer">>, Peer}, {<<"dir">>, Dir}].
+
+start_span(SpanName, Data=#client{ctx=Stack}) ->
+    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
+    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
+    Token = otel_ctx:attach(Ctx),
+    set_attributes(attrs(Data)),
+    Data#client{ctx=[{SpanCtx,Token}|Stack]}.
+
+maybe_add_ctx(#{ctx:=SpanCtx}, Data=#client{ctx=Stack}) ->
+    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
+    Token = otel_ctx:attach(Ctx),
+    set_attributes(attrs(Data)),
+    Data#client{ctx=[{SpanCtx,Token}|Stack]};
+maybe_add_ctx(_, Data) ->
+    Data.
+
+set_attributes(Attrs) ->
+    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
+    otel_span:set_attributes(SpanCtx, Attrs).
+
+end_span(Data=#client{ctx=[{SpanCtx,Token}|Stack]}) ->
+    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
+                                     otel_span:end_span(SpanCtx, undefined)),
+    otel_ctx:detach(Token),
+    Data#client{ctx=Stack}.
+
+type({revault, _, T}) when is_tuple(T) ->
+    element(1,T);
+type(_) ->
+    undefined.
+
+%% TODO: make this unpacking business cleaner, don't like a
+%%       pack/unpack just for introspection breaking the abstraction
+introspect({revault, _Marker, Payload}) ->
+    revault_tls:unpack(Payload).
