@@ -214,7 +214,7 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
             case lists:member(Dir, DirNames) of
                 true ->
                     #{Dir := Name} = Names,
-                    ssl:setopts(Sock, [{active, once}]),
+                    ssl:setopts(Sock, [{active, 5}]),
                     revault_tls:send_local(Name, {revault, {self(),Marker},
                                                     {peer, self(), Attrs}}),
                     worker_loop(Dir, Cn#conn{localname=Name, buf=NewBuf});
@@ -242,9 +242,11 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             ?with_span(<<"disconnect">>, #{attributes => ?attrs(C)},
                        fun(_SpanCtx) -> ssl:close(Sock) end),
             exit(normal);
+        {ssl_passive, Sock} ->
+            ssl:setopts(Sock, [{active, 5}]),
+            worker_loop(Dir, C);
         {ssl, Sock, Data} ->
             TmpC = start_span(<<"recv">>, C),
-            ssl:setopts(Sock, [{active, once}]),
             {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
@@ -332,8 +334,6 @@ pid_attrs() ->
                            proplists:get_value(garbage_collection, PidInfo))}
     ].
 
-sock_attrs(undefined) ->
-    [];
 sock_attrs(Sock) ->
     case ssl:getstat(Sock, [recv_cnt, recv_oct, send_cnt, send_pend, send_oct]) of
         {ok, SockStats} ->
