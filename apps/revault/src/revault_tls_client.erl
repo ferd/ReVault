@@ -24,7 +24,7 @@ start_link(Name, DirOpts) ->
 start_link(Name, DirOpts, TlsOpts) ->
     %% Ignore certs and stuff, assume the caller passes them in and things
     %% will fail otherwise.
-    MandatoryOpts = [{mode, binary}, {packet, raw}, {active, once}],
+    MandatoryOpts = [{mode, binary}, {packet, raw}, {active, 5}],
     AllTlsOpts = MandatoryOpts ++ TlsOpts,
     gen_statem:start_link(?CLIENT(Name), ?MODULE, {Name, DirOpts, AllTlsOpts}, []).
 
@@ -106,8 +106,10 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, TmpData=#clie
             {next_state, disconnected, NewData#client{sock=undefined, dir=undefined},
              [{reply, From, {error, Reason}}]}
     end;
+handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
+    ssl:setopts(Sock, [{active, 5}]),
+    {keep_state, Data, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
-    ssl:setopts(Sock, [{active, once}]),
     TmpData = start_span(<<"recv">>, Data),
     {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Bin/binary>>),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
