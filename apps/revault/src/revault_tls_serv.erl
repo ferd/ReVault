@@ -312,8 +312,8 @@ decode_cert(FileName) ->
                            tak:peer_cert(tak:pem_to_cert_chain(Cert)),
                            otp).
 
-attrs(#conn{localname=Dir}) ->
-    [{<<"dir">>, Dir} | pid_attrs()].
+attrs(#conn{localname=Dir, sock=S}) ->
+    [{<<"dir">>, Dir} | sock_attrs(S) ++ pid_attrs()].
 
 pid_attrs() ->
     PidInfo = process_info(
@@ -331,6 +331,16 @@ pid_attrs() ->
        proplists:get_value(minor_gcs,
                            proplists:get_value(garbage_collection, PidInfo))}
     ].
+
+sock_attrs(undefined) ->
+    [];
+sock_attrs(Sock) ->
+    case ssl:getstat(Sock, [recv_cnt, recv_oct, send_cnt, send_pend, send_oct]) of
+        {ok, SockStats} ->
+            [{<<"sock.", (atom_to_binary(K))/binary>>, V} || {K, V} <- SockStats];
+        {error, _} ->
+            []
+    end.
 
 start_span(SpanName, Data=#conn{ctx=Stack}) ->
     SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
