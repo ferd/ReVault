@@ -175,7 +175,25 @@ unwrap_all(Buf, Acc) ->
     end.
 
 attrs(#client{peer=Peer, dir=Dir}) ->
-    [{<<"peer">>, Peer}, {<<"dir">>, Dir}].
+    [{<<"peer">>, Peer}, {<<"dir">>, Dir} | pid_attrs()].
+
+pid_attrs() ->
+    PidInfo = process_info(
+        self(),
+        [memory, message_queue_len, heap_size,
+         total_heap_size, reductions, garbage_collection]
+    ),
+    [{<<"pid">>, ?str(self())},
+     {<<"pid.memory">>, proplists:get_value(memory, PidInfo)},
+     {<<"pid.message_queue_len">>, proplists:get_value(message_queue_len, PidInfo)},
+     {<<"pid.heap_size">>, proplists:get_value(heap_size, PidInfo)},
+     {<<"pid.total_heap_size">>, proplists:get_value(total_heap_size, PidInfo)},
+     {<<"pid.reductions">>, proplists:get_value(reductions, PidInfo)},
+     {<<"pid.minor_gcs">>,
+       proplists:get_value(minor_gcs,
+                           proplists:get_value(garbage_collection, PidInfo))}
+    ].
+
 
 start_span(SpanName, Data=#client{ctx=Stack}) ->
     SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
