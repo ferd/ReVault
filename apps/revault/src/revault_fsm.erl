@@ -941,9 +941,26 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
     end.
 
 attrs(#data{name=Dir, uuid=DirUUID}) ->
-    [{<<"dir">>, Dir}, {<<"dir_uuid">>, DirUUID}];
+    [{<<"dir">>, Dir}, {<<"dir_uuid">>, DirUUID} | pid_attrs()];
 attrs(#uninit{name=Dir}) ->
-    [{<<"dir">>, Dir}].
+    [{<<"dir">>, Dir} | pid_attrs()].
+
+pid_attrs() ->
+    PidInfo = process_info(
+        self(),
+        [memory, message_queue_len, heap_size,
+         total_heap_size, reductions, garbage_collection]
+    ),
+    [{<<"pid">>, ?str(self())},
+     {<<"pid.memory">>, proplists:get_value(memory, PidInfo)},
+     {<<"pid.message_queue_len">>, proplists:get_value(message_queue_len, PidInfo)},
+     {<<"pid.heap_size">>, proplists:get_value(heap_size, PidInfo)},
+     {<<"pid.total_heap_size">>, proplists:get_value(total_heap_size, PidInfo)},
+     {<<"pid.reductions">>, proplists:get_value(reductions, PidInfo)},
+     {<<"pid.minor_gcs">>,
+       proplists:get_value(minor_gcs,
+                           proplists:get_value(garbage_collection, PidInfo))}
+    ].
 
 maybe_add_ctx(#{ctx:=SpanCtx}, Data=#data{ctx=Stack}) ->
     Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
