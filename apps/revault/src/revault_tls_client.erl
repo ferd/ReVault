@@ -174,8 +174,8 @@ unwrap_all(Buf, Acc) ->
             unwrap_all(NewBuf, [Payload|Acc])
     end.
 
-attrs(#client{peer=Peer, dir=Dir}) ->
-    [{<<"peer">>, Peer}, {<<"dir">>, Dir} | pid_attrs()].
+attrs(#client{peer=Peer, dir=Dir, sock=S}) ->
+    [{<<"peer">>, Peer}, {<<"dir">>, Dir} | sock_attrs(S) ++ pid_attrs()].
 
 pid_attrs() ->
     PidInfo = process_info(
@@ -193,6 +193,16 @@ pid_attrs() ->
        proplists:get_value(minor_gcs,
                            proplists:get_value(garbage_collection, PidInfo))}
     ].
+
+sock_attrs(undefined) ->
+    [];
+sock_attrs(Sock) ->
+    case ssl:getstat(Sock, [recv_cnt, recv_oct, send_cnt, send_pend, send_oct]) of
+        {ok, SockStats} ->
+            [{<<"sock.", (atom_to_binary(K))/binary>>, V} || {K, V} <- SockStats];
+        {error, _} ->
+            []
+    end.
 
 
 start_span(SpanName, Data=#client{ctx=Stack}) ->
