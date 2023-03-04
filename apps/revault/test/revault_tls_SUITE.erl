@@ -30,7 +30,7 @@ pinning_client(Config) ->
     ClientCert = filename:join(?config(cert_dir, Config), "client1.crt"),
     ClientKey = filename:join(?config(cert_dir, Config), "client1.key"),
     {ok, _, Pid, {Ip, Port}} = start_server([{certfile, ServerCert}, {keyfile, ServerKey}]),
-    ClientOpts = revault_tls:pin_certfile_opts(ServerCert)
+    ClientOpts = revault_tls:pin_certfile_opts_client(ServerCert)
                ++ [{certfile, ClientCert}, {keyfile, ClientKey}],
     {ok, Sock} = ssl:connect(Ip, Port, ClientOpts, 1000),
     ok = ssl:send(Sock, <<"test">>),
@@ -53,7 +53,7 @@ pinning_server(Config) ->
     Client1Key = filename:join(?config(cert_dir, Config), "client1.key"),
     Client2Cert = filename:join(?config(cert_dir, Config), "client2.crt"),
     _Client2Key = filename:join(?config(cert_dir, Config), "client2.key"),
-    ServerOpts = revault_tls:pin_certfiles_opts([Client1Cert, Client2Cert])
+    ServerOpts = revault_tls:pin_certfiles_opts_server([Client1Cert, Client2Cert])
                ++ [{certfile, ServerCert}, {keyfile, ServerKey}],
     ClientOpts = [{certfile, Client1Cert}, {keyfile, Client1Key}],
     {ok, _, Pid, {Ip, Port}} = start_server(ServerOpts),
@@ -79,7 +79,7 @@ unpinned_client(Config) ->
     _Client2Key = filename:join(?config(cert_dir, Config), "client2.key"),
     OtherKey = filename:join(?config(cert_dir, Config), "other.key"),
     OtherCert = filename:join(?config(cert_dir, Config), "other.crt"),
-    ServerOpts = revault_tls:pin_certfiles_opts([Client1Cert, Client2Cert])
+    ServerOpts = revault_tls:pin_certfiles_opts_server([Client1Cert, Client2Cert])
                ++ [{certfile, ServerCert}, {keyfile, ServerKey}],
     ClientOpts = [{certfile, OtherCert}, {keyfile, OtherKey}],
     {ok, _, Pid, {Ip, Port}} = start_server(ServerOpts),
@@ -111,7 +111,7 @@ unpinned_server(Config) ->
     OtherKey = filename:join(?config(cert_dir, Config), "other.key"),
     OtherCert = filename:join(?config(cert_dir, Config), "other.crt"),
     ServerOpts = [{certfile, OtherCert}, {keyfile, OtherKey}],
-    ClientOpts = revault_tls:pin_certfile_opts(ServerCert)
+    ClientOpts = revault_tls:pin_certfile_opts_client(ServerCert)
                ++ [{certfile, Client1Cert}, {keyfile, Client1Key}],
     {ok, _, Pid, {Ip, Port}} = start_server(ServerOpts),
     {error, {tls_alert, _}} = ssl:connect(Ip, Port, ClientOpts, 1000),

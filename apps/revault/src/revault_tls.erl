@@ -9,19 +9,32 @@
 -include_lib("public_key/include/public_key.hrl").
 -include("revault_tls.hrl").
 
-%% stack-specific calls to be made from an initializing process and that
-%% are not generic.
--export([wrap/1, unwrap/1, unpack/1, send_local/2,
-        buf_add/2, buf_new/0, buf_size/1]).
+-record(buf, {acc=[<<>>], seen=0, needed=0}).
+
 %% callbacks from within the FSM
 -export([callback/1, mode/2, peer/4, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
-%% shared functions
--export([pin_certfile_opts/1, pin_certfiles_opts/1, make_selfsigned_cert/2]).
+%% shared functions related to data transport and serialization
+-export([wrap/1, unwrap/1, unwrap_all/1, unpack/1, send_local/2,
+        buf_add/2, buf_new/0, buf_size/1]).
+%% shared functions related to TLS certs
+-export([pin_certfile_opts_server/1, pin_certfile_opts_client/1,
+         pin_certfiles_opts_server/1, pin_certfiles_opts_client/1,
+         make_selfsigned_cert/2]).
 
 -record(state, {proc, name, dirs, mode, serv_conn}).
 -type state() :: term().
 -type cb_state() :: {?MODULE, state()}.
--export_type([state/0]).
+-type buf() :: #buf{}.
+-export_type([state/0, buf/0]).
+
+-if(?OTP_RELEASE < 26).
+%% a bug prevents TLS 1.3 from working well with cert pinning in versions prior
+%% to OTP-26.rc-1:
+%% https://erlangforums.com/t/server-side-tls-cert-validation-woes-in-tls-1-3/1586
+-define(TLS_VSN, 'tlsv1.2').
+-else.
+-define(TLS_VSN, 'tlsv1.3').
+-endif.
 
 -spec callback(term()) -> state().
 callback({Name, DirOpts}) ->
@@ -103,20 +116,7 @@ wrap({revault, _Marker, _Payload}=Msg) ->
     %% failing in bad ways.
     <<(byte_size(Bin)):64/unsigned, ?VSN:16/unsigned, Bin/binary>>.
 
-buf_add(Bin, B=#buf{seen=0, needed=0, acc=Acc}) ->
-    case iolist_to_binary([lists:reverse(Acc),Bin]) of
-        <<Size:64/unsigned, ?VSN:16/unsigned, _/binary>> = NewBin ->
-            B#buf{seen=byte_size(NewBin), needed=Size, acc=[NewBin]};
-        IncompleteBin ->
-            B#buf{acc=[IncompleteBin]}
-    end;
-buf_add(Bin, B=#buf{acc=Acc, seen=N}) ->
-    B#buf{acc=[Bin|Acc], seen=N+byte_size(Bin)}.
-
-buf_new() -> #buf{}.
-buf_reset(_) -> #buf{}.
-buf_size(#buf{seen=N}) -> N.
-
+-spec unwrap(buf()) -> {ok, ?VSN, term(), buf()} | {error, incomplete, buf()}.
 unwrap(B=#buf{seen=S, needed=N, acc=Acc}) when S >= N ->
     case iolist_to_binary(lists:reverse(Acc)) of
         <<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>> = Bin ->
@@ -151,16 +151,79 @@ unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
 unpack(Term) ->
     Term.
 
+-spec unwrap_all(buf()) -> {[term()], buf()}.
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tls:unwrap(Buf) of
+        {error, incomplete, NewBuf} ->
+            {lists:reverse(Acc), NewBuf};
+        {ok, ?VSN, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
+    end.
+
+-spec buf_add(binary(), buf()) -> buf().
+buf_add(Bin, B=#buf{seen=0, needed=0, acc=Acc}) ->
+    case iolist_to_binary([lists:reverse(Acc),Bin]) of
+        <<Size:64/unsigned, ?VSN:16/unsigned, _/binary>> = NewBin ->
+            B#buf{seen=byte_size(NewBin), needed=Size, acc=[NewBin]};
+        IncompleteBin ->
+            B#buf{acc=[IncompleteBin]}
+    end;
+buf_add(Bin, B=#buf{acc=Acc, seen=N}) ->
+    B#buf{acc=[Bin|Acc], seen=N+byte_size(Bin)}.
+
+-spec buf_new() -> buf().
+buf_new() -> #buf{}.
+
+-spec buf_reset(buf()) -> buf().
+buf_reset(_) -> #buf{}.
+
+-spec buf_size(buf()) -> non_neg_integer().
+buf_size(#buf{seen=N}) -> N.
+
+
 send_local(Proc, Payload) ->
     gproc:send({n, l, {revault_fsm, Proc}}, Payload).
 
+pin_certfile_opts_client(FileNames) ->
+    pin_certfile_opts(FileNames).
+
+pin_certfile_opts_server(FileNames) ->
+    [{fail_if_no_peer_cert, true}
+     | pin_certfile_opts(FileNames)].
+
+pin_certfiles_opts_client(FileNames) ->
+    pin_certfiles_opts(FileNames).
+
+pin_certfiles_opts_server(FileNames) ->
+    [{fail_if_no_peer_cert, true}
+     | pin_certfiles_opts(FileNames)].
+
+make_selfsigned_cert(Dir, CertName) ->
+    check_openssl_vsn(),
+
+    Key = filename:join(Dir, CertName ++ ".key"),
+    Cert = filename:join(Dir, CertName ++ ".crt"),
+    ok = filelib:ensure_dir(Cert),
+    Cmd = io_lib:format(
+        "openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes "
+        "-keyout '~ts' -out '~ts' -subj '/CN=example.org' "
+        "-addext 'subjectAltName=DNS:example.org,DNS:www.example.org,IP:127.0.0.1'",
+        [Key, Cert] % TODO: escape quotes
+    ),
+    os:cmd(Cmd).
+
+%%%%%%%%%%%%%%%
+%%% PRIVATE %%%
+%%%%%%%%%%%%%%%
 pin_certfile_opts(FileName) ->
     %% Lift tak's own parsing of certs and chains.
     case file:read_file(FileName) of
         {ok, Cert} ->
             tak:pem_to_ssl_options(Cert) ++
-            [{verify, verify_peer},
-             {fail_if_no_peer_cert, true}];
+            [{verify, verify_peer}];
         {error, enoent} ->
             error({certificate_not_found, FileName})
     end.
@@ -170,13 +233,11 @@ pin_certfiles_opts(FileNames) ->
 
 pin_certfiles_opts([], CAs, PinCerts) ->
     %% TODO: drop tlsv1.2 and mandate 1.3 when
-    %% https://erlangforums.com/t/server-side-tls-cert-validation-woes-in-tls-1-3/1586
     %% is resolved
     [{cacerts, CAs},
      {verify_fun, {fun verify_pins/3, PinCerts}},
-     {verify, verify_peer},
-     {versions, ['tlsv1.2']}, % TODO: DROP
-     {fail_if_no_peer_cert, true}];
+     {versions, [?TLS_VSN]},
+     {verify, verify_peer}];
 pin_certfiles_opts([FileName|FileNames], CAs, PinCerts) ->
     %% Lift tak's own parsing, but then extract the option and allow setting
     %% multiple certificates. We need this because we have many possibly valid
@@ -213,20 +274,6 @@ verify_pins(_Cert, valid, PinCerts) ->
 
 subject(#'OTPCertificate'{ tbsCertificate = TBS }) ->
     public_key:pkix_normalize_name(TBS#'OTPTBSCertificate'.subject).
-
-make_selfsigned_cert(Dir, CertName) ->
-    check_openssl_vsn(),
-
-    Key = filename:join(Dir, CertName ++ ".key"),
-    Cert = filename:join(Dir, CertName ++ ".crt"),
-    ok = filelib:ensure_dir(Cert),
-    Cmd = io_lib:format(
-        "openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes "
-        "-keyout '~ts' -out '~ts' -subj '/CN=example.org' "
-        "-addext 'subjectAltName=DNS:example.org,DNS:www.example.org,IP:127.0.0.1'",
-        [Key, Cert] % TODO: escape quotes
-    ),
-    os:cmd(Cmd).
 
 check_openssl_vsn() ->
     Vsn = os:cmd("openssl version"),

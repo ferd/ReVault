@@ -83,7 +83,7 @@ init({#{<<"server">> := #{<<"auth">> := #{<<"tls">> := DirOpts}}}, TlsOpts}) ->
     %% on them for the peer auth; then match certs for authorization later.
     CertFiles = [maps:get(<<"certfile">>, Client)
                  || {_Name, Client} <- maps:to_list(Clients)],
-    PinOpts = revault_tls:pin_certfiles_opts(CertFiles) ++
+    PinOpts = revault_tls:pin_certfiles_opts_server(CertFiles) ++
               [{certfile, CertFile}, {keyfile, KeyFile}],
     case Status of
         enabled ->
@@ -247,7 +247,8 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             worker_loop(Dir, C);
         {ssl, Sock, Data} ->
             TmpC = start_span(<<"recv">>, C),
-            {Unwrapped, IncompleteBuf} = unwrap_all(revault_tls:buf_add(Data, Buf0)),
+            Buf1 = revault_tls:buf_add(Data, Buf0),
+            {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
             set_attributes([{<<"msgs">>, length(Unwrapped)},
@@ -258,17 +259,6 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             exit(Reason);
         {ssl_closed, Sock} ->
             exit(normal)
-    end.
-
-unwrap_all(Buf) ->
-    unwrap_all(Buf, []).
-
-unwrap_all(Buf, Acc) ->
-    case revault_tls:unwrap(Buf) of
-        {error, incomplete, NewBuf} ->
-            {lists:reverse(Acc), NewBuf};
-        {ok, ?VSN, Payload, NewBuf} ->
-            unwrap_all(NewBuf, [Payload|Acc])
     end.
 
 
