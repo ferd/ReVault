@@ -9,5 +9,4 @@
                  buf = revault_tls:buf_new(), ctx = []}).
 -record(serv, {names=#{}, dirs, opts, sock, acceptor, workers=#{}}).
 -record(conn, {localname, sock, dirs, buf = revault_tls:buf_new(), ctx = []}).
--record(buf, {acc=[<<>>], seen=0, needed=0}).
 

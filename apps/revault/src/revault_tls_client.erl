@@ -111,7 +111,8 @@ handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
     {keep_state, Data, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     TmpData = start_span(<<"recv">>, Data),
-    {Unwrapped, IncompleteBuf} = unwrap_all(revault_tls:buf_add(Bin, Buf0)),
+    Buf1 = revault_tls:buf_add(Bin, Buf0),
+    {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
     set_attributes([{<<"msgs">>, length(Unwrapped)},
                     {<<"buf">>, revault_tls:buf_size(IncompleteBuf)} | ?attrs(TmpData)]),
@@ -142,7 +143,7 @@ connect(Data=#client{dirs=Dirs, sock=undefined, opts=Opts}, Peer, Auth) when Pee
                                                  <<"certfile">> := Cert,
                                                  <<"keyfile">> := Key,
                                                  <<"peer_certfile">> := ServerCert}}}} = Dirs,
-    PinOpts = revault_tls:pin_certfile_opts(ServerCert) ++
+    PinOpts = revault_tls:pin_certfile_opts_client(ServerCert) ++
               [{certfile, Cert}, {keyfile, Key}],
     {Host, Port} = parse_url(Url),
     case ssl:connect(Host, Port, Opts++PinOpts) of
@@ -164,17 +165,6 @@ parse_url(Url) when is_binary(Url) ->
 %% please gradualizer type conversions with this stuff...
 -spec port_range(integer()) -> 0..65535.
 port_range(N) when N >= 0, N =< 65535 -> N.
-
-unwrap_all(Buf) ->
-    unwrap_all(Buf, []).
-
-unwrap_all(Buf, Acc) ->
-    case revault_tls:unwrap(Buf) of
-        {error, incomplete, NewBuf} ->
-            {lists:reverse(Acc), NewBuf};
-        {ok, ?VSN, Payload, NewBuf} ->
-            unwrap_all(NewBuf, [Payload|Acc])
-    end.
 
 attrs(#client{peer=Peer, dir=Dir, sock=S}) ->
     [{<<"peer">>, Peer}, {<<"dir">>, Dir} | sock_attrs(S) ++ pid_attrs()].
