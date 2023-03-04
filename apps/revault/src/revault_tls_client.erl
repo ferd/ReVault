@@ -111,10 +111,10 @@ handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
     {keep_state, Data, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     TmpData = start_span(<<"recv">>, Data),
-    {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Bin/binary>>),
+    {Unwrapped, IncompleteBuf} = unwrap_all(revault_tls:buf_add(Bin, Buf0)),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
     set_attributes([{<<"msgs">>, length(Unwrapped)},
-                    {<<"buf">>, byte_size(IncompleteBuf)} | ?attrs(TmpData)]),
+                    {<<"buf">>, revault_tls:buf_size(IncompleteBuf)} | ?attrs(TmpData)]),
     NewData = end_span(TmpData),
     {next_state, connected, NewData#client{buf=IncompleteBuf}};
 handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
@@ -170,8 +170,8 @@ unwrap_all(Buf) ->
 
 unwrap_all(Buf, Acc) ->
     case revault_tls:unwrap(Buf) of
-        {error, incomplete} ->
-            {lists:reverse(Acc), Buf};
+        {error, incomplete, NewBuf} ->
+            {lists:reverse(Acc), NewBuf};
         {ok, ?VSN, Payload, NewBuf} ->
             unwrap_all(NewBuf, [Payload|Acc])
     end.

@@ -247,11 +247,11 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             worker_loop(Dir, C);
         {ssl, Sock, Data} ->
             TmpC = start_span(<<"recv">>, C),
-            {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
+            {Unwrapped, IncompleteBuf} = unwrap_all(revault_tls:buf_add(Data, Buf0)),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
             set_attributes([{<<"msgs">>, length(Unwrapped)},
-                            {<<"buf">>, byte_size(IncompleteBuf)} | ?attrs(C)]),
+                            {<<"buf">>, revault_tls:buf_size(IncompleteBuf)} | ?attrs(C)]),
             C = end_span(TmpC),
             worker_loop(Dir, C#conn{buf = IncompleteBuf});
         {ssl_error, Sock, Reason} ->
@@ -265,8 +265,8 @@ unwrap_all(Buf) ->
 
 unwrap_all(Buf, Acc) ->
     case revault_tls:unwrap(Buf) of
-        {error, incomplete} ->
-            {lists:reverse(Acc), Buf};
+        {error, incomplete, NewBuf} ->
+            {lists:reverse(Acc), NewBuf};
         {ok, ?VSN, Payload, NewBuf} ->
             unwrap_all(NewBuf, [Payload|Acc])
     end.
@@ -286,10 +286,10 @@ next_msg(Sock, Buf) ->
     case revault_tls:unwrap(Buf) of
         {ok, Vsn, Msg, NewBuf} ->
             {ok, Vsn, Msg, NewBuf};
-        {error, incomplete} ->
+        {error, incomplete, NewBuf} ->
             case ssl:recv(Sock, 0) of
                 {ok, Bytes} ->
-                    next_msg(Sock, <<Buf/binary, Bytes/binary>>);
+                    next_msg(Sock, revault_tls:buf_add(Bytes, NewBuf));
                 {error, Term} ->
                     {error, Term}
             end

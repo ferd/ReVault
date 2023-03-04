@@ -5,7 +5,8 @@
 
 all() ->
     [pinning_client, pinning_server,
-     unpinned_client, unpinned_server].
+     unpinned_client, unpinned_server,
+     unwrapping].
 
 init_per_suite(Config) ->
     {ok, Apps} = application:ensure_all_started(ssl),
@@ -117,6 +118,39 @@ unpinned_server(Config) ->
     Pid ! stop,
     ok.
 
+unwrapping() ->
+    [{doc, "Testing the data wrapping buffer interface"}].
+unwrapping(_) ->
+    Marker = make_ref(),
+    FileFetch = {revault, Marker, revault_data_wrapper:fetch_file("fake")},
+    File = {revault, Marker, revault_data_wrapper:send_file("fake", 1, "ha5h0faf11e", <<0:2000>>)},
+    Complete = {revault, Marker, revault_data_wrapper:sync_complete()},
+    Raw = [FileFetch, File, Complete],
+    Wrapped = iolist_to_binary([revault_tls:wrap(Data) || Data <- Raw]),
+    %% Now check things out
+    B = revault_tls:buf_new(),
+    ?assertEqual({error, incomplete, B}, revault_tls:unwrap(B)),
+    %% Make a variant of all byte sizes for packet breaks (every N bytes)
+    %% and make sure they all decode cleanly
+    [begin
+        Chunks = chunk(Wrapped, ChunkSize),
+        Buf = lists:foldl(fun revault_tls:buf_add/2, B, Chunks),
+        {Unwrapped, B} = unwrap_all(Buf),
+        ?assertEqual(as_unpacked(Raw), Unwrapped, {chunks, ChunkSize})
+     end|| ChunkSize <- lists:seq(1, byte_size(Wrapped))],
+    %% Same test, but with interleaved decoding!
+    [begin
+        Chunks = chunk(Wrapped, ChunkSize),
+        {B,Unwrapped} = lists:foldl(
+            fun(Bin,{Buf,Acc}) ->
+                    NewBuf = revault_tls:buf_add(Bin,Buf),
+                    {TmpAcc, NextBuf} = unwrap_all(NewBuf),
+                    {NextBuf,Acc++TmpAcc}
+            end, {B,[]}, Chunks),
+        ?assertEqual(as_unpacked(Raw), Unwrapped, {chunks, ChunkSize})
+     end|| ChunkSize <- lists:seq(1, byte_size(Wrapped))],
+    ok.
+
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
 %%%%%%%%%%%%%%%
@@ -169,3 +203,25 @@ server(Pid, Listen, Sock) ->
             Pid ! {ssl_error, server, Sock, Reason},
             listen(Pid, Listen)
     end.
+
+chunk(Bin, Size) ->
+    case Bin of
+        <<Chunk:Size/binary, Rest/binary>> ->
+            [Chunk | chunk(Rest, Size)];
+        _ ->
+            [Bin]
+    end.
+
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tls:unwrap(Buf) of
+        {error, incomplete, NewBuf} ->
+            {lists:reverse(Acc), NewBuf};
+        {ok, _Vsn, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
+    end.
+
+as_unpacked(L) ->
+    [{revault, Marker, revault_tls:unpack(X)} || {revault, Marker, X} <- L].
