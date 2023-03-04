@@ -5,7 +5,9 @@
 -define(HANDSHAKE_WAIT, 10000). % give up after 10 seconds
 -define(SERVER, {via, gproc, {n, l, {tls, serv, shared}}}).
 -define(CLIENT(Name), {via, gproc, {n, l, {tls, client, Name}}}).
--record(client, {name, dirs, peer, dir, auth, opts, sock, buf = <<>>, ctx = []}).
+-record(client, {name, dirs, peer, dir, auth, opts, sock,
+                 buf = revault_tls:buf_new(), ctx = []}).
 -record(serv, {names=#{}, dirs, opts, sock, acceptor, workers=#{}}).
--record(conn, {localname, sock, dirs, buf = <<>>, ctx = []}).
+-record(conn, {localname, sock, dirs, buf = revault_tls:buf_new(), ctx = []}).
+-record(buf, {acc=[<<>>], seen=0, needed=0}).
 

@@ -11,7 +11,8 @@
 
 %% stack-specific calls to be made from an initializing process and that
 %% are not generic.
--export([wrap/1, unwrap/1, unpack/1, send_local/2]).
+-export([wrap/1, unwrap/1, unpack/1, send_local/2,
+        buf_add/2, buf_new/0, buf_size/1]).
 %% callbacks from within the FSM
 -export([callback/1, mode/2, peer/4, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 %% shared functions
@@ -102,17 +103,38 @@ wrap({revault, _Marker, _Payload}=Msg) ->
     %% failing in bad ways.
     <<(byte_size(Bin)):64/unsigned, ?VSN:16/unsigned, Bin/binary>>.
 
-unwrap(<<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>>) ->
-    case byte_size(Payload) of
-        Incomplete when Incomplete < Size ->
-            {error, incomplete};
-        _ ->
-            <<Term:Size/binary, Rest/binary>> = Payload,
-            {revault, Marker, Msg} = binary_to_term(Term),
-            {ok, ?VSN, {revault, Marker, unpack(Msg)}, Rest}
+buf_add(Bin, B=#buf{seen=0, needed=0, acc=Acc}) ->
+    case iolist_to_binary([lists:reverse(Acc),Bin]) of
+        <<Size:64/unsigned, ?VSN:16/unsigned, _/binary>> = NewBin ->
+            B#buf{seen=byte_size(NewBin), needed=Size, acc=[NewBin]};
+        IncompleteBin ->
+            B#buf{acc=[IncompleteBin]}
     end;
-unwrap(<<_/binary>>) ->
-    {error, incomplete}.
+buf_add(Bin, B=#buf{acc=Acc, seen=N}) ->
+    B#buf{acc=[Bin|Acc], seen=N+byte_size(Bin)}.
+
+buf_new() -> #buf{}.
+buf_reset(_) -> #buf{}.
+buf_size(#buf{seen=N}) -> N.
+
+unwrap(B=#buf{seen=S, needed=N, acc=Acc}) when S >= N ->
+    case iolist_to_binary(lists:reverse(Acc)) of
+        <<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>> = Bin ->
+            case Payload of
+                <<Term:Size/binary, Rest/binary>> ->
+                    {revault, Marker, Msg} = binary_to_term(Term),
+                    {ok, ?VSN, {revault, Marker, unpack(Msg)},
+                     buf_add(Rest, buf_reset(B))};
+                _ ->
+                    {error, incomplete,
+                     B#buf{acc=[Bin]}}
+            end;
+        IncompleteBin ->
+            {error, incomplete,
+             B#buf{acc=[IncompleteBin]}}
+    end;
+unwrap(B=#buf{}) ->
+    {error, incomplete, B}.
 
 unpack({peer, ?VSN, Remote, Attrs}) -> {peer, Remote, Attrs};
 unpack({ask, ?VSN}) -> ask;
