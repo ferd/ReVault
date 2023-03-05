@@ -117,17 +117,12 @@ wrap({revault, _Marker, _Payload}=Msg) ->
     <<(byte_size(Bin)):64/unsigned, ?VSN:16/unsigned, Bin/binary>>.
 
 -spec unwrap(buf()) -> {ok, ?VSN, term(), buf()} | {error, incomplete, buf()}.
-unwrap(B=#buf{seen=S, needed=N, acc=Acc}) when S >= N ->
-    case iolist_to_binary(lists:reverse(Acc)) of
-        <<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>> ->
-            <<Term:Size/binary, Rest/binary>> = Payload,
-            {revault, Marker, Msg} = binary_to_term(Term),
-            {ok, ?VSN, {revault, Marker, unpack(Msg)},
-             buf_add(Rest, buf_reset(B))};
-        IncompleteBin ->
-            {error, incomplete,
-             B#buf{acc=[IncompleteBin]}}
-    end;
+unwrap(B=#buf{seen=S, needed=N, acc=Acc}) when S > 0, S >= N ->
+    Bin = iolist_to_binary(lists:reverse(Acc)),
+    <<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>> = Bin,
+    <<Term:Size/binary, Rest/binary>> = Payload,
+    {revault, Marker, Msg} = binary_to_term(Term),
+    {ok, ?VSN, {revault, Marker, unpack(Msg)}, buf_add(Rest, buf_reset(B))};
 unwrap(B=#buf{}) ->
     {error, incomplete, B}.
 
