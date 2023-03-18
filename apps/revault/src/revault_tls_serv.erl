@@ -246,15 +246,22 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             ssl:setopts(Sock, [{active, 5}]),
             worker_loop(Dir, C);
         {ssl, Sock, Data} ->
-            TmpC = start_span(<<"recv">>, C),
+            TmpC = maybe_start_unique_span(<<"recv">>, C#conn.recv, C#conn{recv=true}),
             Buf1 = revault_tls:buf_add(Data, Buf0),
             {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
-            set_attributes([{<<"msgs">>, length(Unwrapped)},
-                            {<<"buf">>, revault_tls:buf_size(IncompleteBuf)} | ?attrs(C)]),
-            C = end_span(TmpC),
-            worker_loop(Dir, C#conn{buf = IncompleteBuf});
+            NewC = case length(Unwrapped) of
+                0 ->
+                    TmpC;
+                MsgCount ->
+                    set_attributes([{<<"msgs">>, MsgCount},
+                                    {<<"buf">>, revault_tls:buf_size(Buf1)},
+                                    {<<"buf_trail">>, revault_tls:buf_size(IncompleteBuf)}
+                                    | ?attrs(C)]),
+                    end_span(TmpC#conn{recv=false})
+            end,
+            worker_loop(Dir, NewC#conn{buf = IncompleteBuf});
         {ssl_error, Sock, Reason} ->
             exit(Reason);
         {ssl_closed, Sock} ->
@@ -338,6 +345,11 @@ start_span(SpanName, Data=#conn{ctx=Stack}) ->
     Token = otel_ctx:attach(Ctx),
     set_attributes(attrs(Data)),
     Data#conn{ctx=[{SpanCtx,Token}|Stack]}.
+
+maybe_start_unique_span(SpanName, false, Data) ->
+    start_span(SpanName, Data);
+maybe_start_unique_span(_, true, Data) ->
+    Data.
 
 maybe_add_ctx(#{ctx:=SpanCtx}, Data=#conn{ctx=Stack}) ->
     Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),

@@ -6,7 +6,8 @@
 -define(SERVER, {via, gproc, {n, l, {tls, serv, shared}}}).
 -define(CLIENT(Name), {via, gproc, {n, l, {tls, client, Name}}}).
 -record(client, {name, dirs, peer, dir, auth, opts, sock,
-                 buf = revault_tls:buf_new(), ctx = []}).
+                 recv = false, buf = revault_tls:buf_new(), ctx = []}).
 -record(serv, {names=#{}, dirs, opts, sock, acceptor, workers=#{}}).
--record(conn, {localname, sock, dirs, buf = revault_tls:buf_new(), ctx = []}).
+-record(conn, {localname, sock, dirs,
+               recv = false, buf = revault_tls:buf_new(), ctx = []}).
 

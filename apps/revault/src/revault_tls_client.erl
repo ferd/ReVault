@@ -110,13 +110,20 @@ handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
     ssl:setopts(Sock, [{active, 5}]),
     {keep_state, Data, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
-    TmpData = start_span(<<"recv">>, Data),
+    TmpData = maybe_start_unique_span(<<"recv">>, Data#client.recv, Data#client{recv=true}),
     Buf1 = revault_tls:buf_add(Bin, Buf0),
     {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
-    set_attributes([{<<"msgs">>, length(Unwrapped)},
-                    {<<"buf">>, revault_tls:buf_size(IncompleteBuf)} | ?attrs(TmpData)]),
-    NewData = end_span(TmpData),
+    NewData = case length(Unwrapped) of
+        0 ->
+            TmpData;
+        MsgCount ->
+            set_attributes([{<<"msgs">>, MsgCount},
+                            {<<"buf">>, revault_tls:buf_size(Buf1)},
+                            {<<"buf_trail">>, revault_tls:buf_size(IncompleteBuf)}
+                            | ?attrs(TmpData)]),
+            end_span(TmpData#client{recv=false})
+    end,
     {next_state, connected, NewData#client{buf=IncompleteBuf}};
 handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
     %% TODO: Log
@@ -203,6 +210,11 @@ start_span(SpanName, Data=#client{ctx=Stack}) ->
     Token = otel_ctx:attach(Ctx),
     set_attributes(attrs(Data)),
     Data#client{ctx=[{SpanCtx,Token}|Stack]}.
+
+maybe_start_unique_span(SpanName, false, Data) ->
+    start_span(SpanName, Data);
+maybe_start_unique_span(_, true, Data) ->
+    Data.
 
 maybe_add_ctx(#{ctx:=SpanCtx}, Data=#client{ctx=Stack}) ->
     Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
