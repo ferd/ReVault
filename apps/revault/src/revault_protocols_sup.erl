@@ -9,7 +9,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/0, reset/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -22,6 +22,14 @@
 
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+
+reset() ->
+    %% it is easiest to restart the child to drop their state and all
+    %% their workers, but leave them in place to work fine later since
+    %% they're expected to be around.
+    [supervisor:restart_child(?SERVER, Id)
+     || {Id, _, _, _} <- supervisor:which_children(?SERVER)],
+    ok.
 
 %%====================================================================
 %% Supervisor callbacks

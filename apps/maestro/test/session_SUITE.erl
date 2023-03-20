@@ -9,7 +9,8 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
-all() -> [setup_works, copy_and_sync, conflict_and_sync].
+all() -> [setup_works, copy_and_sync, conflict_and_sync,
+          role_switch].
 
 %% These values are hardcoded in the toml config files in the suite's
 %% data_dir; changing them here requires changing them there too.
@@ -166,6 +167,45 @@ conflict_and_sync(Config) ->
                     TreeAFix),
     ok.
 
+role_switch() ->
+    [{doc, "Once set up, instances can be doing both a client and a server "
+           "role, and create non-centralized topologies so long as peers "
+           "are accessible"},
+     {timetrap, timer:seconds(5)}].
+role_switch(Config) ->
+    {_, ServerNode} = ?config(peer_a, Config),
+    {_, ClientNode} = ?config(peer_b, Config),
+    DirA = ?config(dir_a, Config),
+    DirB = ?config(dir_b, Config),
+    Dir = <<"test">>,
+    ServerName = <<"a">>,
+    %% make maestro boot all the things right on its own
+    %% then just expose a call to sync on demand
+    ok = init_client(ClientNode, Dir, ServerName),
+    ?assertNotEqual(tree(DirA), tree(DirB)),
+    ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, sync, [Dir, ServerName])),
+    ?assertEqual(tree(DirA), tree(DirB)),
+    %% update the config
+    DataDir = ?config(data_dir, Config),
+    copy(filename:join([DataDir, "others", "a_switch.toml"]), ?config(conf_a, Config)),
+    copy(filename:join([DataDir, "others", "b_switch.toml"]), ?config(conf_b, Config)),
+    ?assertEqual(outdated, rpc:call(ServerNode, maestro_loader, status, [])),
+    ?assertEqual(outdated, rpc:call(ClientNode, maestro_loader, status, [])),
+    ct:pal("Reloading configs"),
+    rpc:call(ServerNode, maestro_loader, reload, []),
+    rpc:call(ClientNode, maestro_loader, reload, []),
+    wait_until(fun() -> current == rpc:call(ServerNode, maestro_loader, status, []) end),
+    wait_until(fun() -> current == rpc:call(ClientNode, maestro_loader, status, []) end),
+    %% now deal with some writes.
+    copy(filename:join(?config(data_dir, Config), "b"), DirB),
+    ?assertNotEqual(tree(DirA), tree(DirB)),
+    ok = rpc:call(ClientNode, revault_dirmon_event, force_scan, [Dir, infinity]),
+    %% and sync in reverse order
+    ClientName = <<"b">>,
+    ?assertEqual(ok, rpc:call(ServerNode, revault_fsm, sync, [Dir, ClientName])),
+    ?assertEqual(tree(DirA), tree(DirB)),
+    ok.
+
 %%%%%%%%%%%%%%%
 %%% HELPERS %%%
 %%%%%%%%%%%%%%%
@@ -219,3 +259,12 @@ init_client(ClientNode, Dir, Remote) ->
             ok
     end,
     ok.
+
+wait_until(Pred) ->
+    case Pred() of
+        true ->
+            ok;
+        false ->
+            timer:sleep(50),
+            wait_until(Pred)
+    end.
