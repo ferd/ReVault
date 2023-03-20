@@ -3,8 +3,8 @@
 %%%                 .-------------INIT----.
 %%%                 |                     |
 %%%                 v                     v
-%%%          UNINITIALIZED      .---->INITIALIZED-------->SERVER------.
-%%%          |           |      |      |  ^                  |        |
+%%%          UNINITIALIZED      .---->INITIALIZED<------->SERVER------.
+%%%          |           |      |      ^  ^                  |        |
 %%%          v           v      |   .--'  |                  v        |
 %%%     CLIENT_INIT    SERVER_INIT  |     |           SERVER_ID_SYNC  |
 %%%          |    ^---.             |  DISCONNECT<-------'            |
@@ -625,7 +625,7 @@ server({call, _From}, {role, client}, Data) ->
 server({call, From}, {role, _}, Data) ->
     {keep_state, Data, [{reply, From, {error, busy}}]};
 server({call, _From}, {sync, _Remote}, Data) ->
-    %% On an explicit sync call, exist server mode to see if we
+    %% On an explicit sync call, exit server mode to see if we
     %% can make it work.
     {next_state, initialized, Data, [postpone]};
 server({call, From}, id, Data=#data{id=Id}) ->
