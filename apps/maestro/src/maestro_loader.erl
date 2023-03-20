@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 -define(RELOAD_INTERVAL, timer:minutes(5)).
 
--export([start_link/0, current/0, status/0]).
+-export([start_link/0, current/0, status/0, reload/0]).
 -export([init/1,
          handle_call/3, handle_cast/2, handle_info/2, handle_continue/2,
          terminate/2]).
@@ -25,6 +25,10 @@ current() ->
 
 status() ->
     gen_server:call(?MODULE, status, 10000).
+
+reload() ->
+    ?MODULE ! reload,
+    ok.
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -92,7 +96,12 @@ handle_cfg_parse_error(Reason, Path) ->
 apply_cfg(Cfg, Cfg) ->
     unchanged;
 apply_cfg(Cfg, undefined) ->
-    start_workers(Cfg).
+    start_workers(Cfg);
+apply_cfg(NewCfg, _OldCfg) ->
+    %% TODO: we don't do this graciously yet, so let's shut down
+    %%       all the things and then just bring them back up.
+    stop_workers(),
+    start_workers(NewCfg).
 
 start_workers(Cfg) ->
     %% start all clients first, with each client call trying to boot its own VM
@@ -106,6 +115,11 @@ start_workers(Cfg) ->
     start_clients(Cfg),
     start_servers(Cfg),
     ok.
+
+stop_workers() ->
+    stop_fsms(),
+    stop_servers(),
+    stop_clients().
 
 start_clients(Cfg = #{<<"peers">> := PeersMap}) ->
     [start_client(Dir, Cfg, PeerName, PeerCfg)
@@ -166,8 +180,24 @@ start_server(DirName,
             ok = revault_fsm:server(DirName);
         _ ->
             %% Set as server if not previously started as client
-            ok = revault_fsm:server(DirName)
+            case revault_fsm:server(DirName) of
+                ok -> ok;
+                {error, busy} -> ok
+            end
     end.
+
+stop_clients() ->
+    revault_protocols_sup:reset(),
+    ok.
+
+stop_servers() ->
+    revault_protocols_sup:reset(),
+    ok.
+
+stop_fsms() ->
+    revault_fsm_sup:stop_all(),
+    revault_trackers_sup:stop_all(),
+    ok.
 
 %% No pattern allows disterl to work as an option here. Only works for tests.
 callback_mod(<<"tls">>) -> revault_tls;

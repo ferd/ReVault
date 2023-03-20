@@ -189,8 +189,12 @@ start_hierarchy(Config) ->
     ok = revault_fsm:server(Name),
     %% As a server it bootstrapped its own ID
     ?assertNotEqual(undefined, revault_fsm:id(Name)),
-    %% Can't force to switch to client mode now!
-    ?assertEqual({error, busy}, revault_fsm:client(Name)),
+    %% Can force to switch to client mode and back now there's an id!
+    ?assertEqual(ok, revault_fsm:client(Name)),
+    ?assertEqual({error, busy}, revault_fsm:client(Name)), % dupe change
+    ?assertEqual(ok, revault_fsm:server(Name)),
+    ?assertEqual({error, busy}, revault_fsm:server(Name)), % dupe change
+    %% The supervision structure should have been started as part of the setup
     %% The supervision structure should have been started as part of the setup
     ?assert(is_pid(gproc:where({n, l, {revault_fsm, Name}}))),
     ?assert(is_pid(gproc:where({n, l, {revault_tracker_sup, Name}}))),

@@ -8,7 +8,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_fsm/4, start_fsm/5]).
+-export([start_link/0, start_fsm/4, start_fsm/5, stop_all/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -27,6 +27,12 @@ start_fsm(DbDir, Name, Path, Interval) ->
 
 start_fsm(DbDir, Name, Path, Interval, Callback) ->
     supervisor:start_child(?SERVER, [DbDir, Name, Path, Interval, Callback]).
+
+stop_all() ->
+    [supervisor:terminate_child(?SERVER, Pid)
+     || {_, Pid, _, _} <- supervisor:which_children(?SERVER),
+        is_pid(Pid)],
+    ok.
 
 %%====================================================================
 %% Supervisor callbacks

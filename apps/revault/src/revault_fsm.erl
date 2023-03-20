@@ -440,6 +440,13 @@ initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
 client(enter, _, Data = #data{callback=Cb}) ->
     {_, NewCb} = apply_cb(Cb, mode, [client]),
     {keep_state, Data#data{callback=NewCb}};
+client({call, _From}, {role, server}, Data) ->
+    {next_state, initialized, Data, [postpone]};
+client({call, From}, {role, _}, Data) ->
+    {keep_state, Data, [{reply, From, {error, busy}}]};
+client(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
+    %% Getting a server-side call, switch to see if we can deal with it
+    {next_state, initialized, Data, [postpone]};
 client({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
 client({call, From}, {id, _}, Data=#data{id=Id}) ->
@@ -613,9 +620,14 @@ client_sync_complete(_, _, Data) ->
 server(enter, _, Data = #data{callback=Cb}) ->
     {_Res, NewCb} = apply_cb(Cb, mode, [server]),
     {keep_state, Data#data{callback=NewCb}};
+server({call, _From}, {role, client}, Data) ->
+    {next_state, initialized, Data, [postpone]};
 server({call, From}, {role, _}, Data) ->
-    %% TODO: support switching to client role is not connected.
     {keep_state, Data, [{reply, From, {error, busy}}]};
+server({call, _From}, {sync, _Remote}, Data) ->
+    %% On an explicit sync call, exist server mode to see if we
+    %% can make it work.
+    {next_state, initialized, Data, [postpone]};
 server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
 server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
