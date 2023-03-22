@@ -34,7 +34,8 @@
 -module(revault_fsm).
 -behaviour(gen_statem).
 -export([start_link/4, start_link/5,
-         server/1, client/1, id/1, id/2, sync/2]).
+         server/1, client/1, id/1, id/2, sync/2,
+         seed_fork/2, seed_fork/3]).
 -export([%% Lifecycle
          callback_mode/0,
          init/1, %handle_event/4, terminate/3,
@@ -161,6 +162,16 @@ id(Name, Remote) ->
 sync(Name, Remote) ->
     gen_statem:call(?registry(Name), {sync, Remote}).
 
+-spec seed_fork(name(), DbDir) -> ok | {error, _}
+    when DbDir :: file:filename_all().
+seed_fork(Name, ForkDir) ->
+    seed_fork(Name, Name, ForkDir).
+
+-spec seed_fork(name(), name(),  DbDir) -> ok | {error, _}
+    when DbDir :: file:filename_all().
+seed_fork(Name, ForkName, ForkDir) ->
+    gen_statem:call(?registry(Name), {seed_fork, ForkName,  ForkDir}).
+
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
 %%%%%%%%%%%%%%%%%
@@ -188,6 +199,8 @@ uninitialized(enter, _, Data) ->
     {keep_state, Data};
 uninitialized({call, From}, id, Data) ->
     {next_state, uninitialized, Data, [{reply, From, undefined}]};
+uninitialized({call, From}, {seed_fork, _, _}, Data) ->
+    {next_state, uninitialized, Data, [{reply, From, {error, uninitialized}}]};
 uninitialized({call, From}, {role, server}, Data) ->
     %% Something external telling us we're gonna be in server mode
     {next_state, server_init, Data,
@@ -215,6 +228,8 @@ server_init(_, _, Data) ->
 
 client_init(enter, _, Data=#uninit{}) ->
     {keep_state, Data};
+client_init({call, From}, {seed_fork, _, _}, Data) ->
+    {keep_state, Data, [{reply, From, {error, uninitialized}}]};
 client_init({call, From}, {role, _}, Data) ->
     {keep_state, Data, [{reply, From, {error, busy}}]};
 client_init({call, From}, id, Data=#uninit{}) ->
@@ -428,6 +443,19 @@ initialized({call, From}, {role, server}, Data) ->
 initialized({call, _From}, {id, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
+initialized({call, From}, {seed_fork, ForkName, ForkDir},
+            Data=#data{name=Name, id=Id, uuid=UUID, db_dir=Dir}) ->
+    {Keep, Send} = revault_id:fork(Id),
+    %% Save NewId to disk before replying to avoid issues
+    ok = store_id(Dir, Name, Keep),
+    %% Inject the new ID into all the local handlers before replying
+    %% to avoid concurrency issues
+    ok = revault_dirmon_tracker:update_id(Name, Keep),
+    %% store the forked files
+    %% TODO: handle errors
+    ok = store_uuid(ForkDir, ForkName, UUID),
+    ok = store_id(ForkDir, ForkName, Send),
+    {keep_state, Data#data{id=Keep}, [{reply, From, ok}]};
 initialized({call, _From}, {sync, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
@@ -440,6 +468,8 @@ initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
 client(enter, _, Data = #data{callback=Cb}) ->
     {_, NewCb} = apply_cb(Cb, mode, [client]),
     {keep_state, Data#data{callback=NewCb}};
+client({call, _From}, {seed_fork, _Name, _Dir}, Data) ->
+    {next_state, initialized, Data, [postpone]};
 client({call, _From}, {role, server}, Data) ->
     {next_state, initialized, Data, [postpone]};
 client({call, From}, {role, _}, Data) ->
@@ -620,6 +650,8 @@ client_sync_complete(_, _, Data) ->
 server(enter, _, Data = #data{callback=Cb}) ->
     {_Res, NewCb} = apply_cb(Cb, mode, [server]),
     {keep_state, Data#data{callback=NewCb}};
+server({call, _From}, {seed_fork, _Name, _Dir}, Data) ->
+    {next_state, initialized, Data, [postpone]};
 server({call, _From}, {role, client}, Data) ->
     {next_state, initialized, Data, [postpone]};
 server({call, From}, {role, _}, Data) ->
@@ -682,7 +714,9 @@ server_id_sync(info, {revault, Marker, ask},
     {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
     Disconnect = #disconnect{next_state=initialized},
     {next_state, disconnect, Data#data{id=NewId, callback=Cb1, sub=Disconnect},
-     [{next_event, internal, {disconnect, R}}]}.
+     [{next_event, internal, {disconnect, R}}]};
+server_id_sync(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
@@ -696,7 +730,9 @@ server_sync(info, {revault, Marker, manifest},
             Payload = revault_data_wrapper:manifest(Manifest),
             {_, Cb1} = apply_cb(Cb, reply, [R, Marker, Payload]),
             {next_state, server_sync_files, Data#data{callback=Cb1}}
-        end).
+        end);
+server_sync(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 
 server_sync_files(enter, _, Data) ->
@@ -756,7 +792,9 @@ server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
                   Data=#data{callback=Cb}) ->
     Payload = revault_data_wrapper:error(peer_busy),
     {_, Cb2} = apply_cb(Cb, reply, [Peer, Marker, Payload]),
-    {keep_state, Data#data{callback=Cb2}}.
+    {keep_state, Data#data{callback=Cb2}};
+server_sync_files(_, _, Data) ->
+    {keep_state, Data, [postpone]}.
 
 
 %%%%%%%%%%%%%%%

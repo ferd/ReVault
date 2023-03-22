@@ -16,7 +16,7 @@ groups() ->
      {tcp, [], [{group, syncs}]},
      {tls, [], [{group, syncs}]},
      {syncs, [], [client_id, client_no_server,
-                  fork_server_save, basic_sync,
+                  fork_server_save, seed_fork, basic_sync,
                   delete_sync, too_many_clients,
                   overwrite_sync_clash, conflict_sync,
                   prevent_server_clash]}].
@@ -306,6 +306,41 @@ fork_server_save(Config) ->
     %% Check worker ID, peek into internal state even if brittle.
     State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
     ?assertEqual(ServId2, element(5, State)),
+    ok.
+
+seed_fork() ->
+    [{doc, "A server forking its ID for seeding saves it to disk "
+           "and its workers have it live-updated. The forked one "
+           "can also work"},
+     {timetrap, timer:seconds(5)}].
+seed_fork(Config) ->
+    Name = ?config(name, Config),
+    Server=?config(server, Config),
+    {ok, ServId1} = revault_fsm:id(Server),
+    %% fork to seed state
+    ?assertEqual(ok, revault_fsm:seed_fork(Server, Name, ?config(db_dir, Config))),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Name,
+        ?config(path, Config),
+        ?config(interval, Config),
+        (?config(callback, Config))(Name)
+    ),
+    ok = revault_fsm:client(Name),
+    {ok, ClientId} = revault_fsm:id(Name),
+    {ok, ServId2} = revault_fsm:id(Server),
+    ?assertNotEqual(ServId2, ServId1),
+    ?assertNotEqual(ClientId, ServId1),
+    ?assertNotEqual(ClientId, ServId2),
+    %% Check ID on disk
+    IDFile = filename:join([?config(db_dir, Config), Server, "id"]),
+    {ok, BinId} = file:read_file(IDFile),
+    ?assertEqual(ServId2, binary_to_term(BinId)),
+    %% Check worker ID, peek into internal state even if brittle.
+    State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
+    ?assertEqual(ServId2, element(5, State)),
+    CliState = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Name}}}),
+    ?assertEqual(ClientId, element(5, CliState)),
     ok.
 
 basic_sync() ->
