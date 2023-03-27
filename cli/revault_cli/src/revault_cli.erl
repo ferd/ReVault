@@ -4,7 +4,7 @@
 %% API exports
 -export([main/1, cli/0]).
 %% Behaviour exports
--export([list/1, scan/1, sync/1, status/1, 'generate-keys'/1]).
+-export([list/1, scan/1, sync/1, status/1, 'generate-keys'/1, seed/1]).
 
 
 %% Name of the main running host, as specified in `config/vm.args'
@@ -58,6 +58,16 @@ cli() ->
                 #{name => path, nargs => 'maybe', long => "path",
                   type => string, default => "./",
                   help => "Directory where the key files will be placed"}
+            ]
+        },
+        "seed" => #{
+            arguments => [
+                #{name => node, nargs => 1, type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
+                  long => "node", help => "ReVault instance to connect to and from which to fork. Must be local."},
+                #{name => path, nargs => 1, long => "path", type => string, default => "./forked/",
+                  help => "path of the base directory where the forked data will be located."},
+                #{name => dirs, nargs => nonempty_list , long => "dirs",
+                  type => binary, help => "Name of the directories to fork."}
             ]
         }
     }}.
@@ -131,6 +141,23 @@ status(Args) ->
     Res = make_selfsigned_cert(Path, Name),
     io:format("~ts~n", [Res]).
 
+seed(_Args = #{node := [NodeStr], path := Path, dirs := Dirs = [_|_]}) ->
+    Node = list_to_atom(NodeStr),
+    maybe
+        ok ?= connect(Node),
+        ok ?= revault_node(Node),
+        AbsPath = filename:absname(Path),
+        ok ?= filelib:ensure_path(Path),
+        show(seed_fork(Node, AbsPath, Dirs))
+    else
+        {error, no_dist} ->
+            io:format("Erlang distribution seems to be off.~n");
+        {error, connection_failed} ->
+            io:format("Erlang distribution connection to ~p failed.~n", [Node]);
+        {error, Posix} ->
+            io:format("Could not ensure path ~p, failed with ~p.~n", [AbsPath, Posix])
+    end.
+
 %%%%%%%%%%%%%%%%
  %%% PRIVATE %%%
 %%%%%%%%%%%%%%%%
@@ -169,6 +196,11 @@ sync_dirs(Node, Remote, Dirs) ->
       rpc:call(Node, revault_fsm, sync, [Name, Remote])}
      || Name <- Dirs].
 
+seed_fork(Node, Path, Dirs) ->
+    [{fork, Name, Path,
+      rpc:call(Node, revault_fsm, seed_fork, [Name, Path])}
+     || Name <- Dirs].
+
 show(List) when is_list(List) ->
     [show(X) || X <- List];
 show({config, Path, Config}) ->
@@ -176,7 +208,9 @@ show({config, Path, Config}) ->
 show({scan, Dir, Res}) ->
     io:format("Scanning ~ts: ~p~n", [Dir, Res]);
 show({sync, Dir, Peer, Res}) ->
-    io:format("Syncing ~ts with ~ts: ~p~n", [Dir, Peer, Res]).
+    io:format("Syncing ~ts with ~ts: ~p~n", [Dir, Peer, Res]);
+show({fork, Name, Path, Res}) ->
+    io:format("Forking ~ts in ~p: ~p~n", [Name, Path, Res]).
 
 %% Copied from revault_tls
 make_selfsigned_cert(Dir, CertName) ->
