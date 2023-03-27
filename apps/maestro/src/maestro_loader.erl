@@ -149,7 +149,10 @@ start_client(DirName,
             _ = revault_fsm:id(DirName, PeerName),
             ok;
         _ ->
-            ok = revault_fsm:client(DirName)
+            case revault_fsm:client(DirName) of
+                ok -> ok;
+                {error, busy} -> ok
+            end
     end.
 
 start_servers(Cfg = #{<<"server">> := ServMap}) ->
