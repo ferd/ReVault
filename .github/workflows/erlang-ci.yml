@@ -36,4 +36,6 @@ jobs:
       run: rebar3 check
     - name: Release can be built
       run: rebar3 do release, tar
+    - name: CLI tool can be built
+      run: rebar3 as prod escriptize
 

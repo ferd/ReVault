@@ -155,7 +155,7 @@ seed(_Args = #{node := [NodeStr], path := Path, dirs := Dirs = [_|_]}) ->
         {error, connection_failed} ->
             io:format("Erlang distribution connection to ~p failed.~n", [Node]);
         {error, Posix} ->
-            io:format("Could not ensure path ~p, failed with ~p.~n", [AbsPath, Posix])
+            io:format("Could not ensure path ~p, failed with ~p.~n", [Path, Posix])
     end.
 
 %%%%%%%%%%%%%%%%
