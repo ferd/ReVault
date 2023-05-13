@@ -28,12 +28,12 @@ literal(Config) ->
             <<"music">> := #{
                 <<"interval">> := 60000, % converted to ms
                 <<"path">> := <<"~/Music">>,
-                <<"ignore">> := []
+                <<"ignore">> := [<<"\\.DS_Store$">>]
             },
             <<"images">> := #{
                 <<"interval">> := 60000, % converted to ms
                 <<"path">> := <<"/Users/ferd/images/">>,
-                <<"ignore">> := []
+                <<"ignore">> := [<<"\\.DS_Store$">>, <<"\\.exe$">>]
             }
          },
          <<"peers">> := #{

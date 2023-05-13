@@ -70,7 +70,7 @@ normalize_dir(Key, Map, Acc) ->
            <<"interval">> => maps:get(<<"interval">>, Map,
                                       ?DEFAULT_INTERVAL_SECONDS)*1000,
            <<"path">> => maps:get(<<"path">>, Map),
-           <<"ignore">> => maps:get(<<"ignore">>, Map, [])
+           <<"ignore">> => maps:get(<<"ignore">>, Map, [<<"\\.DS_Store$">>])
           }
     }.
 
