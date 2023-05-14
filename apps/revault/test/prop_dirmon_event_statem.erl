@@ -31,6 +31,7 @@ prop_test() ->
                     ?LISTENER_NAME,
                     #{directory => ?DIR,
                       initial_sync => scan,
+                      ignore => [],
                       poll_interval => 6000000} % too long to interfere
                 ),
                 Listener = spawn_link(fun listener/0),

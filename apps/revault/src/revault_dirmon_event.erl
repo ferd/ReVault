@@ -10,6 +10,7 @@
 
 -record(state, {name :: term(),
                 directory :: file:filename(),
+                ignore :: revault_dirmon_poll:ignore(),
                 poll_delay :: timeout(),
                 poll_ref :: reference(),
                 set :: revault_dirmon_poll:set()}).
@@ -31,17 +32,19 @@ stop(Name) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% GEN_SERVER CALLBACKS %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
-init(#{directory := Dir, poll_interval := Time,
+init(#{directory := Dir, poll_interval := Time, ignore := Ignore,
        name := Name, initial_sync := Mode}) ->
-    {Set, Ref} = initial_sync(Mode, Name, Dir, Time),
+    {Set, Ref} = initial_sync(Mode, Name, Dir, Ignore, Time),
     {ok, #state{name = Name,
                 directory = Dir,
+                ignore = Ignore,
                 poll_delay = Time,
                 poll_ref = Ref,
                 set = Set}}.
 
-handle_call(force_scan, _From, S=#state{name=Name, directory=Dir, set=Set}) ->
-    {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Set),
+handle_call(force_scan, _From,
+            S=#state{name=Name, directory=Dir, ignore=Ignore, set=Set}) ->
+    {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Ignore, Set),
     send_events(Name, Updates),
     {reply, ok, S#state{set = NewSet}};
 handle_call(_, _From, State) ->
@@ -50,9 +53,10 @@ handle_call(_, _From, State) ->
 handle_cast(_, State) ->
     {noreply, State}.
 
-handle_info({timeout, TRef, poll}, S=#state{name=Name, directory=Dir, set=Set,
+handle_info({timeout, TRef, poll}, S=#state{name=Name, directory=Dir,
+                                            ignore=Ignore, set=Set,
                                             poll_delay=Time, poll_ref=TRef}) ->
-    {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Set),
+    {Updates, NewSet} = revault_dirmon_poll:rescan(Dir, Ignore, Set),
     send_events(Name, Updates),
     NewRef = erlang:start_timer(Time, self(), poll),
     {noreply, S#state{poll_ref=NewRef, set=NewSet}};
@@ -73,18 +77,18 @@ send_events(Name, {Del, Add, Mod}) ->
 
 make_event(Name, Event) -> {dirmon, Name, Event}.
 
-initial_sync(scan, _Name, Dir, Time) ->
+initial_sync(scan, _Name, Dir, Ignore, Time) ->
     %% Minimal use case to always start from a fresh state.
-    {revault_dirmon_poll:scan(Dir),
+    {revault_dirmon_poll:scan(Dir, Ignore),
      erlang:start_timer(Time, self(), poll)};
-initial_sync(tracker_manual, Name, _Dir, _Time) ->
+initial_sync(tracker_manual, Name, _Dir, _Ignore, _Time) ->
     %% Mostly used for tests, where we want to avoid scans interfering
     %% with file changes asynchronously and ruin determinism.
     AllFiles = revault_dirmon_tracker:files(Name),
     Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]),
     %% Send in a fake ref, which prevents any timer from ever running
     {Set, make_ref()};
-initial_sync(tracker, Name, _Dir, _Time) ->
+initial_sync(tracker, Name, _Dir, _Ignore, _Time) ->
     %% Normal stateful mode, where we load files and scan ASAP to avoid
     %% getting into modes where long delays mean we are unresponsive
     %% to filesystem changes long after boot.

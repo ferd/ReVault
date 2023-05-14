@@ -3,6 +3,7 @@
 -define(DIR, "_build/test/scratch").
 -define(STORE, "_build/test/scratchstore").
 -define(LISTENER_NAME, {?MODULE, ?DIR}).
+-define(IGNORE, []).
 -define(ITC_SEED, element(1, itc:explode(itc:seed()))).
 -compile(export_all).
 
@@ -34,6 +35,7 @@ prop_test() ->
                 {ok, _Listener} = revault_dirmon_tracker:start_link(
                     ?LISTENER_NAME,
                     ?DIR,
+                    ?IGNORE,
                     ?STORE,
                     ?ITC_SEED
                 ),
@@ -41,6 +43,7 @@ prop_test() ->
                     ?LISTENER_NAME,
                     #{directory => ?DIR,
                       initial_sync => tracker_manual,
+                      ignore => [],
                       poll_interval => 6000000} % too long to interfere
                 ),
                 {History, State, Result} = run_commands(?MODULE, Cmds),
@@ -73,6 +76,7 @@ prop_monotonic() ->
             {ok, Listener} = revault_dirmon_tracker:start_link(
                 ?LISTENER_NAME,
                 ?DIR,
+                ?IGNORE,
                 undefined,
                 Id
             ),
@@ -235,7 +239,7 @@ file_deleted(File, Dir, Model, Ops) ->
 
 restart_tracker() ->
     revault_dirmon_tracker:stop(?LISTENER_NAME),
-    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?DIR, ?STORE, ?ITC_SEED).
+    revault_dirmon_tracker:start_link(?LISTENER_NAME, ?DIR, ?IGNORE, ?STORE, ?ITC_SEED).
 
 restart_event() ->
     revault_dirmon_event:stop(?LISTENER_NAME),
@@ -243,6 +247,7 @@ restart_event() ->
         ?LISTENER_NAME,
         #{directory => ?DIR,
           initial_sync => tracker_manual,
+          ignore => ?IGNORE,
           poll_interval => 6000000} % too long to interfere
     ).
 

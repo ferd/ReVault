@@ -4,6 +4,7 @@
 -compile(export_all).
 
 -define(UUID_RECORD_POS, 4).
+-define(ID_RECORD_POS, 6).
 
 all() ->
     [start_hierarchy,
@@ -129,6 +130,7 @@ init_per_testcase(Case, Config) when Case =:= start_hierarchy;
     [{db_dir, DbDir},
      {path, Path},
      {name, Name},
+     {ignore, []},
      {interval, Interval},
      {apps, Apps} | Config];
 init_per_testcase(Case, Config) ->
@@ -137,6 +139,7 @@ init_per_testcase(Case, Config) ->
     CbInit = ?config(callback, Config),
     DbDir = filename:join([Priv, "db"]),
     Path = filename:join([Priv, "data", "client"]),
+    Ignore = [],
     ServerPath = filename:join([Priv, "data", "server"]),
     %% ensure directories exist
     filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
@@ -147,13 +150,14 @@ init_per_testcase(Case, Config) ->
     Interval = 100000000, % don't scan yet
     %% Starting the hierarchy
     {ok, Sup} = revault_sup:start_link(),
-    {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Interval,
+    {ok, Fsm} = revault_fsm_sup:start_fsm(DbDir, ServerName, ServerPath, Ignore, Interval,
                                           CbInit(ServerName)),
     ok = revault_fsm:server(ServerName), %% sets up the ID and parks itself in server state.
     [{db_dir, DbDir},
      {path, Path},
      {server_path, ServerPath},
      {name, Name},
+     {ignore, Ignore},
      {interval, Interval},
      {sup, Sup}, {fsm, Fsm},
      {server, ServerName},
@@ -183,6 +187,7 @@ start_hierarchy(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config)
     ),
     %% The FSM is alive and we know it, declare it a server so it self-initializes
@@ -222,6 +227,7 @@ client_id(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Name)
     ),
@@ -243,6 +249,7 @@ client_id(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config)
     ),
     %% See that we have a tracker going even without defining a role
@@ -265,6 +272,7 @@ client_no_server(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(nohost_callback, Config))(Name)
     ),
@@ -292,6 +300,7 @@ fork_server_save(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Name)
     ),
@@ -305,7 +314,7 @@ fork_server_save(Config) ->
     ?assertEqual(ServId2, binary_to_term(BinId)),
     %% Check worker ID, peek into internal state even if brittle.
     State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
-    ?assertEqual(ServId2, element(5, State)),
+    ?assertEqual(ServId2, element(?ID_RECORD_POS, State)),
     ok.
 
 seed_fork() ->
@@ -323,6 +332,7 @@ seed_fork(Config) ->
         ?config(db_dir, Config),
         Name,
         ?config(path, Config),
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Name)
     ),
@@ -338,9 +348,9 @@ seed_fork(Config) ->
     ?assertEqual(ServId2, binary_to_term(BinId)),
     %% Check worker ID, peek into internal state even if brittle.
     State = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Server}}}),
-    ?assertEqual(ServId2, element(5, State)),
+    ?assertEqual(ServId2, element(?ID_RECORD_POS, State)),
     CliState = sys:get_state({via, gproc, {n, l, {revault_dirmon_tracker, Name}}}),
-    ?assertEqual(ClientId, element(5, CliState)),
+    ?assertEqual(ClientId, element(?ID_RECORD_POS, CliState)),
     ok.
 
 basic_sync() ->
@@ -357,6 +367,7 @@ basic_sync(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),
@@ -442,6 +453,7 @@ delete_sync(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),
@@ -491,6 +503,7 @@ too_many_clients(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),
@@ -503,7 +516,9 @@ too_many_clients(Config) ->
     Path = filename:join([Priv, "data", "client_2"]),
     filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
     filelib:ensure_dir(filename:join([Path, "fakefile"])),
-    {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path, ?config(interval, Config),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir, Client2, Path,
+                                        ?config(ignore, Config),
+                                        ?config(interval, Config),
                                         (?config(callback, Config))(Client2)),
     ok = revault_fsm:client(Client2),
     %% Since each sync calls for its own Remote, we can assume we can safely
@@ -555,6 +570,7 @@ overwrite_sync_clash(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),
@@ -604,6 +620,7 @@ conflict_sync(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),
@@ -616,7 +633,8 @@ conflict_sync(Config) ->
     ClientPath2 = filename:join([Priv, "data", "client_2"]),
     filelib:ensure_dir(filename:join([DbDir2, "fakefile"])),
     filelib:ensure_dir(filename:join([ClientPath2, "fakefile"])),
-    {ok, _} = revault_fsm_sup:start_fsm(DbDir2, Client2, ClientPath2, ?config(interval, Config),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir2, Client2, ClientPath2,
+                                        ?config(ignore, Config),  ?config(interval, Config),
                                         (?config(callback, Config))(Client2)),
     ok = revault_fsm:client(Client2),
     ?assertMatch({ok, _}, revault_fsm:id(Client2, Remote)),
@@ -684,6 +702,7 @@ prevent_server_clash(Config) ->
         ?config(db_dir, Config),
         Client,
         ClientPath,
+        ?config(ignore, Config),
         ?config(interval, Config),
         (?config(callback, Config))(Client)
     ),

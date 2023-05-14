@@ -40,7 +40,7 @@ initial_state() ->
 command(#{model := T, set := Set}) ->
     Calls = [
         ?LAZY(dirmodel:file_add(?DIR, T)),
-        {call, revault_dirmon_poll, rescan, [?DIR, Set]}
+        {call, revault_dirmon_poll, rescan, [?DIR, [], Set]}
     ]
     ++ case dirmodel:has_files(T) of
         false ->
@@ -77,7 +77,7 @@ postcondition(_State, {call, _, change_file, _}, ok) ->
     true;
 postcondition(_State, {call, _, delete_file, _}, ok) ->
     true;
-postcondition(State, {call, _, rescan, [_, _]}, Ret) ->
+postcondition(State, {call, _, rescan, [_, _, _]}, Ret) ->
     {ExpDel, ExpAdd, ExpMod} = merge_ops(
         [{Op, {F,C}} || {Op, {F,C}} <- maps:get(ops, State)],
         maps:get(snapshot, State)

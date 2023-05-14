@@ -131,6 +131,7 @@ start_client(DirName,
              Cfg=#{<<"db">> := #{<<"path">> := DbDir}, <<"dirs">> := DirsMap},
              PeerName, PeerCfg) ->
     #{DirName := #{<<"interval">> := Interval,
+                   <<"ignore">> := Ignore,
                    <<"path">> := Path}} = DirsMap,
     %% Clients can depend on multiple peers, which can all be valid;
     %% it's possible that only one of the many peers is available at
@@ -139,7 +140,7 @@ start_client(DirName,
     %% existed locally.
     #{<<"auth">> := #{<<"type">> := AuthType}} = PeerCfg,
     Cb = (callback_mod(AuthType)):callback({DirName, Cfg}),
-    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Interval, Cb),
+    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
     case revault_fsm:id(DirName) of
         undefined ->
             ok = revault_fsm:client(DirName),
@@ -175,9 +176,10 @@ start_server(DirName,
              Cfg=#{<<"db">> := #{<<"path">> := DbDir}, <<"dirs">> := DirsMap},
              Type) ->
     #{DirName := #{<<"interval">> := Interval,
+                   <<"ignore">> := Ignore,
                    <<"path">> := Path}} = DirsMap,
     Cb = (callback_mod(Type)):callback({DirName, Cfg}),
-    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Interval, Cb),
+    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
     case revault_fsm:id(DirName) of
         undefined ->
             ok = revault_fsm:server(DirName);

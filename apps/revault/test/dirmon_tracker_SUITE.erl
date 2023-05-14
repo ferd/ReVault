@@ -51,6 +51,7 @@ init_per_testcase(Name, Config) ->
     {ok, Tracker} = revault_dirmon_tracker:start_link(
         Name,
         FilesDir,
+        [],
         filename:join([StoreDir, "snapshot"]),
         revault_id:new()
     ),
@@ -58,6 +59,7 @@ init_per_testcase(Name, Config) ->
         Name,
         #{directory => FilesDir,
           initial_sync => tracker,
+          ignore => [],
           poll_interval => 6000000} % too long to interfere
     ),
     [{name, Name}, {tracker, Tracker}, {event, Event}, {apps, Apps},

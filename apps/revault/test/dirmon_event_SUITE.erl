@@ -27,7 +27,7 @@ scan_with_timeouts(Config) ->
     {ok, _} = revault_dirmon_event:start_link(
       {?MODULE, ?FUNCTION_NAME},
       #{directory => PrivDir, poll_interval => 10,
-        initial_sync => scan}
+        ignore => [], initial_sync => scan}
     ),
     ok = file:write_file(AbsFile, "text"),
     H0 = receive
@@ -58,7 +58,7 @@ survive_unexpected_msgs(Config) ->
     {ok, Pid} = revault_dirmon_event:start_link(
       {?MODULE, ?FUNCTION_NAME},
       #{directory => PrivDir, poll_interval => 1000000,
-        initial_sync => scan}
+        ignore => [], initial_sync => scan}
     ),
     Pid ! make_ref(),
     gen_server:cast(Pid, make_ref()),
