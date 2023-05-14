@@ -47,7 +47,7 @@ stop(Name) ->
 update_id(Name, Id) ->
     gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
 
--spec conflict(term(), file:filename_all(), {stamp(), deleted}) -> ok.
+-spec conflict(term(), file:filename_all(), {stamp(), deleted}) -> ok | ignored.
 conflict(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, Vsn}, infinity).
 

@@ -139,7 +139,7 @@ init_per_testcase(Case, Config) ->
     CbInit = ?config(callback, Config),
     DbDir = filename:join([Priv, "db"]),
     Path = filename:join([Priv, "data", "client"]),
-    Ignore = [],
+    Ignore = ["ignorable"],
     ServerPath = filename:join([Priv, "data", "server"]),
     %% ensure directories exist
     filelib:ensure_dir(filename:join([DbDir, "fakefile"])),
@@ -375,6 +375,8 @@ basic_sync(Config) ->
     {ok, _ClientId} = revault_fsm:id(Client, Remote),
     %% now in initialized mode
     %% Write files
+    ok = file:write_file(filename:join([ClientPath, "client-ignorable"]), "--"),
+    ok = file:write_file(filename:join([ServerPath, "server-ignorable"]), "--"),
     ok = file:write_file(filename:join([ClientPath, "client-only"]), "c1"),
     ok = file:write_file(filename:join([ServerPath, "server-only"]), "s1"),
     ok = file:write_file(filename:join([ServerPath, "shared"]), "sh1"),
@@ -388,6 +390,8 @@ basic_sync(Config) ->
     %% 1. all unmodified files are left in place
     ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client-only"]))),
     ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    ?assertEqual({ok, <<"--">>}, file:read_file(filename:join([ClientPath, "client-ignorable"]))),
+    ?assertEqual({ok, <<"--">>}, file:read_file(filename:join([ServerPath, "server-ignorable"]))),
     %% 2. conflicting files are marked, with the working files left intact
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
     ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath, "shared"]))),
@@ -431,12 +435,16 @@ basic_sync(Config) ->
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ServerPath, "shared"]))),
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath, "shared"]))),
     ?assertEqual({ok, <<"c2">>}, file:read_file(filename:join([ServerPath, "client-2"]))),
+    ?assertEqual({ok, <<"--">>}, file:read_file(filename:join([ClientPath, "client-ignorable"]))),
+    ?assertEqual({ok, <<"--">>}, file:read_file(filename:join([ServerPath, "server-ignorable"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.conflict"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.D6BE7FB8"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared.1C56416E"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.conflict"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.D6BE7FB8"]))),
     ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared.1C56416E"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "client-ignorable"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "server-ignorable"]))),
     ok.
 
 delete_sync() ->
