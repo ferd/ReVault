@@ -5,7 +5,7 @@
 -module(revault_dirmon_tracker).
 -behviour(gen_server).
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
--export([start_link/4, stop/1, file/2, files/1]).
+-export([start_link/5, stop/1, file/2, files/1]).
 -export([update_id/2, conflict/3, conflict/4, update_file/4, delete_file/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -26,13 +26,14 @@
                           revault_dirmon_poll:hash() | deleted}
                         }},
     dir :: file:filename_all(),
+    ignore :: revault_dirmon_poll:ignore(),
     storage = undefined :: file:filename_all() | undefined,
     itc_id :: itc:id()
 }).
 
-start_link(Name, Dir, File, VsnSeed) ->
+start_link(Name, Dir, Ignore, File, VsnSeed) ->
     gen_server:start_link(?VIA_GPROC(Name), ?MODULE,
-                          [Name, Dir, VsnSeed, File], []).
+                          [Name, Dir, Ignore, VsnSeed, File], []).
 
 file(Name, File) ->
     gen_server:call(?VIA_GPROC(Name), {file, File}).
@@ -46,12 +47,12 @@ stop(Name) ->
 update_id(Name, Id) ->
     gen_server:call(?VIA_GPROC(Name), {update_id, Id}, infinity).
 
--spec conflict(term(), file:filename_all(), {stamp(), deleted}) -> ok.
+-spec conflict(term(), file:filename_all(), {stamp(), deleted}) -> ok | ignored.
 conflict(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, Vsn}, infinity).
 
 -spec conflict(term(), file:filename_all(), file:filename_all(),
-               {stamp(), revault_dirmon_poll:hash()}) -> ok.
+               {stamp(), revault_dirmon_poll:hash()}) -> ok | ignored.
 conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
 
@@ -65,12 +66,13 @@ delete_file(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
 %%% CALLBACKS %%%
 %%%%%%%%%%%%%%%%%
 
-init([Name, Dir, VsnSeed, File]) ->
-    Snapshot = restore_snapshot(File),
+init([Name, Dir, Ignore, VsnSeed, File]) ->
+    Snapshot = restore_snapshot(File, Ignore),
     true = gproc:reg({p, l, Name}),
     {ok, #state{
         snapshot = Snapshot,
         dir = Dir,
+        ignore = Ignore,
         storage = File,
         itc_id = VsnSeed
     }}.
@@ -91,7 +93,11 @@ handle_call({update_id, ITC}, _From, State = #state{}) ->
     save_snapshot(NewState),
     {reply, ok, NewState};
 handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
-            State = #state{snapshot=Map, dir=Dir, itc_id=Id}) ->
+            State = #state{snapshot=Map, dir=Dir, ignore=Ignore, itc_id=Id}) ->
+    case processable(Work, Ignore) of
+        false -> throw({reply, ignored, State});
+        true -> ok
+    end,
     NewConflict = case Map of
         #{Work := {Stamp, {conflict, ConflictHashes, WorkingHash}}} ->
             %% A conflict already existed; add to it.
@@ -133,7 +139,11 @@ handle_call({conflict, Work, Conflict, {NewStamp, NewHash}}, _From,
     save_snapshot(NewState),
     {reply, ok, NewState};
 handle_call({conflict, Work, {NewStamp, deleted}}, _From,
-            State = #state{snapshot=Map, dir=Dir, itc_id=Id}) ->
+            State = #state{snapshot=Map, dir=Dir, ignore=Ignore, itc_id=Id}) ->
+    case processable(Work, Ignore) of
+        false -> throw({reply, ignored, State});
+        true -> ok
+    end,
     NewConflict = case Map of
         #{Work := {Stamp, {conflict, ConflictHashes, WorkingHash}}} ->
             %% A conflict already existed; nothing to do with the conflict
@@ -158,7 +168,11 @@ handle_call({conflict, Work, {NewStamp, deleted}}, _From,
     save_snapshot(NewState),
     {reply, ok, NewState};
 handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
-            State = #state{snapshot=Map, dir=Dir, itc_id=Id}) ->
+            State = #state{snapshot=Map, dir=Dir, ignore=Ignore,  itc_id=Id}) ->
+    case processable(Work, Ignore) of
+        false -> throw({reply, ignored, State});
+        true -> ok
+    end,
     case Map of
         #{Work := {Stamp, {conflict, Hashes, _}}} ->
             case compare(Id, Stamp, NewStamp) of
@@ -199,7 +213,11 @@ handle_call({update_file, Work, Source, {NewStamp, NewHash}}, _From,
             {reply, ok, NewState}
     end;
 handle_call({delete_file, Work, {NewStamp, deleted}}, _From,
-            State = #state{snapshot=Map, dir=Dir, itc_id=Id}) ->
+            State = #state{snapshot=Map, dir=Dir, ignore=Ignore, itc_id=Id}) ->
+    case processable(Work, Ignore) of
+        false -> throw({reply, ignored, State});
+        true -> ok
+    end,
     case Map of
         #{Work := {Stamp, {conflict, Hashes, _}}} ->
             case compare(Id, Stamp, NewStamp) of
@@ -321,12 +339,12 @@ apply_operation({changed, {FileName, Hash}}, SetMap, ITC, _Dir) ->
             SetMap
     end.
 
-restore_snapshot(File) ->
+restore_snapshot(File, Ignore) ->
     case file:consult(File) of
         {error, enoent} ->
             #{};
         {ok, [Snapshot]} ->
-            Snapshot
+            apply_ignores(Snapshot, Ignore)
     end.
 
 save_snapshot(#state{storage = undefined}) ->
@@ -405,3 +423,11 @@ resolve_conflict(Dir, BaseFile, Hashes) ->
      )) || ConflictHash <- Hashes],
     ok.
 
+%% @private the Ignore set can change across various runs. We can apply
+%% the ignore set on the snapshot to prune the files that are no longer
+%% desired in it.
+apply_ignores(Snapshot, Ignore) ->
+    maps:filter(fun(K,_) -> processable(K, Ignore) end, Snapshot).
+
+processable(FileName, Ignore) ->
+    revault_dirmon_poll:processable(FileName, Ignore).

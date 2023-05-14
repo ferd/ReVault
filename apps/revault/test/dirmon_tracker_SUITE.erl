@@ -7,7 +7,8 @@ all() ->
     [{group, update},
      {group, delete},
      conflict_creation,
-     {group, conflict_resolution}].
+     {group, conflict_resolution},
+     {group, ignores}].
 
 groups() ->
     [{conflict_resolution, [], [
@@ -31,6 +32,10 @@ groups() ->
         delete_conflict,
         delete_conflict_resolve,
         delete_conflict_older
+     ]},
+     {ignores, [], [
+        ignore_older,
+        ignore_incoming
      ]}
     ].
 
@@ -40,32 +45,61 @@ groups() ->
     %%       from the tracked file
     %% TODO: weird ass things like moving conflicting files around
 
-init_per_testcase(Name, Config) ->
+init_per_testcase(ignore_incoming, Config) ->
+    Name = ?config(name, Config),
     {ok, Apps} = application:ensure_all_started(gproc),
     FilesDir = filename:join([?config(priv_dir, Config), "files"]),
     StoreDir = filename:join([?config(priv_dir, Config), "store"]),
     TmpDir = filename:join([?config(priv_dir, Config), "tmp"]),
+    ID = revault_id:new(),
     ok = filelib:ensure_dir(filename:join([FilesDir, ".touch"])),
     ok = filelib:ensure_dir(filename:join([StoreDir, ".touch"])),
     ok = filelib:ensure_dir(filename:join([TmpDir, ".touch"])),
     {ok, Tracker} = revault_dirmon_tracker:start_link(
         Name,
         FilesDir,
+        ["ignorable"],
         filename:join([StoreDir, "snapshot"]),
-        revault_id:new()
+        ID
     ),
     {ok, Event} = revault_dirmon_event:start_link(
         Name,
         #{directory => FilesDir,
           initial_sync => tracker,
+          ignore => ["ignorable"],
           poll_interval => 6000000} % too long to interfere
     ),
-    [{name, Name}, {tracker, Tracker}, {event, Event}, {apps, Apps},
+    [{name, Name}, {id, ID}, {tracker, Tracker}, {event, Event}, {apps, Apps},
+     {files_dir, FilesDir}, {tmp_dir, TmpDir}, {store_dir, StoreDir} | Config];
+init_per_testcase(Name, Config) ->
+    {ok, Apps} = application:ensure_all_started(gproc),
+    FilesDir = filename:join([?config(priv_dir, Config), "files"]),
+    StoreDir = filename:join([?config(priv_dir, Config), "store"]),
+    TmpDir = filename:join([?config(priv_dir, Config), "tmp"]),
+    ID = revault_id:new(),
+    ok = filelib:ensure_dir(filename:join([FilesDir, ".touch"])),
+    ok = filelib:ensure_dir(filename:join([StoreDir, ".touch"])),
+    ok = filelib:ensure_dir(filename:join([TmpDir, ".touch"])),
+    {ok, Tracker} = revault_dirmon_tracker:start_link(
+        Name,
+        FilesDir,
+        [],
+        filename:join([StoreDir, "snapshot"]),
+        ID
+    ),
+    {ok, Event} = revault_dirmon_event:start_link(
+        Name,
+        #{directory => FilesDir,
+          initial_sync => tracker,
+          ignore => [],
+          poll_interval => 6000000} % too long to interfere
+    ),
+    [{name, Name}, {id, ID}, {tracker, Tracker}, {event, Event}, {apps, Apps},
      {files_dir, FilesDir}, {tmp_dir, TmpDir}, {store_dir, StoreDir} | Config].
 
 end_per_testcase(_, Config) ->
-    gen_server:stop(?config(event, Config)),
-    gen_server:stop(?config(tracker, Config)),
+    catch gen_server:stop(?config(event, Config)),
+    catch gen_server:stop(?config(tracker, Config)),
     [application:stop(App) || App <- lists:reverse(?config(apps, Config))],
     Config.
 
@@ -687,6 +721,51 @@ delete_conflict_older(Config) ->
     ?assertMatch({ok, _}, file:read_file(AbsConflictMarker)),
     ?assertMatch({error, enoent}, file:read_file(AbsConflictA)), % created on opposed end sync
     ?assertMatch({ok, _}, file:read_file(AbsConflictB)),
+    ok.
+
+ignore_older() ->
+    [{doc, "Ignoring a file that was previously not ignores prunes it "
+           "from the tracker at start time."}].
+ignore_older(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    StoreDir = ?config(store_dir, Config),
+    FilesDir = ?config(files_dir, Config),
+    ID = ?config(id, Config),
+    WorkFile = "ignorable",
+    AbsWorkFile = filename:join([Dir, WorkFile]),
+    ok = file:write_file(AbsWorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertMatch(#{WorkFile := _}, revault_dirmon_tracker:files(Name)),
+    gen_server:stop(?config(tracker, Config)),
+    {ok, NewTracker} = revault_dirmon_tracker:start_link(
+        Name,
+        FilesDir,
+        ["ignorable"],
+        filename:join([StoreDir, "snapshot"]),
+        ID
+    ),
+    ?assertNotMatch(#{WorkFile := _}, revault_dirmon_tracker:files(Name)),
+    gen_server:stop(NewTracker),
+    ok.
+
+ignore_incoming() ->
+    [{doc, "Ignoring a file prevents it from being tracked."}].
+ignore_incoming(Config) ->
+    Name = ?config(name, Config),
+    Dir = ?config(files_dir, Config),
+    TmpFile = filename:join([?config(tmp_dir, Config), "ignorable"]),
+    WorkFile = "ignorable",
+    AbsWorkFile = filename:join([Dir, WorkFile]),
+    FakeMeta = {1, <<"hash">>},
+    DelMeta = {1, deleted},
+    ok = file:write_file(AbsWorkFile, <<"a">>),
+    ok = revault_dirmon_event:force_scan(Name, 5000),
+    ?assertNotMatch(#{WorkFile := _}, revault_dirmon_tracker:files(Name)),
+    ?assertEqual(ignored, revault_dirmon_tracker:conflict(Name, WorkFile, AbsWorkFile, FakeMeta)),
+    ?assertEqual(ignored, revault_dirmon_tracker:conflict(Name, WorkFile, DelMeta)),
+    ?assertEqual(ignored, revault_dirmon_tracker:update_file(Name, WorkFile, TmpFile, FakeMeta)),
+    ?assertEqual(ignored, revault_dirmon_tracker:delete_file(Name, WorkFile, DelMeta)),
     ok.
 
 %%%%%%%%%%%%%%%

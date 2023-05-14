@@ -33,7 +33,7 @@
 %%% ```
 -module(revault_fsm).
 -behaviour(gen_statem).
--export([start_link/4, start_link/5,
+-export([start_link/5, start_link/6,
          server/1, client/1, id/1, id/2, sync/2,
          seed_fork/2, seed_fork/3]).
 -export([%% Lifecycle
@@ -105,6 +105,7 @@
           db_dir,
           name,
           path,
+          ignore,
           interval,
           callback,
           ctx=[],
@@ -118,6 +119,7 @@
           uuid,
           name,
           path,
+          ignore,
           interval,
           callback,
           ctx=[],
@@ -136,11 +138,11 @@
 %  interval = 60
 %  path = "/Users/ferd/images/"
 %  ignore = [] # regexes on full path
-start_link(DbDir, Name, Path, Interval) ->
-    start_link(DbDir, Name, Path, Interval, revault_disterl).
+start_link(DbDir, Name, Path, Ignore, Interval) ->
+    start_link(DbDir, Name, Path, Ignore, Interval, revault_disterl).
 
-start_link(DbDir, Name, Path, Interval, Callback) ->
-    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Interval, Callback}, ?DEBUG_OPTS).
+start_link(DbDir, Name, Path, Ignore, Interval, Callback) ->
+    gen_statem:start_link(?registry(Name), ?MODULE, {DbDir, Name, Path, Ignore, Interval, Callback}, ?DEBUG_OPTS).
 
 -spec server(name()) -> ok | {error, busy}.
 server(Name) ->
@@ -178,18 +180,19 @@ seed_fork(Name, ForkName, ForkDir) ->
 callback_mode() ->
     [state_functions, state_enter].
 
-init({DbDir, Name, Path, Interval, Callback}) ->
+init({DbDir, Name, Path, Ignore, Interval, Callback}) ->
     process_flag(trap_exit, true),
     Id = init_id(DbDir, Name),
     UUID = init_uuid(DbDir, Name),
     case Id of
         undefined ->
             {ok, uninitialized,
-             #uninit{db_dir=DbDir, name=Name, path=Path, interval=Interval,
-                     callback=Callback}};
+             #uninit{db_dir=DbDir, name=Name, path=Path, ignore=Ignore,
+                     interval=Interval, callback=Callback}};
         _ ->
             {ok, initialized,
-             #data{db_dir=DbDir, name=Name, path=Path, interval=Interval,
+             #data{db_dir=DbDir, name=Name, path=Path, ignore=Ignore,
+                   interval=Interval,
                    id = Id, uuid = UUID,
                    callback = Callback}}
     end.
@@ -212,14 +215,14 @@ uninitialized({call, From}, {role, client}, Data) ->
 
 server_init(enter, uninitialized, Data) ->
     {keep_state, Data};
-server_init(internal, init, #uninit{name=Name, db_dir=DbDir, path=Path,
+server_init(internal, init, #uninit{name=Name, db_dir=DbDir, path=Path, ignore=Ignore,
                                     interval=Interval, callback=Cb}) ->
     Id = revault_data_wrapper:new(),
     UUID = uuid:get_v4(),
     ok = store_uuid(DbDir, Name, UUID),
     ok = store_id(DbDir, Name, Id),
     %% tracker couldn't have been booted yet
-    {ok, _} = start_tracker(Name, Id, Path, Interval, DbDir),
+    {ok, _} = start_tracker(Name, Id, Path, Ignore, Interval, DbDir),
     {next_state, server,
      #data{db_dir=DbDir, name=Name, path=Path, interval=Interval, callback=Cb,
            id=Id, uuid=UUID}};
@@ -414,12 +417,12 @@ client_id_sync(info, {revault, Marker, {error, _R}},
       {next_event, internal, {disconnect, Remote}}]};
 client_id_sync(info, {revault, Marker, {reply, {NewId,UUID}}},
                Data=#uninit{sub=#id_sync{from=From, marker=Marker, remote=Remote}}) ->
-    #uninit{db_dir=Dir, name=Name, path=Path, interval=Interval,
+    #uninit{db_dir=Dir, name=Name, path=Path, ignore=Ignore, interval=Interval,
             callback=Cb} = Data,
     ok = store_uuid(Dir, Name, UUID),
     ok = store_id(Dir, Name, NewId),
     %% tracker couldn't have been booted yet
-    {ok, _} = start_tracker(Name, NewId, Path, Interval, Dir),
+    {ok, _} = start_tracker(Name, NewId, Path, Ignore, Interval, Dir),
     %% Disconnect before moving on
     Disconnect = #disconnect{next_state = initialized},
     {next_state, disconnect,
@@ -430,9 +433,10 @@ client_id_sync(info, {revault, Marker, {reply, {NewId,UUID}}},
 client_id_sync(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-initialized(enter, _, Data=#data{name=Name, id=Id, path=Path, interval=Interval, db_dir=DbDir}) ->
+initialized(enter, _, Data=#data{name=Name, id=Id, path=Path,
+                                 ignore=Ignore, interval=Interval, db_dir=DbDir}) ->
     ?end_span(), % if any
-    _ = start_tracker(Name, Id, Path, Interval, DbDir),
+    _ = start_tracker(Name, Id, Path, Ignore, Interval, DbDir),
     {keep_state, Data};
 initialized({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
@@ -834,8 +838,8 @@ store_uuid(Dir, Name, UUID) ->
     ok = file:write_file(PathTmp, term_to_binary(UUID)),
     ok = file:rename(PathTmp, Path).
 
-start_tracker(Name, Id, Path, Interval, DbDir) ->
-    revault_trackers_sup:start_tracker(Name, Id, Path, Interval, DbDir).
+start_tracker(Name, Id, Path, Ignore, Interval, DbDir) ->
+    revault_trackers_sup:start_tracker(Name, Id, Path, Ignore, Interval, DbDir).
 
 diff_manifests(Id, LocalMap, RemoteMap) when is_map(LocalMap), is_map(RemoteMap) ->
     diff_manifests(Id,

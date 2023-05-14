@@ -8,7 +8,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_fsm/4, start_fsm/5, stop_all/0]).
+-export([start_link/0, start_fsm/5, start_fsm/6, stop_all/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -22,11 +22,11 @@
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
-start_fsm(DbDir, Name, Path, Interval) ->
-    supervisor:start_child(?SERVER, [DbDir, Name, Path, Interval]).
+start_fsm(DbDir, Name, Path, Ignore, Interval) ->
+    supervisor:start_child(?SERVER, [DbDir, Name, Path, Ignore, Interval]).
 
-start_fsm(DbDir, Name, Path, Interval, Callback) ->
-    supervisor:start_child(?SERVER, [DbDir, Name, Path, Interval, Callback]).
+start_fsm(DbDir, Name, Path, Ignore, Interval, Callback) ->
+    supervisor:start_child(?SERVER, [DbDir, Name, Path, Ignore, Interval, Callback]).
 
 stop_all() ->
     [supervisor:terminate_child(?SERVER, Pid)

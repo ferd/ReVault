@@ -9,7 +9,7 @@
   [dirs.images]
   interval = 60
   path = "/Users/ferd/images/"
-  ignore = [] # regexes on full path
+  ignore = ["\\.DS_Store$", "\\.exe$"] # regexes on full path
 
 [peers]
   # VPS copy running
