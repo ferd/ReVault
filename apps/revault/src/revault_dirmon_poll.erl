@@ -30,7 +30,7 @@ scan(Dir, Ignore) ->
              false ->
                  Acc;
              true ->
-                 {ok, Bin} = file:read_file(File),
+                 {ok, Bin} = revault_file:read_file(File),
                  Hash = hash(Bin),
                  RelativeFile = revault_file:make_relative(Dir, File),
                  [{RelativeFile, Hash} | Acc]

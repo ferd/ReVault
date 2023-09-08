@@ -1,5 +1,10 @@
 -module(revault_file).
--export([make_relative/2, copy/2, tmp/0, tmp/1, extension/2]).
+-export([make_relative/2,
+         copy/2,
+         tmp/0, tmp/1, extension/2,
+         %% wrappers to file module
+         delete/1, consult/1, read_file/1,
+         write_file/2, write_file/3, rename/2]).
 
 %% @doc makes path `File' relative to `Dir', such that if you pass in
 %% `/a/b/c/d.txt' and the `Dir' path `/a/b', you get `c/d.txt'.
@@ -33,6 +38,45 @@ copy(From, To) ->
     ok = filelib:ensure_dir(To),
     {ok, _} = file:copy(From, TmpFile),
     file:rename(TmpFile, To).
+
+%% @doc Deletes a file.
+-spec delete(file:filename_all()) -> ok | {error, badarg | file:posix()}.
+delete(Path) ->
+    file:delete(Path).
+
+%% @doc Reads Erlang terms, separated by '.', from Filename.
+-spec consult(file:filename_all()) -> {ok, [term()]} | {error, Reason}
+        when Reason :: file:posix()
+                     | badarg | terminated | system_limit
+                     | {integer(), module(), term()}.
+consult(Path) ->
+    file:consult(Path).
+
+%% @doc Reads the whole file.
+-spec read_file(file:filename_all()) -> {ok, binary()} | {error, badarg | file:posix()}.
+read_file(Path) ->
+    file:read_file(Path).
+
+%% @doc Writes the content to the file mentioned.  The file is created if it
+%% does not exist. If it exists, the previous contents are overwritten.
+-spec write_file(file:filename_all(), iodata()) -> ok | {error, badarg | file:posix()}.
+write_file(Path, Data) ->
+    file:write_file(Path, Data).
+
+%% @doc Writes the content to the file mentioned.  The file is created if it
+%% does not exist. If it exists, the previous contents are overwritten.
+-spec write_file(file:filename_all(), iodata(), [Mode]) ->
+        ok | {error, badarg | file:posix()}
+    when Mode :: read | write | append | exclusive | raw | binary | sync.
+write_file(Path, Data, Modes) ->
+    file:write_file(Path, Data, Modes).
+
+%% @doc Tries to rename the file Source to Destination.
+-spec rename(Source, Destination) -> ok | {error, badarg | file:posix()}
+    when Source :: file:filename_all(),
+         Destination :: file:filename_all().
+rename(Source, Destination) ->
+    file:rename(Source, Destination).
 
 %% @doc returns the name of a file using a safe temporary path. Relies
 %% on the instantiation of a cached value for a safe temporary directory

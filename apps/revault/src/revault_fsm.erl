@@ -548,7 +548,7 @@ client_sync_files(internal, {send, File},
             %% TODO: optimize to read and send files in parts rather than
             %% just reading it all at once and loading everything in memory
             %% and shipping it in one block
-            {ok, Bin} = file:read_file(filename:join(Path, File)),
+            {ok, Bin} = revault_file:read_file(filename:join(Path, File)),
             revault_data_wrapper:send_file(File, Vsn, Hash, Bin)
     end,
     %% TODO: track the success or failures of transfers, detect disconnections
@@ -612,9 +612,9 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
            %% TODO: handle the file being corrupted vs its own hash
            TmpF = revault_file:tmp(F),
            filelib:ensure_dir(TmpF),
-           ok = file:write_file(TmpF, Bin),
+           ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
-           file:delete(TmpF)
+           revault_file:delete(TmpF)
         end
     ),
     case CountLeft =:= 0 andalso Acc -- [WorkF] of
@@ -765,9 +765,9 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
        fun(_SpanCtx) ->
            TmpF = revault_file:tmp(F),
            filelib:ensure_dir(TmpF),
-           ok = file:write_file(TmpF, Bin),
+           ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
-           file:delete(TmpF)
+           revault_file:delete(TmpF)
        end
     ),
     {keep_state, Data};
@@ -811,14 +811,14 @@ apply_cb(Mod, F, Args) when is_atom(Mod) ->
 
 init_id(Dir, Name) ->
     Path = filename:join([Dir, Name, "id"]),
-    case file:read_file(Path) of
+    case revault_file:read_file(Path) of
         {error, enoent} -> undefined;
         {ok, Bin} -> binary_to_term(Bin)
     end.
 
 init_uuid(Dir, Name) ->
     Path = filename:join([Dir, Name, "uuid"]),
-    case file:read_file(Path) of
+    case revault_file:read_file(Path) of
         {error, enoent} -> undefined;
         {ok, Bin} -> binary_to_term(Bin)
     end.
@@ -828,15 +828,15 @@ store_id(Dir, Name, Id) ->
     Path = filename:join([Dir, Name, "id"]),
     PathTmp = filename:join([Dir, Name, "id.tmp"]),
     ok = filelib:ensure_dir(Path),
-    ok = file:write_file(PathTmp, term_to_binary(Id)),
-    ok = file:rename(PathTmp, Path).
+    ok = revault_file:write_file(PathTmp, term_to_binary(Id)),
+    ok = revault_file:rename(PathTmp, Path).
 
 store_uuid(Dir, Name, UUID) ->
     Path = filename:join([Dir, Name, "uuid"]),
     PathTmp = filename:join([Dir, Name, "uuid.tmp"]),
     ok = filelib:ensure_dir(Path),
-    ok = file:write_file(PathTmp, term_to_binary(UUID)),
-    ok = file:rename(PathTmp, Path).
+    ok = revault_file:write_file(PathTmp, term_to_binary(UUID)),
+    ok = revault_file:rename(PathTmp, Path).
 
 start_tracker(Name, Id, Path, Ignore, Interval, DbDir) ->
     revault_trackers_sup:start_tracker(Name, Id, Path, Ignore, Interval, DbDir).
@@ -925,16 +925,16 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
                 conflict ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
                     TmpF = revault_file:tmp(FHash),
-                    file:write_file(TmpF, Bin),
+                    revault_file:write_file(TmpF, Bin),
                     revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
-                    file:delete(TmpF);
+                    revault_file:delete(TmpF);
                 _ ->
                     update_file(Name, F, Meta, Bin)
             end
     end.
 
 delete_file(Name, F, Meta) ->
-    case file:delete(F) of
+    case revault_file:delete(F) of
         ok -> ok;
         {error, enoent} -> ok
     end,
@@ -943,9 +943,9 @@ delete_file(Name, F, Meta) ->
 update_file(Name, F, Meta, Bin) ->
     TmpF = revault_file:tmp(F),
     filelib:ensure_dir(TmpF),
-    ok = file:write_file(TmpF, Bin),
+    ok = revault_file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
-    file:delete(TmpF).
+    revault_file:delete(TmpF).
 
 validate_hash({conflict, Hashes, _}, Bin) ->
     Hash = revault_dirmon_poll:hash(Bin),
@@ -965,7 +965,7 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
             {Cb2, _} = lists:foldl(
                 fun(Hash, {CbAcc1, Ct}) ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
-                    {ok, Bin} = file:read_file(filename:join(Path, FHash)),
+                    {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
                     NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
                     %% TODO: track failing or succeeding transfers?
                     {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
@@ -986,7 +986,7 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
         {Vsn, Hash} ->
             %% just inefficiently read the whole freaking thing at once
             %% TODO: optimize to better read and send file parts
-            {ok, Bin} = file:read_file(filename:join(Path, F)),
+            {ok, Bin} = revault_file:read_file(filename:join(Path, F)),
             NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
             %% TODO: track failing or succeeding transfers?
             {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
