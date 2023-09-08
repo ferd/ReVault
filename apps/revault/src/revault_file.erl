@@ -5,7 +5,9 @@
          tmp/0, tmp/1, extension/2,
          %% wrappers to file module
          delete/1, consult/1, read_file/1,
-         write_file/2, write_file/3, rename/2]).
+         write_file/2, write_file/3, rename/2,
+         %% other file-related wrappers
+         fold_files/5]).
 
 -type hash() :: binary().
 -export_type([hash/0]).
@@ -124,6 +126,21 @@ extension(Path, Ext) when is_list(Path) ->
 extension(Path, Ext) when is_binary(Path) ->
     BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
     <<Path/binary, BinExt/binary>>.
+
+%% @doc Folds function Fun over all (regular) files F in directory Dir whose
+%% basename (for example, just "baz.erl" in "foo/bar/baz.erl") matches the
+%% regular expression RegExp (for a description of the allowed regular
+%% expressions, see the re module). If Recursive is true, all subdirectories to
+%% Dir are processed. The regular expression matching is only done on the
+%% filename without the directory part.
+-spec fold_files(Dir, RegExp, Recursive, Fun, Acc) -> Acc
+    when Dir :: file:name(),
+         RegExp :: string(),
+         Recursive :: boolean(),
+         Fun :: fun((file:filename(), Acc) -> Acc),
+         Acc :: term().
+fold_files(Dir, RegExp, Recursive, Fun, Acc) ->
+    filelib:fold_files(Dir, RegExp, Recursive, Fun, Acc).
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%

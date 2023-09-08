@@ -22,7 +22,7 @@
 %% along with their SHA256 value. The returned value is sorted.
 -spec scan(file:filename(), ignore()) -> set().
 scan(Dir, Ignore) ->
-    lists:sort(filelib:fold_files(
+    lists:sort(revault_file:fold_files(
       Dir, ".*", true,
       fun(File, Acc) ->
          case processable(File, Ignore) of
