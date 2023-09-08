@@ -16,14 +16,14 @@
 -record(state, {
     snapshot = #{} :: #{file:filename_all() =>
                         {stamp(),
-                         revault_dirmon_poll:hash() | deleted |
+                         revault_file:hash() | deleted |
                          {conflict,
                           %% known conflicts, track for syncs
-                          [revault_dirmon_poll:hash()],
+                          [revault_file:hash()],
                           %% Last known working file; track to know what hash to
                           %% pick when resolving the conflict, but do not use in
                           %% actual conflict syncs
-                          revault_dirmon_poll:hash() | deleted}
+                          revault_file:hash() | deleted}
                         }},
     dir :: file:filename_all(),
     ignore :: revault_dirmon_poll:ignore(),
@@ -52,7 +52,7 @@ conflict(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, Vsn}, infinity).
 
 -spec conflict(term(), file:filename_all(), file:filename_all(),
-               {stamp(), revault_dirmon_poll:hash()}) -> ok | ignored.
+               {stamp(), revault_file:hash()}) -> ok | ignored.
 conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
 

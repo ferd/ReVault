@@ -948,10 +948,10 @@ update_file(Name, F, Meta, Bin) ->
     revault_file:delete(TmpF).
 
 validate_hash({conflict, Hashes, _}, Bin) ->
-    Hash = revault_dirmon_poll:hash(Bin),
+    Hash = revault_file:hash_bin(Bin),
     lists:member(Hash, Hashes);
 validate_hash(Hash, Bin) ->
-    Hash =:= revault_dirmon_poll:hash(Bin).
+    Hash =:= revault_file:hash_bin(Bin).
 
 handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
                                             sub=#server{remote=R}}) ->

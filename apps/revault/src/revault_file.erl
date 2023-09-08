@@ -1,10 +1,29 @@
 -module(revault_file).
--export([make_relative/2,
+-export([hash/1, hash_bin/1,
+         make_relative/2,
          copy/2,
          tmp/0, tmp/1, extension/2,
          %% wrappers to file module
          delete/1, consult/1, read_file/1,
          write_file/2, write_file/3, rename/2]).
+
+-type hash() :: binary().
+-export_type([hash/0]).
+
+%% @doc takes a file and computes a hash for it as used to track changes
+%% in ReVault. This hash is not guaranteed to be stable, but at this time
+%% it is SHA256.
+-spec hash(file:filename_all()) -> hash().
+hash(Path) ->
+    {ok, Bin} = read_file(Path),
+    hash_bin(Bin).
+
+%% @doc takes a binary and computes a hash for it as used to track changes
+%% and validate payloads in ReVault. This hash is not guaranteed to be
+%% stable, but at this time it is SHA256.
+-spec hash_bin(binary()) -> hash().
+hash_bin(Bin) ->
+    crypto:hash(sha256, Bin).
 
 %% @doc makes path `File' relative to `Dir', such that if you pass in
 %% `/a/b/c/d.txt' and the `Dir' path `/a/b', you get `c/d.txt'.
