@@ -55,7 +55,7 @@ pinning_server(Config) ->
     _Client2Key = filename:join(?config(cert_dir, Config), "client2.key"),
     ServerOpts = revault_tls:pin_certfiles_opts_server([Client1Cert, Client2Cert])
                ++ [{certfile, ServerCert}, {keyfile, ServerKey}],
-    ClientOpts = [{certfile, Client1Cert}, {keyfile, Client1Key}],
+    ClientOpts = [{certfile, Client1Cert}, {keyfile, Client1Key}, {verify, verify_none}],
     {ok, _, Pid, {Ip, Port}} = start_server(ServerOpts),
     {ok, Sock} = ssl:connect(Ip, Port, ClientOpts, 1000),
     ok = ssl:send(Sock, <<"test">>),
@@ -81,7 +81,7 @@ unpinned_client(Config) ->
     OtherCert = filename:join(?config(cert_dir, Config), "other.crt"),
     ServerOpts = revault_tls:pin_certfiles_opts_server([Client1Cert, Client2Cert])
                ++ [{certfile, ServerCert}, {keyfile, ServerKey}],
-    ClientOpts = [{certfile, OtherCert}, {keyfile, OtherKey}],
+    ClientOpts = [{certfile, OtherCert}, {keyfile, OtherKey}, {verify, verify_none}],
     {ok, _, Pid, {Ip, Port}} = start_server(ServerOpts),
     case ssl:connect(Ip, Port, ClientOpts, 1000) of
         {ok, Sock} ->
