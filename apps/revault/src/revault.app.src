@@ -10,9 +10,12 @@
     itc,
     uuid,
     ssl, public_key, tak,
-    aws,
-    opentelemetry_api
+    opentelemetry_api,
+    aws
    ]},
+  {optional_applications, [
+    aws
+  ]},
   {env, []},
   {modules, []},
 
