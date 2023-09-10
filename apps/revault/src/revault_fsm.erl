@@ -123,6 +123,7 @@
           interval,
           callback,
           ctx=[],
+          scan=false,
           %% holding data used for the current substate
           sub :: undefined | #connecting{} | #disconnect{}
                | #client_sync{} | #server{}
@@ -585,10 +586,10 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
         end),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
@@ -597,10 +598,10 @@ client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
@@ -620,26 +621,30 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
     case CountLeft =:= 0 andalso Acc -- [WorkF] of
         false ->
             %% more of the same conflict file to come
-            {keep_state, Data};
+            {keep_state, Data#data{scan=true}};
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-client_sync_complete(enter, _, Data=#data{name=Name}) ->
-    %% force scan to ensure conflict files (if any) are tracked before
-    %% users start modifying them. Might not be relevant when things like
-    %% filesystem watchers are used, but I'm starting to like the idea of
-    %% on-demand scan/sync only.
-    ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
-        fun(_SpanCtx) ->
-            ok = revault_dirmon_event:force_scan(Name, infinity)
-        end),
-    {keep_state, Data};
+client_sync_complete(enter, _, Data=#data{name=Name, scan=ScanNeeded}) ->
+    if ScanNeeded ->
+        %% force scan to ensure conflict files (if any) are tracked before
+        %% users start modifying them. Might not be relevant when things like
+        %% filesystem watchers are used, but I'm starting to like the idea of
+        %% on-demand scan/sync only.
+        ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
+            fun(_SpanCtx) ->
+                ok = revault_dirmon_event:force_scan(Name, infinity)
+            end),
+        {keep_state, Data#data{scan=false}};
+       not ScanNeeded ->
+        {keep_state, Data}
+    end;
 client_sync_complete(info, {revault, _Marker, sync_complete},
                      DataTmp=#data{sub=#client_sync{from=From, remote=Remote}}) ->
     Disconnect = #disconnect{next_state=initialized},
@@ -749,13 +754,13 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
         fun(_SpanCtx) ->
             handle_file_sync(Name, Id, F, Meta, Bin)
         end),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
                   Data=#data{name=Name, id=Id}) ->
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
                                                | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
     ?with_span(
@@ -770,27 +775,32 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
            revault_file:delete(TmpF)
        end
     ),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, Marker, {fetch, F}}, Data) ->
     NewData = handle_file_demand(F, Marker, Data),
     {keep_state, NewData};
 server_sync_files(info, {revault, Marker, sync_complete},
-                  DataTmp=#data{name=Name, callback=Cb,
+                  DataTmp=#data{name=Name, callback=Cb, scan=ScanNeeded,
                                 sub=#server{remote=R}}) ->
-    %% force scan to ensure conflict files (if any) are tracked before
-    %% users start modifying them. Might not be relevant when things like
-    %% filesystem watchers are used, but I'm starting to like the idea of
-    %% on-demand scan/sync only.
-    ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
-        fun(_SpanCtx) ->
-            ok = revault_dirmon_event:force_scan(Name, infinity)
-        end),
+    if ScanNeeded ->
+        %% force scan to ensure conflict files (if any) are tracked before
+        %% users start modifying them. Might not be relevant when things like
+        %% filesystem watchers are used, but I'm starting to like the idea of
+        %% on-demand scan/sync only.
+        ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
+            fun(_SpanCtx) ->
+                ok = revault_dirmon_event:force_scan(Name, infinity)
+            end);
+       not ScanNeeded ->
+           ok
+    end,
     NewPayload = revault_data_wrapper:sync_complete(),
     {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
     Data = end_span(DataTmp),
     otel_ctx:clear(),
     Disconnect = #disconnect{next_state=initialized},
-    {next_state, disconnect, Data#data{callback=Cb1, sub=Disconnect},
+    {next_state, disconnect,
+     Data#data{callback=Cb1, sub=Disconnect, scan=false},
      [{next_event, internal, {disconnect, R}}]};
 server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
                   Data=#data{callback=Cb}) ->
