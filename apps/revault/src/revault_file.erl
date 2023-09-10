@@ -3,11 +3,10 @@
          make_relative/2,
          copy/2,
          tmp/0, tmp/1, extension/2,
+         find_hashes/2,
          %% wrappers to file module
          delete/1, consult/1, read_file/1,
-         write_file/2, write_file/3, rename/2,
-         %% other file-related wrappers
-         fold_files/5]).
+         write_file/2, write_file/3, rename/2]).
 
 -type hash() :: binary().
 -export_type([hash/0]).
@@ -60,6 +59,58 @@ copy(From, To) ->
     {ok, _} = file:copy(From, TmpFile),
     file:rename(TmpFile, To).
 
+%% @doc returns the name of a file using a safe temporary path. Relies
+%% on the instantiation of a cached value for a safe temporary directory
+%% on the local filesystem to allow safe renames without exdev errors,
+%% which my try to write and delete other temporary files.
+%% Once the check is done, it does not need to be repeated.
+-spec tmp() -> file:filename_all().
+tmp() ->
+    filename:join([system_tmpdir(), randname()]).
+
+%% @doc returns the name `Path' of a file located in a temporary directory.
+%% Relies on the instantiation of a cached value for a safe temporary directory
+%% on the local filesystem to allow safe renames without exdev errors,
+%% which my try to write and delete other temporary files.
+%% Once the check is done, it does not need to be repeated.
+-spec tmp(file:filename_all()) -> file:filename_all().
+tmp(Path) ->
+    filename:join([system_tmpdir(), Path]).
+
+%% @doc appends an extensino `Ext' to a path `Path' in a safe manner
+%% considering the possible types of `file:filename_all()' as a datatype.
+%% A sort of counterpart to `filename:extension/1'.
+-spec extension(file:filename_all(), string()) -> file:filename_all().
+extension(Path, Ext) when is_list(Path) ->
+    Path ++ Ext;
+extension(Path, Ext) when is_binary(Path) ->
+    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
+    <<Path/binary, BinExt/binary>>.
+
+%% @doc Traverses a directory `Dir' recursively, looking at every file
+%% that matches `Pred', and extracts a hash (as computed by `hash/1')
+%% matching its contents.
+%%
+%% The list of filenames and hashes is returned in no specific order.
+-spec find_hashes(Dir, Pred) -> [{file:filename(), hash()}] when
+    Dir :: file:filename(),
+    Pred :: fun((file:filename()) -> boolean()).
+find_hashes(Dir, Pred) ->
+    filelib:fold_files(
+      Dir, ".*", true,
+      fun(File, Acc) ->
+         case Pred(File) of
+             false -> Acc;
+             true -> [{make_relative(Dir, File), hash(File)} | Acc]
+         end
+      end,
+      []
+    ).
+
+%%%%%%%%%%%%%%%%%%%%%
+%%% FILE WRAPPERS %%%
+%%%%%%%%%%%%%%%%%%%%%
+
 %% @doc Deletes a file.
 -spec delete(file:filename_all()) -> ok | {error, badarg | file:posix()}.
 delete(Path) ->
@@ -98,49 +149,6 @@ write_file(Path, Data, Modes) ->
          Destination :: file:filename_all().
 rename(Source, Destination) ->
     file:rename(Source, Destination).
-
-%% @doc returns the name of a file using a safe temporary path. Relies
-%% on the instantiation of a cached value for a safe temporary directory
-%% on the local filesystem to allow safe renames without exdev errors,
-%% which my try to write and delete other temporary files.
-%% Once the check is done, it does not need to be repeated.
--spec tmp() -> file:filename_all().
-tmp() ->
-    filename:join([system_tmpdir(), randname()]).
-
-%% @doc returns the name `Path' of a file located in a temporary directory.
-%% Relies on the instantiation of a cached value for a safe temporary directory
-%% on the local filesystem to allow safe renames without exdev errors,
-%% which my try to write and delete other temporary files.
-%% Once the check is done, it does not need to be repeated.
--spec tmp(file:filename_all()) -> file:filename_all().
-tmp(Path) ->
-    filename:join([system_tmpdir(), Path]).
-
-%% @doc appends an extensino `Ext' to a path `Path' in a safe manner
-%% considering the possible types of `file:filename_all()' as a datatype.
-%% A sort of counterpart to `filename:extension/1'.
--spec extension(file:filename_all(), string()) -> file:filename_all().
-extension(Path, Ext) when is_list(Path) ->
-    Path ++ Ext;
-extension(Path, Ext) when is_binary(Path) ->
-    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
-    <<Path/binary, BinExt/binary>>.
-
-%% @doc Folds function Fun over all (regular) files F in directory Dir whose
-%% basename (for example, just "baz.erl" in "foo/bar/baz.erl") matches the
-%% regular expression RegExp (for a description of the allowed regular
-%% expressions, see the re module). If Recursive is true, all subdirectories to
-%% Dir are processed. The regular expression matching is only done on the
-%% filename without the directory part.
--spec fold_files(Dir, RegExp, Recursive, Fun, Acc) -> Acc
-    when Dir :: file:name(),
-         RegExp :: string(),
-         Recursive :: boolean(),
-         Fun :: fun((file:filename(), Acc) -> Acc),
-         Acc :: term().
-fold_files(Dir, RegExp, Recursive, Fun, Acc) ->
-    filelib:fold_files(Dir, RegExp, Recursive, Fun, Acc).
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%

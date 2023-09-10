@@ -22,18 +22,9 @@
 %% along with their SHA256 value. The returned value is sorted.
 -spec scan(file:filename(), ignore()) -> set().
 scan(Dir, Ignore) ->
-    lists:sort(revault_file:fold_files(
-      Dir, ".*", true,
-      fun(File, Acc) ->
-         case processable(File, Ignore) of
-             false ->
-                 Acc;
-             true ->
-                 Hash = revault_file:hash(File),
-                 RelativeFile = revault_file:make_relative(Dir, File),
-                 [{RelativeFile, Hash} | Acc]
-         end
-      end, []
+    lists:sort(revault_file:find_hashes(
+        Dir,
+        fun(File) -> processable(File, Ignore) end
     )).
 
 %% @doc Repeat the scan of a directory from a previously known set.
@@ -74,6 +65,10 @@ diff_set([O|Old], [N|New], {Deleted, Added, Modified}) ->
      ; O > N -> diff_set([O|Old], New, {Deleted, [N|Added], Modified})
     end.
 
+%% @doc Takes a filename and regular expressions defining files to ignore
+%% and returns whether the file is valid to process (if it matches none
+%% of the regexes)
+-spec processable(file:filename_all(), [string()]) -> boolean().
 processable(FileName, Ignore) ->
     lists:all(fun(Regexp) -> re:run(FileName, Regexp) =:= nomatch end, Ignore).
 
