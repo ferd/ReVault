@@ -11,10 +11,11 @@
     uuid,
     ssl, public_key, tak,
     opentelemetry_api,
-    aws
+    %% apps required for s3 support
+    aws, jsx
    ]},
   {optional_applications, [
-    aws
+    aws, jsx
   ]},
   {env, []},
   {modules, []},
