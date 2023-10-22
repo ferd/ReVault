@@ -3,12 +3,14 @@
 %% @end
 %%%-------------------------------------------------------------------
 
--module(revault_file_sup).
+-module(revault_backend_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_s3_subtree/5]).
+-export([start_link/0,
+         start_disk_subtree/0, start_s3_subtree/5,
+         stop_all/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -21,6 +23,10 @@
 
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+
+start_disk_subtree() ->
+    application:set_env(revault, backend, disk),
+    ok.
 
 start_s3_subtree(RoleARN, Region, Bucket, CacheDir, Dir) ->
     application:set_env(revault, bucket, Bucket),
@@ -35,6 +41,13 @@ start_s3_subtree(RoleARN, Region, Bucket, CacheDir, Dir) ->
         type => worker
     }),
     application:set_env(revault, backend, s3),
+    ok.
+
+stop_all() ->
+    [supervisor:terminate_child(?SERVER, Pid)
+     || {_, Pid, _, _} <- supervisor:which_children(?SERVER),
+        is_pid(Pid)],
+    application:set_env(revault, backend, disk),
     ok.
 
 %%====================================================================

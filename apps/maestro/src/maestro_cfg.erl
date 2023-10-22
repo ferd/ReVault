@@ -1,7 +1,7 @@
 -module(maestro_cfg).
 -export([parse/1, parse_file/0, parse_file/1, config_path/0]).
 
--type t() :: #{binary() := binary() | #{binary() := map()}}.
+-type t() :: #{binary() := binary() | map()}.
 -export_type([t/0]).
 
 -define(DEFAULT_INTERVAL_SECONDS, 60).
@@ -66,7 +66,10 @@ normalize_backend(Cfg) ->
         {ok, <<"s3">>} ->
             #{<<"mode">> => <<"s3">>,
               <<"role_arn">> => maps:get(<<"role_arn">>, Map),
-              <<"region">> => maps:get(<<"region">>, Map)};
+              <<"region">> => maps:get(<<"region">>, Map),
+              <<"bucket">> => maps:get(<<"bucket">>, Map),
+              <<"cache_dir">> => maps:get(<<"cache_dir">>, Map, <<".cache">>)
+            };
         {ok, BadMode} ->
             throw({invalid_mode, BadMode});
         error ->

@@ -5,6 +5,8 @@
   mode = "s3"
   role_arn = "arn:aws:iam::874886211697:role/ReVault-s3"
   region = "us-east-2"
+  bucket = "revault-airm1"
+  # cache_dir = ".cache"
 
 [dirs]
   [dirs.music]

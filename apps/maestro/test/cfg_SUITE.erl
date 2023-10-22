@@ -129,7 +129,9 @@ s3(Config) ->
          <<"backend">> := #{
             <<"mode">> := <<"s3">>,
             <<"role_arn">> := <<"arn:aws:iam::", _/binary>>,
-            <<"region">> := <<"us-east-2">>
+            <<"region">> := <<"us-east-2">>,
+            <<"bucket">> := <<"revault-airm1">>,
+            <<"cache_dir">> := <<".cache">>
          },
          <<"dirs">> := #{
             <<"music">> := #{

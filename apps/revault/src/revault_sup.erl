@@ -32,8 +32,8 @@ start_link() ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
     {ok, {{one_for_all, 1, 60}, [
-        #{id => file_sup,
-          start => {revault_file_sup, start_link, []},
+        #{id => backend_sup,
+          start => {revault_backend_sup, start_link, []},
           type => supervisor},
         #{id => trackers_sup,
           start => {revault_trackers_sup, start_link, []},
