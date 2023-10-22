@@ -4,12 +4,14 @@
 -include_lib("stdlib/include/assert.hrl").
 
 all() -> [{group, api},
-          {group, abstraction}].
+          {group, abstraction},
+          {group, cache}].
 
 groups() ->
     [{api, [sequence], [list_objects_empty, crud_object, rename_raw, pagination]},
      {abstraction, [sequence], [read_write_delete, hasht, copy, rename,
-                                find_hashes, consult]}
+                                find_hashes, consult]},
+     {cache, [sequence], [find_hashes_cached]}
     ].
 
 init_per_suite(Config) ->
@@ -34,12 +36,25 @@ init_per_group(abstraction, Config) ->
     unlink(Pid),
     [{init_bucket, InitBucket}, {serv, Pid}
      |Config];
+init_per_group(cache, Config0) ->
+    {ok, Apps} = application:ensure_all_started(gproc),
+    Config = init_per_group(abstraction, Config0),
+    CacheDir = ?config(bucket_cache_dir, Config),
+    Dir = ?config(bucket_dir, Config),
+    {ok, Pid} = revault_s3_cache:start_link(CacheDir, Dir),
+    unlink(Pid),
+    [{cache_pid, Pid}, {cache_apps, Apps} | Config];
 init_per_group(_, Config) ->
     Config.
 
 end_per_group(abstraction, Config) ->
     gen_server:stop(?config(serv, Config)),
     application:set_env(revault, bucket, ?config(init_bucket, Config)),
+    Config;
+end_per_group(cache, Config0) ->
+    gen_server:stop(?config(cache_pid, Config0)),
+    [application:stop(App) || App <- lists:reverse(?config(cache_apps, Config0))],
+    Config = end_per_group(abstraction, Config0),
     Config;
 end_per_group(_, Config) ->
     Config.
@@ -244,7 +259,7 @@ find_hashes(Config) ->
                   {<<"hash.txt">>, revault_file:hash_bin(<<"b">>)},
                   {<<"hash.ext">>, revault_file:hash_bin(<<"c">>)}],
                  lists:reverse(lists:sort(
-                    revault_s3:find_hashes(Dir, fun(_) -> true end)
+                    revault_s3:find_hashes_uncached(Dir, fun(_) -> true end)
                  ))),
     ?assertEqual(ok, revault_s3:delete(PathA)),
     ?assertEqual(ok, revault_s3:delete(PathB)),
@@ -263,6 +278,48 @@ consult(Config) ->
     ?assertEqual(ok, revault_s3:delete(Path)),
     ok.
 
+%%%%%%%%%%%%%%%%%%%
+%%% CACHE GROUP %%%
+%%%%%%%%%%%%%%%%%%%
+find_hashes_cached() ->
+    [{doc, "exercise the hash-fetching functionality with a cache"}].
+find_hashes_cached(Config) ->
+    Dir = ?config(bucket_dir, Config),
+    CacheDir = ?config(bucket_cache_dir, Config),
+    PathA = filename:join([Dir, "subdir", "hash.txt"]),
+    PathB = filename:join([Dir, "hash.txt"]),
+    PathC = filename:join([Dir, "hash.ext"]),
+    HashA = revault_file:hash_bin(<<"a">>),
+    HashB = revault_file:hash_bin(<<"b">>),
+    HashC = revault_file:hash_bin(<<"c">>),
+    ?assertEqual(ok, revault_s3:write_file(PathA, <<"a">>)),
+    ?assertEqual(ok, revault_s3:write_file(PathB, <<"b">>)),
+    ?assertEqual(ok, revault_s3:write_file(PathC, <<"c">>)),
+    ?assertEqual(ok, revault_s3_cache:ensure_loaded(Dir)),
+    ?assertEqual([{<<"subdir/hash.txt">>, HashA},
+                  {<<"hash.txt">>, HashB},
+                  {<<"hash.ext">>, HashC}],
+                 lists:reverse(lists:sort(
+                    revault_s3:find_hashes(Dir, fun(_) -> true end)
+                 ))),
+    ?assertMatch({ok, {HashA, _}}, revault_s3_cache:hash(Dir, <<"subdir/hash.txt">>)),
+    ?assertMatch({ok, {HashB, _}}, revault_s3_cache:hash(Dir, <<"hash.txt">>)),
+    ?assertMatch({ok, {HashC, _}}, revault_s3_cache:hash(Dir, <<"hash.ext">>)),
+    {ok, {_, LastModified}} = revault_s3_cache:hash(Dir, <<"hash.txt">>),
+    revault_s3_cache:hash_store(Dir, <<"hash.txt">>, {<<"deadbeef">>, LastModified}),
+    %% if we don't save, the next invocation gets crushed
+    revault_s3_cache:save(Dir),
+    ?assertEqual([{<<"subdir/hash.txt">>, HashA},
+                  {<<"hash.txt">>, <<"deadbeef">>},
+                  {<<"hash.ext">>, HashC}],
+                 lists:reverse(lists:sort(
+                    revault_s3:find_hashes(Dir, fun(_) -> true end)
+                 ))),
+    ?assertEqual(ok, revault_s3:delete(PathA)),
+    ?assertEqual(ok, revault_s3:delete(PathB)),
+    ?assertEqual(ok, revault_s3:delete(PathC)),
+    ?assertEqual(ok, revault_s3:delete(filename:join([CacheDir, Dir]))),
+    ok.
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
@@ -300,7 +357,8 @@ setup_aws_config(Config) ->
      {role_session_name, <<"test-suite">>},
      {region, <<"us-east-2">>},
      {bucket, <<"revault-airm1">>},
-     {bucket_dir, <<"test">>}
+     {bucket_dir, <<"test">>},
+     {bucket_cache_dir, <<"test-cache">>}
      | Config].
 
 assert_dir_empty(_, []) -> ok;

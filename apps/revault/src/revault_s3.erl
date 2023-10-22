@@ -3,8 +3,9 @@
 -module(revault_s3).
 -export([hash/1, copy/2,
          tmp/0, tmp/1,
-         find_hashes/2,
-         %%% wrappers to file module
+         find_hashes/2, find_hashes_uncached/2,
+         %%% wrappers to file module; can never use a cache if we
+         %%% want the cache module to safely use these.
          delete/1, consult/1, read_file/1,
          write_file/2, write_file/3, rename/2
         ]).
@@ -32,18 +33,50 @@ tmp(Path) ->
     filename:join([s3_tmpdir(), Path]).
 
 %% Naive, un-cached version
+find_hashes_uncached(Dir, Pred) ->
+    Files = list_all_files(Dir),
+    NewList = lists:foldl(fun({File,_LastModified}, Acc) ->
+        case Pred(File) of
+            false ->
+                Acc;
+            true ->
+                RelFile = revault_file:make_relative(Dir, File),
+                Hash = hash(File),
+                [{RelFile, Hash} | Acc]
+        end
+    end, [], Files),
+    NewList.
+
+%% Cached version
 find_hashes(Dir, Pred) ->
     Files = list_all_files(Dir),
-    lists:foldl(fun({File,_LastModified}, Acc) ->
+    revault_s3_cache:ensure_loaded(Dir),
+    NewList = lists:foldl(fun({File,LastModified}, Acc) ->
         case Pred(File) of
-            false -> Acc;
-            true -> [{revault_file:make_relative(Dir, File), hash(File)} | Acc]
+            false ->
+                Acc;
+            true ->
+                RelFile = revault_file:make_relative(Dir, File),
+                case revault_s3_cache:hash(Dir, RelFile) of
+                    {ok, {Hash, LastModified}} ->
+                        [{RelFile, Hash} | Acc];
+                    _R ->
+                        Hash = hash(File),
+                        revault_s3_cache:hash_store(Dir, RelFile, {Hash, LastModified}),
+                        [{RelFile, Hash} | Acc]
+                end
         end
-    end, [], Files).
+    end, [], Files),
+    revault_s3_cache:save(Dir),
+    NewList.
 
 %%%%%%%%%%%%%%%%%%%%%
 %%% FILE WRAPPERS %%%
 %%%%%%%%%%%%%%%%%%%%%
+
+%%% Cannot use cache.
+
+
 delete(Path) ->
     handle_result(aws_s3:delete_object(client(), bucket(), Path, #{})).
 
@@ -144,7 +177,7 @@ list_all_files(Dir, Continuation) ->
         _ -> #{<<"continuation-token">> => Continuation}
     end,
     Res = aws_s3:list_objects_v2(client(), bucket(),
-                                 BaseOpts#{<<"prefix">> => Dir}, #{}),
+                                 BaseOpts#{<<"prefix">> => <<Dir/binary, "/">>}, #{}),
     {ok, Map=#{<<"ListBucketResult">> := #{<<"Contents">> := Contents}}, _} = Res,
     Files = if is_list(Contents) ->
                    [fetch_content(C) || C <- Contents];
