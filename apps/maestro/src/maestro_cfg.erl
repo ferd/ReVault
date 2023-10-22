@@ -29,12 +29,14 @@ parse_file(FileName) ->
 normalize(Cfg) ->
     try
         Db = normalize_db(Cfg),
+        Backend = normalize_backend(Cfg),
         {ok, Dirs} = tomerl_val(Cfg, [<<"dirs">>]),
         {ok, Peers} = tomerl_val(Cfg, [<<"peers">>], #{}),
         {ok, Server} = tomerl_val(Cfg, [<<"server">>], #{}),
         NormDirs = normalize_dirs(Dirs),
         DirNames = dirnames(NormDirs),
         {ok, Cfg#{<<"db">> => Db,
+                  <<"backend">> => Backend,
                   <<"dirs">> := NormDirs,
                   <<"peers">> => normalize_peers(Peers, DirNames),
                   <<"server">> => normalize_server(Server, DirNames)}}
@@ -51,6 +53,25 @@ normalize_db(Cfg) ->
     end,
     Path = maps:get(<<"path">>, Map, default_db_path()),
     #{<<"path">> => Path}.
+
+normalize_backend(Cfg) ->
+    DiskMode = #{<<"mode">> => <<"disk">>},
+    Map = case tomerl:get(Cfg, [<<"backend">>]) of
+        {ok, BackendMap} -> BackendMap;
+        {error, not_found} -> DiskMode
+    end,
+    case maps:find(<<"mode">>, Map) of
+        {ok, <<"disk">>} ->
+            DiskMode;
+        {ok, <<"s3">>} ->
+            #{<<"mode">> => <<"s3">>,
+              <<"role_arn">> => maps:get(<<"role_arn">>, Map),
+              <<"region">> => maps:get(<<"region">>, Map)};
+        {ok, BadMode} ->
+            throw({invalid_mode, BadMode});
+        error ->
+            throw({invalid_mode, undefined})
+    end.
 
 normalize_dirs(Map) ->
     maps:fold(fun normalize_dir/3, #{}, Map).

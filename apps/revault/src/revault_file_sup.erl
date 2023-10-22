@@ -1,14 +1,14 @@
 %%%-------------------------------------------------------------------
-%% @doc revault top level supervisor.
+%% @doc revault tracker worker set supervisor.
 %% @end
 %%%-------------------------------------------------------------------
 
--module(revault_sup).
+-module(revault_file_sup).
 
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/0, start_s3_subtree/5]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -22,6 +22,21 @@
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
+start_s3_subtree(RoleARN, Region, Bucket, CacheDir, Dir) ->
+    application:set_env(revault, bucket, Bucket),
+    supervisor:start_child(?SERVER, #{
+        id => s3_serv,
+        start => {revault_s3_serv, start_link, [RoleARN, Region]},
+        type => worker
+    }),
+    supervisor:start_child(?SERVER, #{
+        id => s3_cache,
+        start => {revault_s3_cache, start_link, [CacheDir, Dir]},
+        type => worker
+    }),
+    application:set_env(revault, backend, s3),
+    ok.
+
 %%====================================================================
 %% Supervisor callbacks
 %%====================================================================
@@ -31,21 +46,4 @@ start_link() ->
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, {{one_for_all, 1, 60}, [
-        #{id => file_sup,
-          start => {revault_file_sup, start_link, []},
-          type => supervisor},
-        #{id => trackers_sup,
-          start => {revault_trackers_sup, start_link, []},
-          type => supervisor},
-        #{id => protocols_sup,
-          start => {revault_protocols_sup, start_link, []},
-          type => supervisor},
-        #{id => fsm_sup,
-          start => {revault_fsm_sup, start_link, []},
-          type => supervisor}
-    ]}}.
-
-%%====================================================================
-%% Internal functions
-%%====================================================================
+    {ok, {{one_for_one, 10, 60}, []}}.

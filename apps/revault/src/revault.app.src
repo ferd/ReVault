@@ -17,7 +17,9 @@
   {optional_applications, [
     aws, jsx
   ]},
-  {env, []},
+  {env, [
+    {backend, disk}
+  ]},
   {modules, []},
 
   {maintainers, ["Fred Hebert"]},
