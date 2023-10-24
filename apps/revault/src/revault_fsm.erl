@@ -612,7 +612,7 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
        fun(_SpanCtx) ->
            %% TODO: handle the file being corrupted vs its own hash
            TmpF = revault_file:tmp(F),
-           filelib:ensure_dir(TmpF),
+           revault_file:ensure_dir(TmpF),
            ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
            revault_file:delete(TmpF)
@@ -769,7 +769,7 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
                         {<<"count">>, CountLeft} | ?attrs(Data)]},
        fun(_SpanCtx) ->
            TmpF = revault_file:tmp(F),
-           filelib:ensure_dir(TmpF),
+           revault_file:ensure_dir(TmpF),
            ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
            revault_file:delete(TmpF)
@@ -837,14 +837,14 @@ init_uuid(Dir, Name) ->
 store_id(Dir, Name, Id) ->
     Path = filename:join([Dir, Name, "id"]),
     PathTmp = filename:join([Dir, Name, "id.tmp"]),
-    ok = filelib:ensure_dir(Path),
+    ok = revault_file:ensure_dir(Path),
     ok = revault_file:write_file(PathTmp, term_to_binary(Id)),
     ok = revault_file:rename(PathTmp, Path).
 
 store_uuid(Dir, Name, UUID) ->
     Path = filename:join([Dir, Name, "uuid"]),
     PathTmp = filename:join([Dir, Name, "uuid.tmp"]),
-    ok = filelib:ensure_dir(Path),
+    ok = revault_file:ensure_dir(Path),
     ok = revault_file:write_file(PathTmp, term_to_binary(UUID)),
     ok = revault_file:rename(PathTmp, Path).
 
@@ -952,7 +952,7 @@ delete_file(Name, F, Meta) ->
 
 update_file(Name, F, Meta, Bin) ->
     TmpF = revault_file:tmp(F),
-    filelib:ensure_dir(TmpF),
+    revault_file:ensure_dir(TmpF),
     ok = revault_file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
     revault_file:delete(TmpF).

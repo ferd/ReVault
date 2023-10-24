@@ -11,9 +11,15 @@
 
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 
+-ifdef(TEST).
+-define(DEBUG_OPTS, [{debug, [trace]}]).
+-else.
+-define(DEBUG_OPTS, []).
+-endif.
+
 %% `Name' is expected to be `Dir' by callers.
 start_link(DbDir, Name) ->
-    gen_server:start_link(?VIA_GPROC(Name), ?MODULE, {DbDir, Name}, []).
+    gen_server:start_link(?VIA_GPROC(Name), ?MODULE, {DbDir, Name}, ?DEBUG_OPTS).
 
 %% TODO decide if this call should also start the cache process if not loaded.
 ensure_loaded(Name) ->

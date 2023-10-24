@@ -39,7 +39,7 @@ file(Name, File) ->
     gen_server:call(?VIA_GPROC(Name), {file, File}).
 
 files(Name) ->
-    gen_server:call(?VIA_GPROC(Name), files).
+    gen_server:call(?VIA_GPROC(Name), files, infinity).
 
 stop(Name) ->
     gen_server:stop(?VIA_GPROC(Name), normal, 5000).
@@ -317,7 +317,7 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC, Dir) ->
             %% scanner moved and reaped files at once.
             %% As such, updating the conflict files if it's gone overwrites the
             %% user's change.
-            case filelib:is_file(conflict_marker(Dir, BaseFile)) of
+            case revault_file:is_file(conflict_marker(Dir, BaseFile)) of
                 true ->
                     write_conflict_marker(Dir, BaseFile, {Ct, {conflict, Hashes, WorkingHash}});
                 false ->

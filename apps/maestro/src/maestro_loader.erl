@@ -129,7 +129,8 @@ start_backend(#{<<"backend">> := #{<<"mode">> := <<"disk">>}}) ->
     ok;
 start_backend(#{<<"backend">> := Backend=#{<<"mode">> := <<"s3">>},
                 <<"peers">> := PeersMap,
-                <<"server">> := ServMap}) ->
+                <<"server">> := ServMap,
+                <<"dirs">> := DirsMap}) ->
     %% Extract s3 params
     #{<<"role_arn">> := RoleARN, <<"region">> := Region,
       <<"bucket">> := Bucket, <<"cache_dir">> := CacheDir} = Backend,
@@ -150,11 +151,13 @@ start_backend(#{<<"backend">> := Backend=#{<<"mode">> := <<"s3">>},
     NoneDirs = lists:usort(maps:get(<<"sync">>, NoneMap, [])),
     %% Put 'em together
     AllDirs = lists:usort(PeersDirs ++ TlsDirs ++ NoneDirs),
+    DirPaths = [maps:get(<<"path">>, maps:get(Dir, DirsMap))
+                || Dir <- AllDirs],
     %% Get this going
     [revault_backend_sup:start_s3_subtree(
        RoleARN, Region, Bucket,
-       CacheDir, Dir
-     ) || Dir <- AllDirs],
+       CacheDir, Path
+     ) || Path <- DirPaths],
     ok.
 
 start_clients(Cfg = #{<<"peers">> := PeersMap}) ->
@@ -176,10 +179,27 @@ start_client(DirName,
     %% existed locally.
     #{<<"auth">> := #{<<"type">> := AuthType}} = PeerCfg,
     Cb = (callback_mod(AuthType)):callback({DirName, Cfg}),
-    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
+    StartRes = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
+    StartType = case StartRes of
+        {ok, _} -> new;
+        {error, {already_started, _}} -> already_started;
+        StartRes -> StartRes
+    end,
     case revault_fsm:id(DirName) of
-        undefined ->
+        undefined when StartType =:= new ->
             ok = revault_fsm:client(DirName),
+            %% this call is allowed to fail if the peer isn't up at this
+            %% point in time, but will keep the FSM in client mode, which
+            %% we desire at this point.
+            _ = revault_fsm:id(DirName, PeerName),
+            ok;
+        undefined when StartType =:= already_started ->
+            %% a previous call should already handle this, we just don't know
+            %% if the previous one was up yet.
+            case revault_fsm:client(DirName) of
+                ok -> ok;
+                {error, busy} -> ok
+            end,
             %% this call is allowed to fail if the peer isn't up at this
             %% point in time, but will keep the FSM in client mode, which
             %% we desire at this point.

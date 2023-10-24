@@ -28,16 +28,17 @@ start_disk_subtree() ->
     application:set_env(revault, backend, disk),
     ok.
 
-start_s3_subtree(RoleARN, Region, Bucket, CacheDir, Dir) ->
+start_s3_subtree(RoleARN, Region, Bucket, CacheDir, DirPath) ->
     application:set_env(revault, bucket, Bucket),
     supervisor:start_child(?SERVER, #{
         id => s3_serv,
         start => {revault_s3_serv, start_link, [RoleARN, Region]},
         type => worker
     }),
+    %% TODO: test, particularly the multi-start paths
     supervisor:start_child(?SERVER, #{
-        id => s3_cache,
-        start => {revault_s3_cache, start_link, [CacheDir, Dir]},
+        id => {s3_cache, DirPath},
+        start => {revault_s3_cache, start_link, [CacheDir, DirPath]},
         type => worker
     }),
     application:set_env(revault, backend, s3),

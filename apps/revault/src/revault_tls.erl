@@ -211,6 +211,10 @@ make_selfsigned_cert(Dir, CertName) ->
 %%%%%%%%%%%%%%%
 pin_certfile_opts(FileName) ->
     %% Lift tak's own parsing of certs and chains.
+    %%
+    %% Specifically here, carve out an exception: certs are local, not
+    %% stored on s3 in s3 mode, so use `file' as a module rather than
+    %% `revault_file'.
     case file:read_file(FileName) of
         {ok, Cert} ->
             tak:pem_to_ssl_options(Cert) ++

@@ -124,7 +124,7 @@ s3(Config) ->
     {ok, Cfg} = maestro_cfg:parse(Bin),
     ?assertMatch(
        #{<<"db">> := #{
-             <<"path">> := <<"/Users/ferd/.config/ReVault/db/">>
+             <<"path">> := <<"db/">>
          },
          <<"backend">> := #{
             <<"mode">> := <<"s3">>,
@@ -136,12 +136,12 @@ s3(Config) ->
          <<"dirs">> := #{
             <<"music">> := #{
                 <<"interval">> := 60000, % converted to ms
-                <<"path">> := <<"~/Music">>,
+                <<"path">> := <<"Music">>,
                 <<"ignore">> := [<<"\\.DS_Store$">>]
             },
             <<"images">> := #{
                 <<"interval">> := 60000, % converted to ms
-                <<"path">> := <<"/Users/ferd/images/">>,
+                <<"path">> := <<"images">>,
                 <<"ignore">> := [<<"\\.DS_Store$">>, <<"\\.exe$">>]
             }
          },

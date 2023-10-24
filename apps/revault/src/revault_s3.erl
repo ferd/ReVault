@@ -6,7 +6,7 @@
          find_hashes/2, find_hashes_uncached/2,
          %%% wrappers to file module; can never use a cache if we
          %%% want the cache module to safely use these.
-         delete/1, consult/1, read_file/1,
+         delete/1, consult/1, read_file/1, ensure_dir/1, is_file/1,
          write_file/2, write_file/3, rename/2
         ]).
 
@@ -95,6 +95,21 @@ read_file(Path) ->
         {ok, Contents}
     end.
 
+%% @doc Returns true if the path refers to a file or a directory,
+%% otherwise false.
+-spec is_file(file:filename_all()) -> boolean().
+is_file(Path) ->
+    %% TODO: test this
+    %% S3 returns a valid object for directories, but with a
+    %% different content-type. We don't care here, whatever's good
+    %% is good for us.
+    Res = aws_s3:head_object(client(), bucket(), Path, #{}),
+    handle_result(Res) == ok.
+
+%% @doc This operation isn't required on S3 and is a no-op.
+ensure_dir(_Path) ->
+    ok.
+
 write_file(Path, Data) ->
     Chk = base64:encode(revault_file:hash_bin(Data)),
     Res = aws_s3:put_object(client(), bucket(), Path,
@@ -163,7 +178,7 @@ parse_all(L) ->
      {ok, [Exp]} <- [erl_parse:parse_exprs(X)]].
 
 s3_tmpdir() ->
-    application:get_env(revault, s3_tmpdir, "/.tmp").
+    application:get_env(revault, s3_tmpdir, ".tmp").
 
 randname() ->
     float_to_list(rand:uniform()).
@@ -178,17 +193,22 @@ list_all_files(Dir, Continuation) ->
     end,
     Res = aws_s3:list_objects_v2(client(), bucket(),
                                  BaseOpts#{<<"prefix">> => <<Dir/binary, "/">>}, #{}),
-    {ok, Map=#{<<"ListBucketResult">> := #{<<"Contents">> := Contents}}, _} = Res,
-    Files = if is_list(Contents) ->
-                   [fetch_content(C) || C <- Contents];
-               is_map(Contents) ->
-                   [fetch_content(Contents)]
-            end,
-    case Map of
-        #{<<"IsTruncated">> := <<"true">>, <<"NextContinuationToken">> := Next} ->
-            Files ++ list_all_files(Dir, Next);
-        _ ->
-            Files
+    case Res of
+        {ok, Map=#{<<"ListBucketResult">> := #{<<"Contents">> := Contents}}, _} ->
+            Files = if is_list(Contents) ->
+                           [fetch_content(C) || C <- Contents];
+                       is_map(Contents) ->
+                           [fetch_content(Contents)]
+                    end,
+            case Map of
+                #{<<"IsTruncated">> := <<"true">>, <<"NextContinuationToken">> := Next} ->
+                    Files ++ list_all_files(Dir, Next);
+                _ ->
+                    Files
+            end;
+        {ok, #{<<"ListBucketResult">> := #{<<"KeyCount">> := <<"0">>}}, _} ->
+            %% TODO: test
+            []
     end.
 
 fetch_content(#{<<"Key">> := Path, <<"LastModified">> := Stamp}) ->

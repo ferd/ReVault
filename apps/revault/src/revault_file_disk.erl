@@ -1,11 +1,10 @@
 -module(revault_file_disk).
 -export([hash/1, hash_bin/1,
-         make_relative/2,
          copy/2,
-         tmp/0, tmp/1, extension/2,
+         tmp/0, tmp/1,
          find_hashes/2,
          %% wrappers to file module
-         delete/1, consult/1, read_file/1,
+         delete/1, consult/1, read_file/1, ensure_dir/1, is_file/1,
          write_file/2, write_file/3, rename/2]).
 
 -type hash() :: binary().
@@ -25,20 +24,6 @@ hash(Path) ->
 -spec hash_bin(binary()) -> hash().
 hash_bin(Bin) ->
     crypto:hash(sha256, Bin).
-
-%% @doc makes path `File' relative to `Dir', such that if you pass in
-%% `/a/b/c/d.txt' and the `Dir' path `/a/b', you get `c/d.txt'.
--spec make_relative(Dir, File) -> Rel
-    when Dir :: file:filename_all(),
-         File :: file:filename_all(),
-         Rel :: file:filename_all().
-make_relative(Dir, File) ->
-    do_make_relative_path(filename:split(Dir), filename:split(File)).
-
-do_make_relative_path([H|T1], [H|T2]) ->
-    do_make_relative_path(T1, T2);
-do_make_relative_path([], Target) ->
-    filename:join(Target).
 
 %% @doc copies a file from a path `From' to location `To'. Uses a
 %% temporary file that then gets renamed to the final location in order
@@ -77,16 +62,6 @@ tmp() ->
 tmp(Path) ->
     filename:join([system_tmpdir(), Path]).
 
-%% @doc appends an extensino `Ext' to a path `Path' in a safe manner
-%% considering the possible types of `file:filename_all()' as a datatype.
-%% A sort of counterpart to `filename:extension/1'.
--spec extension(file:filename_all(), string()) -> file:filename_all().
-extension(Path, Ext) when is_list(Path) ->
-    Path ++ Ext;
-extension(Path, Ext) when is_binary(Path) ->
-    BinExt = <<_/binary>> = unicode:characters_to_binary(Ext),
-    <<Path/binary, BinExt/binary>>.
-
 %% @doc Traverses a directory `Dir' recursively, looking at every file
 %% that matches `Pred', and extracts a hash (as computed by `hash/1')
 %% matching its contents.
@@ -101,7 +76,7 @@ find_hashes(Dir, Pred) ->
       fun(File, Acc) ->
          case Pred(File) of
              false -> Acc;
-             true -> [{make_relative(Dir, File), hash(File)} | Acc]
+             true -> [{revault_file:make_relative(Dir, File), hash(File)} | Acc]
          end
       end,
       []
@@ -128,6 +103,18 @@ consult(Path) ->
 -spec read_file(file:filename_all()) -> {ok, binary()} | {error, badarg | file:posix()}.
 read_file(Path) ->
     file:read_file(Path).
+
+%% @doc Ensures that all parent directories for the specified file or
+%% directory name `Name' exist, trying to create them if necessary.
+-spec ensure_dir(file:filename_all()) -> ok | {error, file:posix()}.
+ensure_dir(Path) ->
+    filelib:ensure_dir(Path).
+
+%% @doc Returns true if the path refers to a file or a directory,
+%% otherwise false.
+-spec is_file(file:filename_all()) -> boolean().
+is_file(Path) ->
+    filelib:is_file(Path).
 
 %% @doc Writes the content to the file mentioned.  The file is created if it
 %% does not exist. If it exists, the previous contents are overwritten.

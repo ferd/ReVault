@@ -1,5 +1,5 @@
 [db]
-  path = "/Users/ferd/.config/ReVault/db/"
+  path = "db/"
 
 [backend]
   mode = "s3"
@@ -11,11 +11,11 @@
 [dirs]
   [dirs.music]
   interval = 60
-  path = "~/Music"
+  path = "Music"
 
   [dirs.images]
   interval = 60
-  path = "/Users/ferd/images/"
+  path = "images"
   ignore = ["\\.DS_Store$", "\\.exe$"] # regexes on full path
 
 [peers]
