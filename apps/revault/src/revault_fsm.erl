@@ -51,7 +51,9 @@
          %% server-side file synchronization callbacks
          server_sync/3, server_sync_files/3,
          %% Connection handling
-         connecting/3, disconnect/3
+         connecting/3, disconnect/3,
+         %% Debugging output
+         format_status/1
         ]).
 
 -define(registry(M, N), {via, gproc, {n, l, {M, N}}}).
@@ -834,6 +836,19 @@ server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
 server_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
+%% TODO: test
+format_status(Status) ->
+    maps:map(
+      fun(Messages, Queue) when Messages == queue; Messages == postponed ->
+              [format_status_msg(Msg) || Msg <- Queue];
+         (_,Value) ->
+              Value
+      end, Status).
+
+format_status_msg({info, {revault, Marker, {file, F, Meta, Bin}}}) when byte_size(Bin) > 64 ->
+    BinSize = integer_to_binary(byte_size(Bin)),
+    {revault, Marker, {file, F, Meta, <<"[truncated: ", BinSize/binary, " bytes]">>}};
+format_status_msg(Term) -> Term.
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
