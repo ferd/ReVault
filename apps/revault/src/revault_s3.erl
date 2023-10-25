@@ -21,7 +21,7 @@ hash(Path) ->
     base64:decode(HashB64).
 
 copy(From, To) ->
-    Source = filename:join(bucket(), From),
+    Source = filename:join([uri_string:quote(Part) || Part <- [bucket() | filename:split(From)]]),
     Res = aws_s3:copy_object(client(), bucket(), To,
                              #{<<"CopySource">> => Source}),
     handle_result(Res).
@@ -112,10 +112,13 @@ ensure_dir(_Path) ->
 
 write_file(Path, Data) ->
     Chk = base64:encode(revault_file:hash_bin(Data)),
-    Res = aws_s3:put_object(client(), bucket(), Path,
-                            #{<<"Body">> => Data,
-                              <<"ChecksumAlgorithm">> => <<"SHA256">>,
-                              <<"ChecksumSHA256">> => Chk}),
+    Input = #{<<"Body">> => Data,
+              <<"ChecksumAlgorithm">> => <<"SHA256">>,
+              <<"ChecksumSHA256">> => Chk},
+    Opts = [{recv_timeout, timer:minutes(10)},
+            {connect_timeout, timer:seconds(30)},
+            {checkout_timeout, timer:seconds(1)}],
+    Res = aws_s3:put_object(client(), bucket(), Path, Input, Opts),
     handle_result(Res).
 
 write_file(Path, Data, Modes) ->
@@ -148,8 +151,11 @@ handle_result({error, #{<<"Error">> := #{<<"Code">> := Code}}, _}) ->
     {error, translate_code(Code)};
 handle_result({error, {404, _Headers}}) ->
     {error, enoent};
+handle_result({error, timeout}) ->
+    {error, timeout};
 handle_result(_Unknown) ->
     %% TODO: more graceful handling
+    io:format("unknown s3 result: ~p~n", [_Unknown]),
     {error, badarg}.
 
 translate_code(<<"NoSuchKey">>) -> enoent;

@@ -1,4 +1,4 @@
--name revault_s3
+-name revault
 
 -setcookie revault_cookie
 -enable-feature maybe

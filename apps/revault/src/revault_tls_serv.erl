@@ -243,6 +243,10 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
                        fun(_SpanCtx) -> ssl:close(Sock) end),
             exit(normal);
         {ssl_passive, Sock} ->
+            %ssl:setopts(Sock, [{active, 5}]),
+            revault_tls:send_local(Name, {ping, self()}),
+            worker_loop(Dir, C);
+        {pong, _} ->
             ssl:setopts(Sock, [{active, 5}]),
             worker_loop(Dir, C);
         {ssl, Sock, Data} ->

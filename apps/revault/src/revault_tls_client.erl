@@ -106,7 +106,11 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, TmpData=#clie
             {next_state, disconnected, NewData#client{sock=undefined, dir=undefined},
              [{reply, From, {error, Reason}}]}
     end;
-handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
+handle_event(info, {ssl_passive, Sock}, connected, Data=#client{name=Name, sock=Sock}) ->
+    %ssl:setopts(Sock, [{active, 5}]),
+    revault_tls:send_local(Name, {ping, self()}),
+    {keep_state, Data, []};
+handle_event(info, {pong, _}, connected, Data=#client{sock=Sock}) ->
     ssl:setopts(Sock, [{active, 5}]),
     {keep_state, Data, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
@@ -129,6 +133,8 @@ handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock
     %% TODO: Log
     otel_ctx:clear(),
     {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};
+handle_event(info, {pong, _}, disconnected, Data) ->
+    {keep_state, Data};
 handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
     otel_ctx:clear(),
     {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};

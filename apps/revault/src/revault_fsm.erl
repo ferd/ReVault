@@ -283,6 +283,9 @@ connecting(internal, {connect, Remote},
              NewData#data{callback=NewCb, sub=undefined},
              [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
     end;
+connecting(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 connecting(info, {revault, Marker, ok},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
     %% Transition to a successful state
@@ -395,6 +398,9 @@ disconnect(_, _, Data) ->
 
 client_id_sync(enter, connecting, Data=#uninit{}) ->
     {keep_state, Data};
+client_id_sync(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 client_id_sync(internal, {connect, Remote, {call,From}}, Data=#uninit{callback=Cb}) ->
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
     case Res of
@@ -464,6 +470,9 @@ initialized({call, From}, {seed_fork, ForkName, ForkDir},
 initialized({call, _From}, {sync, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
+initialized(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
     %% consider this to be an implicit {role, server} shift;
     %% TODO: add a "wait_role" sort of call if this ends up
@@ -520,6 +529,9 @@ client_sync_manifest(internal, {connect, Remote, {call,From}}, DataTmp=#data{cal
              [{reply, From, {error, R}},
               {next_event, internal, {disconnect, Remote}}]}
     end;
+client_sync_manifest(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
                      DataTmp=#data{sub=#client_sync{marker=Marker},
                                    name=Name, id=Id}) ->
@@ -575,6 +587,9 @@ client_sync_files(internal, sync_complete, Data=#data{sub=#client_sync{acc=[]}})
 client_sync_files(internal, sync_complete, Data) ->
     %% wait for all files we're fetching to be here, and when the last one is in,
     %% re-trigger a sync_complete message
+    {keep_state, Data};
+client_sync_files(info, {ping, From}, Data) ->
+    From ! {pong, self()},
     {keep_state, Data};
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
@@ -671,6 +686,9 @@ server({call, _From}, {sync, _Remote}, Data) ->
     {next_state, initialized, Data, [postpone]};
 server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
+server(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
        DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
     %% TODO: handle error
@@ -729,6 +747,9 @@ server_id_sync(_, _, Data) ->
 
 server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
+server_sync(info, {ping, From}, Data) ->
+    From ! {pong, self()},
+    {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
        DataTmp=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
     Data = start_span(<<"server_sync">>, DataTmp),
@@ -745,6 +766,9 @@ server_sync(_, _, Data) ->
 
 
 server_sync_files(enter, _, Data) ->
+    {keep_state, Data};
+server_sync_files(info, {ping, From}, Data) ->
+    From ! {pong, self()},
     {keep_state, Data};
 server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
