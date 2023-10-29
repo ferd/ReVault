@@ -12,7 +12,8 @@
 -define(VIA_GPROC(Name), {via, gproc, {n, l, {?MODULE, Name}}}).
 
 -ifdef(TEST).
--define(DEBUG_OPTS, [{debug, [trace]}]).
+%-define(DEBUG_OPTS, [{debug, [trace]}]).
+-define(DEBUG_OPTS, []).
 -else.
 -define(DEBUG_OPTS, []).
 -endif.

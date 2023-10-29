@@ -188,7 +188,7 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
             case lists:member(Dir, DirNames) of
                 true ->
                     #{Dir := Name} = Names,
-                    inet:setopts(Sock, [{active, once}]),
+                    inet:setopts(Sock, [{active, 5}]),
                     revault_tcp:send_local(Name, {revault, {self(),Marker}, {peer, self(), Attrs}}),
                     worker_loop(Dir, C#conn{localname=Name, buf=NewBuf});
                 false ->
@@ -211,8 +211,13 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
         disconnect ->
             gen_tcp:close(Sock),
             exit(normal);
+        {pong, _} ->
+            inet:setopts(Sock, [{active, 5}]),
+            worker_loop(Dir, C);
+        {tcp_passive, Sock} ->
+            revault_fsm:ping(Name, self(), erlang:monotonic_time()),
+            worker_loop(Dir, C);
         {tcp, Sock, Data} ->
-            inet:setopts(Sock, [{active, once}]),
             {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
             [revault_tcp:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],

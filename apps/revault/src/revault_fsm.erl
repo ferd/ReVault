@@ -35,7 +35,7 @@
 -behaviour(gen_statem).
 -export([start_link/5, start_link/6,
          server/1, client/1, id/1, id/2, sync/2,
-         seed_fork/2, seed_fork/3]).
+         seed_fork/2, seed_fork/3, ping/3]).
 -export([%% Lifecycle
          callback_mode/0,
          init/1, %handle_event/4, terminate/3,
@@ -177,6 +177,11 @@ seed_fork(Name, ForkDir) ->
 seed_fork(Name, ForkName, ForkDir) ->
     gen_statem:call(?registry(Name), {seed_fork, ForkName,  ForkDir}).
 
+%% The FSM will reply with `{pong, Payload}' to the `ReplyTo' pid or name.
+ping(Name, ReplyTo, Payload) ->
+    gen_statem:cast(?registry(Name), {ping, ReplyTo, Payload}).
+
+
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
 %%%%%%%%%%%%%%%%%
@@ -285,8 +290,8 @@ connecting(internal, {connect, Remote},
              NewData#data{callback=NewCb, sub=undefined},
              [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
     end;
-connecting(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+connecting(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 connecting(info, {revault, Marker, ok},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
@@ -400,8 +405,8 @@ disconnect(_, _, Data) ->
 
 client_id_sync(enter, connecting, Data=#uninit{}) ->
     {keep_state, Data};
-client_id_sync(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+client_id_sync(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_id_sync(internal, {connect, Remote, {call,From}}, Data=#uninit{callback=Cb}) ->
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
@@ -472,8 +477,8 @@ initialized({call, From}, {seed_fork, ForkName, ForkDir},
 initialized({call, _From}, {sync, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
-initialized(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+initialized(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
     %% consider this to be an implicit {role, server} shift;
@@ -531,8 +536,8 @@ client_sync_manifest(internal, {connect, Remote, {call,From}}, DataTmp=#data{cal
              [{reply, From, {error, R}},
               {next_event, internal, {disconnect, Remote}}]}
     end;
-client_sync_manifest(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+client_sync_manifest(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
                      DataTmp=#data{sub=#client_sync{marker=Marker},
@@ -590,8 +595,8 @@ client_sync_files(internal, sync_complete, Data) ->
     %% wait for all files we're fetching to be here, and when the last one is in,
     %% re-trigger a sync_complete message
     {keep_state, Data};
-client_sync_files(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+client_sync_files(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
@@ -662,6 +667,9 @@ client_sync_complete(enter, _, Data=#data{name=Name, scan=ScanNeeded}) ->
        not ScanNeeded ->
         {keep_state, Data}
     end;
+client_sync_complete(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 client_sync_complete(info, {revault, _Marker, sync_complete},
                      DataTmp=#data{sub=#client_sync{from=From, remote=Remote}}) ->
     Disconnect = #disconnect{next_state=initialized},
@@ -688,8 +696,8 @@ server({call, _From}, {sync, _Remote}, Data) ->
     {next_state, initialized, Data, [postpone]};
 server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
-server(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+server(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
        DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
@@ -749,8 +757,8 @@ server_id_sync(_, _, Data) ->
 
 server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
-server_sync(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+server_sync(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
        DataTmp=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
@@ -769,8 +777,8 @@ server_sync(_, _, Data) ->
 
 server_sync_files(enter, _, Data) ->
     {keep_state, Data};
-server_sync_files(info, {ping, From}, Data) ->
-    From ! {pong, self()},
+server_sync_files(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
