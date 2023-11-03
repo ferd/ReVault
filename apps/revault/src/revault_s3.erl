@@ -1,4 +1,3 @@
-%% TODO: pick and normalize on a path format for s3 entries
 %% TODO: deal with error handling much, much better.
 -module(revault_s3).
 -export([hash/1, copy/2,
@@ -14,7 +13,6 @@
 %% in ReVault. This hash is not guaranteed to be stable, but at this time
 %% it is SHA256.
 hash(Path) ->
-    %% TODO: support the cached path hash check
     Res = aws_s3:head_object(client(), bucket(), Path,
                              #{<<"ChecksumMode">> => <<"ENABLED">>}),
     {ok, #{<<"ChecksumSHA256">> := HashB64}, _} = Res,
