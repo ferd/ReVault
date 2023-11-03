@@ -93,7 +93,10 @@ initial_sync(tracker, Name, _Dir, _Ignore, _Time) ->
     %% getting into modes where long delays mean we are unresponsive
     %% to filesystem changes long after boot.
     AllFiles = revault_dirmon_tracker:files(Name),
-    Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles)]),
+    Set = lists:sort([{File, Hash} || {File, {_, Hash}} <- maps:to_list(AllFiles),
+                                      %% ignore deletes from the history, they wouldn't
+                                      %% come up in a file scan
+                                      Hash =/= deleted]),
     %% Fake a message to rescan asap on start
     Ref = make_ref(),
     self() ! {timeout, Ref, poll},
