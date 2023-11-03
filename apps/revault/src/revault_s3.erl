@@ -81,8 +81,8 @@ delete(Path) ->
 consult(Path) ->
     maybe
         {ok, Bin} ?= read_file(Path),
-        %% TODO: handle parse errors
-        {ok, parse_all(scan_all(Bin))}
+        {ok, Scanned} ?= scan_all(Bin),
+        parse_all(Scanned)
     end.
 
 read_file(Path) ->
@@ -109,6 +109,7 @@ ensure_dir(_Path) ->
     ok.
 
 write_file(Path, Data) ->
+    %% TODO: deal with huge files by using multipart API
     Chk = base64:encode(revault_file:hash_bin(Data)),
     Input = #{<<"Body">> => Data,
               <<"ChecksumAlgorithm">> => <<"SHA256">>,
@@ -161,25 +162,39 @@ translate_code(Code) -> Code.
 
 scan_all(Bin) ->
     Str = unicode:characters_to_list([Bin, " "]),
-    scan_all([], Str).
+    try scan_all([], Str, 1) of
+        List when is_list(List) -> {ok, List}
+    catch
+        error:Reason -> {error, Reason}
+    end.
 
-scan_all(Cont, Str) ->
+scan_all(Cont, Str, Ln) ->
+    %% Do some ugly stuff to maintain line counts equivalence with
+    %% file:consult/1 even though we don't work with lines.
+    Lns = length(string:split(Str, "\n", all))-1,
     case erl_scan:tokens(Cont, Str, 0) of
         {done, {ok, Res, _}, ""} ->
             [Res];
-        {done, {ok,Res,_}, Next} ->
-            [Res| scan_all([],Next)];
+        {done, {ok, Res, _}, Next} ->
+            LnsLeft = length(string:split(Next, "\n", all))-1,
+            [Res| scan_all([],Next, Ln+(Lns-LnsLeft))];
         {more, _Cont} ->
             case re:run(Str, "^\\s+$") of
-                nomatch -> error(incomplete);
+                nomatch -> error({Ln, erl_parse, ["syntax error before: ", ""]});
                 _ -> []
             end
     end.
 
 parse_all(L) ->
-    [erl_parse:normalise(Exp) ||
-     X <- L,
-     {ok, [Exp]} <- [erl_parse:parse_exprs(X)]].
+    try
+        [erl_parse:normalise(Exp) ||
+         X <- L,
+         {ok, [Exp]} <- [erl_parse:parse_exprs(X)]]
+    of
+        Normalised -> {ok, Normalised}
+    catch
+        error:_ -> {error, {0, erl_parse, "bad_term"}}
+    end.
 
 s3_tmpdir() ->
     application:get_env(revault, s3_tmpdir, ".tmp").
