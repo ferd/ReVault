@@ -22,7 +22,6 @@
 start_link(DbDir, Name) ->
     gen_server:start_link(?VIA_GPROC(Name), ?MODULE, {DbDir, Name}, ?DEBUG_OPTS).
 
-%% TODO decide if this call should also start the cache process if not loaded.
 ensure_loaded(Name) ->
     gen_server:call(?VIA_GPROC(Name), load, timer:minutes(1)).
 
