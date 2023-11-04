@@ -5,7 +5,7 @@
          tmp/0, tmp/1, extension/2,
          find_hashes/2,
          %% wrappers to file module
-         delete/1, consult/1, read_file/1, ensure_dir/1, is_file/1,
+         delete/1, consult/1, read_file/1, ensure_dir/1, is_regular/1,
          write_file/2, write_file/3, rename/2]).
 
 -type hash() :: binary().
@@ -121,11 +121,10 @@ read_file(Path) ->
 ensure_dir(Path) ->
     (mod()):ensure_dir(Path).
 
-%% @doc Returns true if the path refers to a file or a directory,
-%% otherwise false.
--spec is_file(file:filename_all()) -> boolean().
-is_file(Path) ->
-    (mod()):is_file(Path).
+%% @doc Returns true if the path refers to a file, otherwise false.
+-spec is_regular(file:filename_all()) -> boolean().
+is_regular(Path) ->
+    (mod()):is_regular(Path).
 
 %% @doc Writes the content to the file mentioned.  The file is created if it
 %% does not exist. If it exists, the previous contents are overwritten.

@@ -844,7 +844,6 @@ server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
 server_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-%% TODO: test
 format_status(Status) ->
     maps:map(
       fun(Messages, Queue) when Messages == queue; Messages == postponed ->

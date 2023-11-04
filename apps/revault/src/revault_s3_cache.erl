@@ -27,6 +27,7 @@ ensure_loaded(Name) ->
 
 %% since we are mostly caching for cost ($) and not speed, it's okay to go simple
 %% and serialize all reads and writes.
+-spec hash(term(), term()) -> {ok, term()} | undefined.
 hash(Name, Key) ->
     gen_server:call(?VIA_GPROC(Name), {get, Key}, timer:minutes(1)).
 

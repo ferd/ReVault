@@ -5,7 +5,7 @@
          find_hashes/2, find_hashes_uncached/2,
          %%% wrappers to file module; can never use a cache if we
          %%% want the cache module to safely use these.
-         delete/1, consult/1, read_file/1, ensure_dir/1, is_file/1,
+         delete/1, consult/1, read_file/1, ensure_dir/1, is_regular/1,
          write_file/2, write_file/3, rename/2
         ]).
 
@@ -93,16 +93,21 @@ read_file(Path) ->
         {ok, Contents}
     end.
 
-%% @doc Returns true if the path refers to a file or a directory,
-%% otherwise false.
--spec is_file(file:filename_all()) -> boolean().
-is_file(Path) ->
-    %% TODO: test this
+%% @doc Returns true if the path refers to a file, otherwise false.
+-spec is_regular(file:filename_all()) -> boolean().
+is_regular(Path) ->
     %% S3 returns a valid object for directories, but with a
     %% different content-type. We don't care here, whatever's good
     %% is good for us.
     Res = aws_s3:head_object(client(), bucket(), Path, #{}),
-    handle_result(Res) == ok.
+    case Res of
+        {ok, #{<<"ContentType">> := <<"application/x-directory;", _/binary>>}, _} ->
+            false;
+        {ok, _, _} ->
+            true;
+        _ ->
+            false
+    end.
 
 %% @doc This operation isn't required on S3 and is a no-op.
 ensure_dir(_Path) ->
@@ -197,7 +202,13 @@ parse_all(L) ->
     end.
 
 s3_tmpdir() ->
-    application:get_env(revault, s3_tmpdir, ".tmp").
+    Dir = application:get_env(revault, s3_tmpdir, ".tmp"),
+    %% S3 really does not like an absolute path here as it will mess
+    %% with copy paths, so bail out if we find that happening.
+    case string:prefix(Dir, "/") of
+        nomatch -> Dir;
+        _ -> error(absolute_s3_tmpdir)
+    end.
 
 randname() ->
     float_to_list(rand:uniform()).
@@ -226,7 +237,6 @@ list_all_files(Dir, Continuation) ->
                     Files
             end;
         {ok, #{<<"ListBucketResult">> := #{<<"KeyCount">> := <<"0">>}}, _} ->
-            %% TODO: test
             []
     end.
 

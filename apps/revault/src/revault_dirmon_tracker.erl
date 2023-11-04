@@ -317,7 +317,7 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC, Dir) ->
             %% scanner moved and reaped files at once.
             %% As such, updating the conflict files if it's gone overwrites the
             %% user's change.
-            case revault_file:is_file(conflict_marker(Dir, BaseFile)) of
+            case revault_file:is_regular(conflict_marker(Dir, BaseFile)) of
                 true ->
                     write_conflict_marker(Dir, BaseFile, {Ct, {conflict, Hashes, WorkingHash}});
                 false ->

@@ -10,7 +10,7 @@ all() -> [{group, api},
 groups() ->
     [{api, [sequence], [list_objects_empty, crud_object, rename_raw, pagination]},
      {abstraction, [sequence], [read_write_delete, hasht, copy, rename,
-                                find_hashes, consult]},
+                                find_hashes, consult, is_regular]},
      {cache, [sequence], [find_hashes_cached]}
     ].
 
@@ -275,6 +275,20 @@ consult(Config) ->
     Term = [#{a=>b}, atom, ["list"]],
     ?assertEqual(ok, revault_s3:write_file(Path, Str)),
     ?assertEqual({ok, Term}, revault_s3:consult(Path)),
+    ?assertEqual(ok, revault_s3:delete(Path)),
+    ok.
+
+is_regular() ->
+    [{doc, "Test the file-identifying functionality"}].
+is_regular(Config) ->
+    Dir = ?config(bucket_dir, Config),
+    Path = filename:join([Dir, "subdir", "hash.txt"]),
+    ?assertEqual(ok, revault_s3:write_file(Path, <<"a">>)),
+    ?assertNot(revault_s3:is_regular(Dir)),
+    ?assertNot(revault_s3:is_regular(filename:join([Dir, "subdir"]))),
+    ?assert(revault_s3:is_regular(Path)),
+    ?assertNot(revault_s3:is_regular(filename:join([Dir, "subdir", "fakefile"]))),
+    ?assertNot(revault_s3:is_regular(filename:join([Dir, "fakedir"]))),
     ?assertEqual(ok, revault_s3:delete(Path)),
     ok.
 
