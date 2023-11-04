@@ -1,4 +1,4 @@
--name revault
+-name ${NODENAME:-revault}
 
 -setcookie revault_cookie
 -enable-feature maybe

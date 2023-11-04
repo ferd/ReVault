@@ -35,7 +35,7 @@
 -behaviour(gen_statem).
 -export([start_link/5, start_link/6,
          server/1, client/1, id/1, id/2, sync/2,
-         seed_fork/2, seed_fork/3]).
+         seed_fork/2, seed_fork/3, ping/3]).
 -export([%% Lifecycle
          callback_mode/0,
          init/1, %handle_event/4, terminate/3,
@@ -51,7 +51,9 @@
          %% server-side file synchronization callbacks
          server_sync/3, server_sync_files/3,
          %% Connection handling
-         connecting/3, disconnect/3
+         connecting/3, disconnect/3,
+         %% Debugging output
+         format_status/1
         ]).
 
 -define(registry(M, N), {via, gproc, {n, l, {M, N}}}).
@@ -123,6 +125,7 @@
           interval,
           callback,
           ctx=[],
+          scan=false,
           %% holding data used for the current substate
           sub :: undefined | #connecting{} | #disconnect{}
                | #client_sync{} | #server{}
@@ -173,6 +176,11 @@ seed_fork(Name, ForkDir) ->
     when DbDir :: file:filename_all().
 seed_fork(Name, ForkName, ForkDir) ->
     gen_statem:call(?registry(Name), {seed_fork, ForkName,  ForkDir}).
+
+%% The FSM will reply with `{pong, Payload}' to the `ReplyTo' pid or name.
+ping(Name, ReplyTo, Payload) ->
+    gen_statem:cast(?registry(Name), {ping, ReplyTo, Payload}).
+
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -282,6 +290,9 @@ connecting(internal, {connect, Remote},
              NewData#data{callback=NewCb, sub=undefined},
              [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
     end;
+connecting(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 connecting(info, {revault, Marker, ok},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
     %% Transition to a successful state
@@ -394,6 +405,9 @@ disconnect(_, _, Data) ->
 
 client_id_sync(enter, connecting, Data=#uninit{}) ->
     {keep_state, Data};
+client_id_sync(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 client_id_sync(internal, {connect, Remote, {call,From}}, Data=#uninit{callback=Cb}) ->
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:ask()]),
     case Res of
@@ -463,6 +477,9 @@ initialized({call, From}, {seed_fork, ForkName, ForkDir},
 initialized({call, _From}, {sync, _Remote}, Data) ->
     %% consider this to be an implicit {role, client} call
     {next_state, client, Data, [postpone]};
+initialized(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 initialized(info, {revault, _Marker, {peer, _Remote, _Attrs}}, Data) ->
     %% consider this to be an implicit {role, server} shift;
     %% TODO: add a "wait_role" sort of call if this ends up
@@ -519,6 +536,9 @@ client_sync_manifest(internal, {connect, Remote, {call,From}}, DataTmp=#data{cal
              [{reply, From, {error, R}},
               {next_event, internal, {disconnect, Remote}}]}
     end;
+client_sync_manifest(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
                      DataTmp=#data{sub=#client_sync{marker=Marker},
                                    name=Name, id=Id}) ->
@@ -548,7 +568,7 @@ client_sync_files(internal, {send, File},
             %% TODO: optimize to read and send files in parts rather than
             %% just reading it all at once and loading everything in memory
             %% and shipping it in one block
-            {ok, Bin} = file:read_file(filename:join(Path, File)),
+            {ok, Bin} = revault_file:read_file(filename:join(Path, File)),
             revault_data_wrapper:send_file(File, Vsn, Hash, Bin)
     end,
     %% TODO: track the success or failures of transfers, detect disconnections
@@ -575,6 +595,9 @@ client_sync_files(internal, sync_complete, Data) ->
     %% wait for all files we're fetching to be here, and when the last one is in,
     %% re-trigger a sync_complete message
     {keep_state, Data};
+client_sync_files(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
     ?with_span(<<"file_recv">>,
@@ -585,10 +608,10 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
         end),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
@@ -597,10 +620,10 @@ client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
@@ -611,34 +634,41 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
        fun(_SpanCtx) ->
            %% TODO: handle the file being corrupted vs its own hash
            TmpF = revault_file:tmp(F),
-           filelib:ensure_dir(TmpF),
-           ok = file:write_file(TmpF, Bin),
+           revault_file:ensure_dir(TmpF),
+           ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
-           file:delete(TmpF)
+           revault_file:delete(TmpF)
         end
     ),
     case CountLeft =:= 0 andalso Acc -- [WorkF] of
         false ->
             %% more of the same conflict file to come
-            {keep_state, Data};
+            {keep_state, Data#data{scan=true}};
         [] ->
-            {keep_state, Data#data{sub=S#client_sync{acc=[]}},
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
              [{next_event, internal, sync_complete}]};
         NewAcc ->
-            {keep_state, Data#data{sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
     end;
 client_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
-client_sync_complete(enter, _, Data=#data{name=Name}) ->
-    %% force scan to ensure conflict files (if any) are tracked before
-    %% users start modifying them. Might not be relevant when things like
-    %% filesystem watchers are used, but I'm starting to like the idea of
-    %% on-demand scan/sync only.
-    ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
-        fun(_SpanCtx) ->
-            ok = revault_dirmon_event:force_scan(Name, infinity)
-        end),
+client_sync_complete(enter, _, Data=#data{name=Name, scan=ScanNeeded}) ->
+    if ScanNeeded ->
+        %% force scan to ensure conflict files (if any) are tracked before
+        %% users start modifying them. Might not be relevant when things like
+        %% filesystem watchers are used, but I'm starting to like the idea of
+        %% on-demand scan/sync only.
+        ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
+            fun(_SpanCtx) ->
+                ok = revault_dirmon_event:force_scan(Name, infinity)
+            end),
+        {keep_state, Data#data{scan=false}};
+       not ScanNeeded ->
+        {keep_state, Data}
+    end;
+client_sync_complete(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_complete(info, {revault, _Marker, sync_complete},
                      DataTmp=#data{sub=#client_sync{from=From, remote=Remote}}) ->
@@ -666,6 +696,9 @@ server({call, _From}, {sync, _Remote}, Data) ->
     {next_state, initialized, Data, [postpone]};
 server({call, From}, id, Data=#data{id=Id}) ->
     {keep_state, Data, [{reply, From, {ok, Id}}]};
+server(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
        DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
     %% TODO: handle error
@@ -724,6 +757,9 @@ server_id_sync(_, _, Data) ->
 
 server_sync(enter, _, Data=#data{}) ->
     {keep_state, Data};
+server_sync(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
        DataTmp=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
     Data = start_span(<<"server_sync">>, DataTmp),
@@ -741,6 +777,9 @@ server_sync(_, _, Data) ->
 
 server_sync_files(enter, _, Data) ->
     {keep_state, Data};
+server_sync_files(cast, {ping, From, Payload}, Data) ->
+    gproc:send(From, {pong, Payload}),
+    {keep_state, Data};
 server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
                   Data=#data{name=Name, id=Id}) ->
     ?with_span(<<"file_recv">>,
@@ -749,13 +788,13 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
         fun(_SpanCtx) ->
             handle_file_sync(Name, Id, F, Meta, Bin)
         end),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
                   Data=#data{name=Name, id=Id}) ->
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
                                                | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
     ?with_span(
@@ -764,33 +803,38 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
                         {<<"count">>, CountLeft} | ?attrs(Data)]},
        fun(_SpanCtx) ->
            TmpF = revault_file:tmp(F),
-           filelib:ensure_dir(TmpF),
-           ok = file:write_file(TmpF, Bin),
+           revault_file:ensure_dir(TmpF),
+           ok = revault_file:write_file(TmpF, Bin),
            revault_dirmon_tracker:conflict(Data#data.name, WorkF, TmpF, Meta),
-           file:delete(TmpF)
+           revault_file:delete(TmpF)
        end
     ),
-    {keep_state, Data};
+    {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, Marker, {fetch, F}}, Data) ->
     NewData = handle_file_demand(F, Marker, Data),
     {keep_state, NewData};
 server_sync_files(info, {revault, Marker, sync_complete},
-                  DataTmp=#data{name=Name, callback=Cb,
+                  DataTmp=#data{name=Name, callback=Cb, scan=ScanNeeded,
                                 sub=#server{remote=R}}) ->
-    %% force scan to ensure conflict files (if any) are tracked before
-    %% users start modifying them. Might not be relevant when things like
-    %% filesystem watchers are used, but I'm starting to like the idea of
-    %% on-demand scan/sync only.
-    ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
-        fun(_SpanCtx) ->
-            ok = revault_dirmon_event:force_scan(Name, infinity)
-        end),
+    if ScanNeeded ->
+        %% force scan to ensure conflict files (if any) are tracked before
+        %% users start modifying them. Might not be relevant when things like
+        %% filesystem watchers are used, but I'm starting to like the idea of
+        %% on-demand scan/sync only.
+        ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
+            fun(_SpanCtx) ->
+                ok = revault_dirmon_event:force_scan(Name, infinity)
+            end);
+       not ScanNeeded ->
+           ok
+    end,
     NewPayload = revault_data_wrapper:sync_complete(),
     {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
     Data = end_span(DataTmp),
     otel_ctx:clear(),
     Disconnect = #disconnect{next_state=initialized},
-    {next_state, disconnect, Data#data{callback=Cb1, sub=Disconnect},
+    {next_state, disconnect,
+     Data#data{callback=Cb1, sub=Disconnect, scan=false},
      [{next_event, internal, {disconnect, R}}]};
 server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
                   Data=#data{callback=Cb}) ->
@@ -800,6 +844,18 @@ server_sync_files(info, {revault, Marker, {peer, Peer, _Attrs}},
 server_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
+format_status(Status) ->
+    maps:map(
+      fun(Messages, Queue) when Messages == queue; Messages == postponed ->
+              [format_status_msg(Msg) || Msg <- Queue];
+         (_,Value) ->
+              Value
+      end, Status).
+
+format_status_msg({info, {revault, Marker, {file, F, Meta, Bin}}}) when byte_size(Bin) > 64 ->
+    BinSize = integer_to_binary(byte_size(Bin)),
+    {revault, Marker, {file, F, Meta, <<"[truncated: ", BinSize/binary, " bytes]">>}};
+format_status_msg(Term) -> Term.
 
 %%%%%%%%%%%%%%%
 %%% PRIVATE %%%
@@ -811,14 +867,14 @@ apply_cb(Mod, F, Args) when is_atom(Mod) ->
 
 init_id(Dir, Name) ->
     Path = filename:join([Dir, Name, "id"]),
-    case file:read_file(Path) of
+    case revault_file:read_file(Path) of
         {error, enoent} -> undefined;
         {ok, Bin} -> binary_to_term(Bin)
     end.
 
 init_uuid(Dir, Name) ->
     Path = filename:join([Dir, Name, "uuid"]),
-    case file:read_file(Path) of
+    case revault_file:read_file(Path) of
         {error, enoent} -> undefined;
         {ok, Bin} -> binary_to_term(Bin)
     end.
@@ -827,16 +883,16 @@ init_uuid(Dir, Name) ->
 store_id(Dir, Name, Id) ->
     Path = filename:join([Dir, Name, "id"]),
     PathTmp = filename:join([Dir, Name, "id.tmp"]),
-    ok = filelib:ensure_dir(Path),
-    ok = file:write_file(PathTmp, term_to_binary(Id)),
-    ok = file:rename(PathTmp, Path).
+    ok = revault_file:ensure_dir(Path),
+    ok = revault_file:write_file(PathTmp, term_to_binary(Id)),
+    ok = revault_file:rename(PathTmp, Path).
 
 store_uuid(Dir, Name, UUID) ->
     Path = filename:join([Dir, Name, "uuid"]),
     PathTmp = filename:join([Dir, Name, "uuid.tmp"]),
-    ok = filelib:ensure_dir(Path),
-    ok = file:write_file(PathTmp, term_to_binary(UUID)),
-    ok = file:rename(PathTmp, Path).
+    ok = revault_file:ensure_dir(Path),
+    ok = revault_file:write_file(PathTmp, term_to_binary(UUID)),
+    ok = revault_file:rename(PathTmp, Path).
 
 start_tracker(Name, Id, Path, Ignore, Interval, DbDir) ->
     revault_trackers_sup:start_tracker(Name, Id, Path, Ignore, Interval, DbDir).
@@ -925,16 +981,16 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
                 conflict ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
                     TmpF = revault_file:tmp(FHash),
-                    file:write_file(TmpF, Bin),
+                    revault_file:write_file(TmpF, Bin),
                     revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
-                    file:delete(TmpF);
+                    revault_file:delete(TmpF);
                 _ ->
                     update_file(Name, F, Meta, Bin)
             end
     end.
 
 delete_file(Name, F, Meta) ->
-    case file:delete(F) of
+    case revault_file:delete(F) of
         ok -> ok;
         {error, enoent} -> ok
     end,
@@ -942,16 +998,16 @@ delete_file(Name, F, Meta) ->
 
 update_file(Name, F, Meta, Bin) ->
     TmpF = revault_file:tmp(F),
-    filelib:ensure_dir(TmpF),
-    ok = file:write_file(TmpF, Bin),
+    revault_file:ensure_dir(TmpF),
+    ok = revault_file:write_file(TmpF, Bin),
     revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
-    file:delete(TmpF).
+    revault_file:delete(TmpF).
 
 validate_hash({conflict, Hashes, _}, Bin) ->
-    Hash = revault_dirmon_poll:hash(Bin),
+    Hash = revault_file:hash_bin(Bin),
     lists:member(Hash, Hashes);
 validate_hash(Hash, Bin) ->
-    Hash =:= revault_dirmon_poll:hash(Bin).
+    Hash =:= revault_file:hash_bin(Bin).
 
 handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
                                             sub=#server{remote=R}}) ->
@@ -965,7 +1021,7 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
             {Cb2, _} = lists:foldl(
                 fun(Hash, {CbAcc1, Ct}) ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
-                    {ok, Bin} = file:read_file(filename:join(Path, FHash)),
+                    {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
                     NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
                     %% TODO: track failing or succeeding transfers?
                     {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
@@ -986,7 +1042,7 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
         {Vsn, Hash} ->
             %% just inefficiently read the whole freaking thing at once
             %% TODO: optimize to better read and send file parts
-            {ok, Bin} = file:read_file(filename:join(Path, F)),
+            {ok, Bin} = revault_file:read_file(filename:join(Path, F)),
             NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
             %% TODO: track failing or succeeding transfers?
             {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),

@@ -106,9 +106,17 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, TmpData=#clie
             {next_state, disconnected, NewData#client{sock=undefined, dir=undefined},
              [{reply, From, {error, Reason}}]}
     end;
-handle_event(info, {ssl_passive, Sock}, connected, Data=#client{sock=Sock}) ->
-    ssl:setopts(Sock, [{active, 5}]),
+handle_event(info, {ssl_passive, Sock}, connected, Data=#client{name=Name, sock=Sock}) ->
+    revault_fsm:ping(Name, self(), erlang:monotonic_time(millisecond)),
     {keep_state, Data, []};
+handle_event(info, {pong, T}, connected, Data=#client{sock=Sock, active=Active}) ->
+    Now = erlang:monotonic_time(millisecond),
+    NewActive = case Now - T > ?BACKOFF_THRESHOLD of
+        true -> max(Active div 2, ?MIN_ACTIVE);
+        false -> Active * 2
+    end,
+    ssl:setopts(Sock, [{active, NewActive}]),
+    {keep_state, Data#client{active=NewActive}, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     TmpData = maybe_start_unique_span(<<"recv">>, Data#client.recv, Data#client{recv=true}),
     Buf1 = revault_tls:buf_add(Bin, Buf0),
@@ -129,6 +137,8 @@ handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock
     %% TODO: Log
     otel_ctx:clear(),
     {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};
+handle_event(info, {pong, _}, disconnected, Data) ->
+    {keep_state, Data};
 handle_event(info, {ssl_closed, Sock}, connected, Data=#client{sock=Sock}) ->
     otel_ctx:clear(),
     {next_state, disconnected, Data#client{sock=undefined, dir=undefined}};

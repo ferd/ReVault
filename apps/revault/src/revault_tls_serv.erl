@@ -228,7 +228,7 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
             ssl:close(Sock)
     end.
 
-worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
+worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0, active=Active}) ->
     receive
         {fwd, _Name, From, Msg} ->
             ?with_span(<<"fwd">>, #{attributes => [{<<"msg">>, ?str(type(Msg))} | ?attrs(C)]},
@@ -243,8 +243,16 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
                        fun(_SpanCtx) -> ssl:close(Sock) end),
             exit(normal);
         {ssl_passive, Sock} ->
-            ssl:setopts(Sock, [{active, 5}]),
+            revault_fsm:ping(Name, self(), erlang:monotonic_time(millisecond)),
             worker_loop(Dir, C);
+        {pong, T} ->
+            Now = erlang:monotonic_time(millisecond),
+            NewActive = case Now - T > ?BACKOFF_THRESHOLD of
+                true -> max(Active div 2, ?MIN_ACTIVE);
+                false -> Active * 2
+            end,
+            ssl:setopts(Sock, [{active, NewActive}]),
+            worker_loop(Dir, C#conn{active=NewActive});
         {ssl, Sock, Data} ->
             TmpC = maybe_start_unique_span(<<"recv">>, C#conn.recv, C#conn{recv=true}),
             Buf1 = revault_tls:buf_add(Data, Buf0),

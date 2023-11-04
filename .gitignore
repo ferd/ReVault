@@ -19,3 +19,5 @@ _build
 rebar3.crashdump
 *~
 doc
+# getting clobbered by vm.args.src
+config/vm.args

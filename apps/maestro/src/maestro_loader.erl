@@ -104,6 +104,7 @@ apply_cfg(NewCfg, _OldCfg) ->
     start_workers(NewCfg).
 
 start_workers(Cfg) ->
+    start_backend(Cfg),
     %% start all clients first, with each client call trying to boot its own VM
     %% and assert a client mode;
     %% then start all servers, with each server call trying to boot its own VM
@@ -119,7 +120,45 @@ start_workers(Cfg) ->
 stop_workers() ->
     stop_fsms(),
     stop_servers(),
-    stop_clients().
+    stop_clients(),
+    stop_backend(),
+    ok.
+
+start_backend(#{<<"backend">> := #{<<"mode">> := <<"disk">>}}) ->
+    revault_backend_sup:start_disk_subtree(),
+    ok;
+start_backend(#{<<"backend">> := Backend=#{<<"mode">> := <<"s3">>},
+                <<"peers">> := PeersMap,
+                <<"server">> := ServMap,
+                <<"dirs">> := DirsMap}) ->
+    %% Extract s3 params
+    #{<<"role_arn">> := RoleARN, <<"region">> := Region,
+      <<"bucket">> := Bucket, <<"cache_dir">> := CacheDir} = Backend,
+    %% Get list of all directories that will need a cache
+    %% First the peers...
+    PeersDirs = [Dir || {_, #{<<"sync">> := DirList}} <- maps:to_list(PeersMap),
+                        Dir <- DirList],
+    %% The servers dirs list is more complex though, as we extract both
+    %% TLS and unauthentified ones.
+    AuthTypesMap = maps:get(<<"auth">>, ServMap, #{}),
+    TlsMap = maps:get(<<"tls">>, AuthTypesMap, #{}),
+    AuthMap = maps:get(<<"authorized">>, TlsMap, #{}),
+    TlsDirs = lists:usort(lists:append(
+        [maps:get(<<"sync">>, AuthCfg)
+         || {_Peer, AuthCfg} <- maps:to_list(AuthMap)]
+    )),
+    NoneMap = maps:get(<<"none">>, AuthTypesMap, #{}),
+    NoneDirs = lists:usort(maps:get(<<"sync">>, NoneMap, [])),
+    %% Put 'em together
+    AllDirs = lists:usort(PeersDirs ++ TlsDirs ++ NoneDirs),
+    DirPaths = [maps:get(<<"path">>, maps:get(Dir, DirsMap))
+                || Dir <- AllDirs],
+    %% Get this going
+    [revault_backend_sup:start_s3_subtree(
+       RoleARN, Region, Bucket,
+       CacheDir, Path
+     ) || Path <- DirPaths],
+    ok.
 
 start_clients(Cfg = #{<<"peers">> := PeersMap}) ->
     [start_client(Dir, Cfg, PeerName, PeerCfg)
@@ -140,10 +179,27 @@ start_client(DirName,
     %% existed locally.
     #{<<"auth">> := #{<<"type">> := AuthType}} = PeerCfg,
     Cb = (callback_mod(AuthType)):callback({DirName, Cfg}),
-    _ = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
+    StartRes = revault_fsm_sup:start_fsm(DbDir, DirName, Path, Ignore, Interval, Cb),
+    StartType = case StartRes of
+        {ok, _} -> new;
+        {error, {already_started, _}} -> already_started;
+        StartRes -> StartRes
+    end,
     case revault_fsm:id(DirName) of
-        undefined ->
+        undefined when StartType =:= new ->
             ok = revault_fsm:client(DirName),
+            %% this call is allowed to fail if the peer isn't up at this
+            %% point in time, but will keep the FSM in client mode, which
+            %% we desire at this point.
+            _ = revault_fsm:id(DirName, PeerName),
+            ok;
+        undefined when StartType =:= already_started ->
+            %% a previous call should already handle this, we just don't know
+            %% if the previous one was up yet.
+            case revault_fsm:client(DirName) of
+                ok -> ok;
+                {error, busy} -> ok
+            end,
             %% this call is allowed to fail if the peer isn't up at this
             %% point in time, but will keep the FSM in client mode, which
             %% we desire at this point.
@@ -202,6 +258,10 @@ stop_servers() ->
 stop_fsms() ->
     revault_fsm_sup:stop_all(),
     revault_trackers_sup:stop_all(),
+    ok.
+
+stop_backend() ->
+    revault_backend_sup:stop_all(),
     ok.
 
 %% No pattern allows disterl to work as an option here. Only works for tests.

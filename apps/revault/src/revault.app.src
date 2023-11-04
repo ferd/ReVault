@@ -10,9 +10,16 @@
     itc,
     uuid,
     ssl, public_key, tak,
-    opentelemetry_api
+    opentelemetry_api,
+    %% apps required for s3 support
+    aws, jsx
    ]},
-  {env, []},
+  {optional_applications, [
+    aws, jsx
+  ]},
+  {env, [
+    {backend, disk}
+  ]},
   {modules, []},
 
   {maintainers, ["Fred Hebert"]},

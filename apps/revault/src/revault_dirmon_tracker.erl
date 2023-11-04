@@ -16,14 +16,14 @@
 -record(state, {
     snapshot = #{} :: #{file:filename_all() =>
                         {stamp(),
-                         revault_dirmon_poll:hash() | deleted |
+                         revault_file:hash() | deleted |
                          {conflict,
                           %% known conflicts, track for syncs
-                          [revault_dirmon_poll:hash()],
+                          [revault_file:hash()],
                           %% Last known working file; track to know what hash to
                           %% pick when resolving the conflict, but do not use in
                           %% actual conflict syncs
-                          revault_dirmon_poll:hash() | deleted}
+                          revault_file:hash() | deleted}
                         }},
     dir :: file:filename_all(),
     ignore :: revault_dirmon_poll:ignore(),
@@ -39,7 +39,7 @@ file(Name, File) ->
     gen_server:call(?VIA_GPROC(Name), {file, File}).
 
 files(Name) ->
-    gen_server:call(?VIA_GPROC(Name), files).
+    gen_server:call(?VIA_GPROC(Name), files, infinity).
 
 stop(Name) ->
     gen_server:stop(?VIA_GPROC(Name), normal, 5000).
@@ -52,7 +52,7 @@ conflict(Name, WorkFile, Vsn = {_Stamp, deleted}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, Vsn}, infinity).
 
 -spec conflict(term(), file:filename_all(), file:filename_all(),
-               {stamp(), revault_dirmon_poll:hash()}) -> ok | ignored.
+               {stamp(), revault_file:hash()}) -> ok | ignored.
 conflict(Name, WorkFile, ConflictFile, Vsn = {_Stamp, _Hash}) ->
     gen_server:call(?VIA_GPROC(Name), {conflict, WorkFile, ConflictFile, Vsn}, infinity).
 
@@ -225,7 +225,7 @@ handle_call({delete_file, Work, {NewStamp, deleted}}, _From,
                     error({stamp_shared_for_conflicting_operations,
                            {Stamp, conflict}, {NewStamp, delete_file}});
                 lesser -> % sync resolves conflict
-                    _ = file:delete(filename:join(Dir, Work)),
+                    _ = revault_file:delete(filename:join(Dir, Work)),
                     resolve_conflict(Dir, Work, Hashes),
                     delete_conflict_marker(Dir, Work),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
@@ -241,7 +241,7 @@ handle_call({delete_file, Work, {NewStamp, deleted}}, _From,
                 conflict -> % it's already gone from the current conflict?
                     {reply, ok, State};
                 lesser ->
-                    _ = file:delete(filename:join(Dir, Work)),
+                    _ = revault_file:delete(filename:join(Dir, Work)),
                     NewState = State#state{snapshot=Map#{Work => {NewStamp, deleted}}},
                     save_snapshot(NewState),
                     {reply, ok, NewState};
@@ -317,7 +317,7 @@ apply_operation({deleted, {FileName, Hash}}, SetMap, ITC, Dir) ->
             %% scanner moved and reaped files at once.
             %% As such, updating the conflict files if it's gone overwrites the
             %% user's change.
-            case filelib:is_file(conflict_marker(Dir, BaseFile)) of
+            case revault_file:is_regular(conflict_marker(Dir, BaseFile)) of
                 true ->
                     write_conflict_marker(Dir, BaseFile, {Ct, {conflict, Hashes, WorkingHash}});
                 false ->
@@ -340,7 +340,7 @@ apply_operation({changed, {FileName, Hash}}, SetMap, ITC, _Dir) ->
     end.
 
 restore_snapshot(File, Ignore) ->
-    case file:consult(File) of
+    case revault_file:consult(File) of
         {error, enoent} ->
             #{};
         {ok, [Snapshot]} ->
@@ -365,8 +365,8 @@ save_snapshot(#state{snapshot = Snap, storage = File}) ->
     SnapshotBlob = <<_/binary>> = unicode:characters_to_binary(
         io_lib:format("~tp.~n", [Snap])
     ),
-    ok = file:write_file(SnapshotName, SnapshotBlob, [sync]),
-    ok = file:rename(SnapshotName, File).
+    ok = revault_file:write_file(SnapshotName, SnapshotBlob, [sync]),
+    ok = revault_file:rename(SnapshotName, File).
 
 conflict_marker(Dir, WorkingFile) ->
     revault_conflict_file:marker(filename:join(Dir, WorkingFile)).
@@ -374,13 +374,13 @@ conflict_marker(Dir, WorkingFile) ->
 write_conflict_marker(Dir, WorkingFile, {_, {conflict, Hashes, _}}) ->
     %% We don't care about the rename trick here, it's informational
     %% but all the critical data is tracked in the snapshot
-    file:write_file(
+    revault_file:write_file(
         conflict_marker(Dir, WorkingFile),
         lists:join($\n, [revault_conflict_file:hex(Hash) || Hash <- Hashes])
     ).
 
 delete_conflict_marker(Dir, WorkingFile) ->
-    file:delete(conflict_marker(Dir, WorkingFile)).
+    revault_file:delete(conflict_marker(Dir, WorkingFile)).
 
 -spec conflict_stamp(itc:id(), itc:event(), itc:event()) -> stamp().
 conflict_stamp(Id, C1, C2) ->
@@ -417,7 +417,7 @@ conflict_ext(FileName, Map) ->
     end.
 
 resolve_conflict(Dir, BaseFile, Hashes) ->
-    [file:delete(revault_conflict_file:conflicting(
+    [revault_file:delete(revault_conflict_file:conflicting(
         filename:join(Dir, BaseFile),
         ConflictHash
      )) || ConflictHash <- Hashes],

@@ -549,14 +549,18 @@ too_many_clients(Config) ->
         ok = revault_dirmon_event:force_scan(Server, 5000),
         %% Sync em
         P = self(),
-        spawn_link(fun() -> P ! ok, revault_fsm:sync(Client, Remote), P ! ok end),
+        spawn_link(fun() ->
+            revault_fsm:ping(Client, P, pre),
+            revault_fsm:sync(Client, Remote),
+            revault_fsm:ping(Client, P, post)
+        end),
         receive
-            ok -> timer:sleep(50) % give time to the async call above to start
+            {pong, pre} -> timer:sleep(50) % give time to the async call above to start
         end,
         ?assertEqual({error, peer_busy}, revault_fsm:sync(Client2, Remote)),
         unblock(),
         %% wait for things to be done before unloading meck, or this causes crashes
-        receive ok -> ok end
+        receive {pong, post} -> ok end
     after
         meck:unload(revault_data_wrapper)
     end,
