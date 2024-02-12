@@ -9,7 +9,7 @@
 [peers]
   [peers.a]
   sync = ["test"]
-  url = "127.0.0.1:8022"
+  url = "127.0.0.1:8822"
     [peers.a.auth]
     type = "tls"
     certfile = "./others/certs/b.crt"
