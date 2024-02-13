@@ -206,7 +206,7 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     %% can come to the proper connection process. There can be multiple
     %% TLS servers active for a single one and the responses must go
     %% to the right place.
-    {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
+    {ok, _, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"authorized">> := #{<<"sync">> := DirNames}} = Dirs,
     case Msg of
         {revault, Marker, {peer, Dir, Attrs}} ->

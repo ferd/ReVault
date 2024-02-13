@@ -181,7 +181,7 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     %% can come to the proper connection process. There can be multiple
     %% TCP servers active for a single one and the responses must go
     %% to the right place.
-    {ok, ?VSN, Msg, NewBuf} = next_msg(Sock, Buf),
+    {ok, _Vsn, Msg, NewBuf} = next_msg(Sock, Buf),
     #{<<"sync">> := DirNames} = Dirs,
     case Msg of
         {revault, Marker, {peer, Dir, Attrs}} ->
@@ -218,7 +218,7 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             revault_fsm:ping(Name, self(), erlang:monotonic_time()),
             worker_loop(Dir, C);
         {tcp, Sock, Data} ->
-            {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Data/binary>>),
+            {Unwrapped, IncompleteBuf} = revault_tcp:unwrap_all(<<Buf0/binary, Data/binary>>),
             [revault_tcp:send_local(Name, {revault, {self(), Marker}, Msg})
              || {revault, Marker, Msg} <- Unwrapped],
             worker_loop(Dir, C#conn{buf = IncompleteBuf});
@@ -228,17 +228,6 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0}) ->
             exit(normal);
         Other ->
             error({unexpected, Other})
-    end.
-
-unwrap_all(Buf) ->
-    unwrap_all(Buf, []).
-
-unwrap_all(Buf, Acc) ->
-    case revault_tcp:unwrap(Buf) of
-        {error, incomplete} ->
-            {lists:reverse(Acc), Buf};
-        {ok, ?VSN, Payload, NewBuf} ->
-            unwrap_all(NewBuf, [Payload|Acc])
     end.
 
 %%%%%%%%%%%%%%%

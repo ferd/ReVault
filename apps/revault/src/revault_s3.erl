@@ -9,6 +9,11 @@
          write_file/2, write_file/3, rename/2
         ]).
 
+-define(MIN_PART_SIZE, 5242880). % 5 MiB, no limit on last part
+-define(MAX_PART_SIZE, 5368709120). % 5 GiB
+-define(MAX_PARTS, 10000).
+-define(MAX_SIZE, 5497558138880). % 5 TiB
+
 %% @doc takes a file and computes a hash for it as used to track changes
 %% in ReVault. This hash is not guaranteed to be stable, but at this time
 %% it is SHA256.

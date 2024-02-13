@@ -14,7 +14,9 @@
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
 -export([callback/1, mode/1, peer/3, accept_peer/2, unpeer/2, send/2, reply/3, unpack/1]).
--define(VSN, 1).
+
+-include("revault_data_wrapper.hrl").
+
 -type state() :: ?MODULE.
 -export_type([state/0]).
 
