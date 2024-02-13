@@ -12,7 +12,7 @@
 -export([peer/1, peer/2, new/0, ask/0, ok/0, error/1, fork/2]).
 -export([manifest/0, manifest/1,
          send_file/4, send_multipart_file/6, send_deleted/2,
-         send_conflict_file/5, fetch_file/1,
+         send_conflict_file/5, send_conflict_multipart_file/7, fetch_file/1,
          sync_complete/0]).
 
 -include("revault_data_wrapper.hrl").
@@ -75,6 +75,20 @@ send_deleted(Path, Vsn) ->
 
 send_conflict_file(WorkPath, Path, ConflictsLeft, Meta, Bin) ->
     {conflict_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, Bin}.
+
+%% TODO: figure out if we need a way to work around conflict candidate files
+%% having hashes modified from under us during the transfer
+-spec send_conflict_multipart_file(WorkPath, Path, ConflictsLeft, Meta, PartNum, PartTotal, binary()) ->
+        {conflict_multipart_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, PartNum, PartTotal, binary()}
+           when WorkPath :: file:filename(),
+                Path :: file:filename(),
+                ConflictsLeft :: non_neg_integer(),
+                Meta :: {revault_dirmon_tracker:stamp(),
+                         revault_file:hash() | {conflict, [revault_file:hash()], revault_file:hash()}},
+                PartNum :: 1..10000,
+                PartTotal :: 1..10000.
+send_conflict_multipart_file(WorkPath, Path, ConflictsLeft, Meta, PartNum, PartTotal, Bin) ->
+    {conflict_multipart_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, PartNum, PartTotal, Bin}.
 
 fetch_file(Path) ->
     {fetch, ?VSN, Path}.

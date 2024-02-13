@@ -5,6 +5,8 @@
 
 -define(UUID_RECORD_POS, 4).
 -define(ID_RECORD_POS, 6).
+-define(MULTIPART_SIZE, (1024*8)). % in bits
+-define(MULTIPART_SIZE_BYTES, (1024)).
 
 all() ->
     [start_hierarchy,
@@ -20,7 +22,20 @@ groups() ->
                   fork_server_save, seed_fork, basic_sync,
                   delete_sync, too_many_clients,
                   overwrite_sync_clash, conflict_sync,
-                  prevent_server_clash]}].
+                  prevent_server_clash,
+                  multipart, double_conflict]}].
+
+init_per_suite(Config) ->
+    Multipart = application:get_env(revault, multipart_size),
+    application:set_env(revault, multipart_size, ?MULTIPART_SIZE_BYTES),
+    [{default_multipart_size, Multipart} | Config].
+
+end_per_suite(Config) ->
+    case ?config(default_multipart_size, Config) of
+        undefined -> application:unset_env(revault, multipart_size);
+        {ok, Multipart} -> application:set_env(revault, multipart_size, Multipart)
+    end,
+    Config.
 
 init_per_group(tcp, Config) ->
     [{callback, fun(Name) ->
@@ -735,6 +750,197 @@ prevent_server_clash(Config) ->
     ct:pal("swapped ~p for ~p", [OldUUID, NewUUID]),
     %% Try to connect the client to that server, and see it fail
     ?assertMatch({error, {invalid_peer, OldUUID}}, revault_fsm:sync(Client, Remote)),
+    ok.
+
+multipart() ->
+    [{doc, "See that multipart files can be synchronized."},
+     {timetrap, timer:seconds(5)}].
+multipart(Config) ->
+    Client = ?config(name, Config),
+    Server = ?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(ignore, Config),
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    ct:pal("Multipart config: ~p", [application:get_env(revault, multipart_size)]),
+    %% now in initialized mode
+    %% Write files
+    ok = file:write_file(filename:join([ClientPath, "client-only"]), <<"c1", 0:(?MULTIPART_SIZE*2)>>),
+    ok = file:write_file(filename:join([ServerPath, "server-only"]), <<"s1", 0:(?MULTIPART_SIZE)>>),
+    ok = file:write_file(filename:join([ServerPath, "shared"]), <<"sh1", 0:(?MULTIPART_SIZE*2)>>),
+    ok = file:write_file(filename:join([ClientPath, "shared"]), <<"sh2", 0:(?MULTIPART_SIZE)>>),
+    %% Track em
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Sync em
+    ok = revault_fsm:sync(Client, Remote),
+    %% See the result
+    %% 1. all unmodified files are left in place
+    ?assertEqual({ok, <<"c1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"s1", 0:?MULTIPART_SIZE>>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    %% 2. conflicting files are marked, with the working files left intact
+    ?assertEqual({ok, <<"sh1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({ok, <<"sh2", 0:?MULTIPART_SIZE>>}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual(
+        {ok, <<"E1FEF3E718E21C01733DC77316EF26C82A691EFA23596BBDC7312FB852A575DA\n",
+               "F90C5C75EC6A4A4249165560F830A4426BE647CD4622D06F7C62381FB73EFC60">>},
+        file:read_file(filename:join([ServerPath, "shared.conflict"]))
+    ),
+    ?assertEqual(
+        {ok, <<"E1FEF3E718E21C01733DC77316EF26C82A691EFA23596BBDC7312FB852A575DA\n",
+               "F90C5C75EC6A4A4249165560F830A4426BE647CD4622D06F7C62381FB73EFC60">>},
+        file:read_file(filename:join([ClientPath, "shared.conflict"]))
+    ),
+    ?assertEqual({ok, <<"sh1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "shared.E1FEF3E7"]))),
+    ?assertEqual({ok, <<"sh2", 0:?MULTIPART_SIZE>>}, file:read_file(filename:join([ServerPath, "shared.F90C5C75"]))),
+    ?assertEqual({ok, <<"sh1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "shared.E1FEF3E7"]))),
+    ?assertEqual({ok, <<"sh2", 0:?MULTIPART_SIZE>>}, file:read_file(filename:join([ClientPath, "shared.F90C5C75"]))),
+    %% The working file can be edited however.
+    %% Resolve em and add a file
+    ct:pal("RACE_AREA"),
+    %% POTENTIAL RACE CONDITION!
+    %%   moving the shared.F90C5C75 and deleting shared.F90C5C75 and then
+    %%   deleting shared.conflict can yield, upon a scan, a sequence where
+    %%   the server itself recreates the shared.conflict file.
+    %%   Conditionals in the code are assumed to cover this case.
+    ok = file:delete(filename:join([ClientPath, "shared.F90C5C75"])),
+    ok = file:rename(filename:join([ClientPath, "shared.E1FEF3E7"]),
+                     filename:join([ClientPath, "shared"])),
+    ok = file:delete(filename:join([ClientPath, "shared.conflict"])),
+    %% Sync again, but only track on the client side
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    %% TODO: should we go back to idle mode and re-force setting a client here?
+    ct:pal("RE-SYNC"),
+    ok = revault_fsm:sync(Client, Remote),
+    %% the following should be moved to a lower-level test:
+    %% Check again
+    ?assertEqual({ok, <<"c1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client-only"]))),
+    ?assertEqual({ok, <<"s1", 0:?MULTIPART_SIZE>>}, file:read_file(filename:join([ServerPath, "server-only"]))),
+    ?assertEqual({ok, <<"sh1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({ok, <<"sh1", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ok.
+
+double_conflict() ->
+    [{doc, "client sending a conflict file the server doesn't know about, "
+           "and likewise for the server; presumes other hosts exist"},
+     {timetrap, timer:seconds(5)}].
+double_conflict(Config) ->
+    Client = ?config(name, Config),
+    Server = ?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    PrivDir = ?config(priv_dir, Config),
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(ignore, Config),
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    ct:pal("Multipart config: ~p", [application:get_env(revault, multipart_size)]),
+    {ok, ClientId} = revault_fsm:id(Client, Remote),
+    {ok, ServerId} = revault_fsm:id(Server),
+    {_, BaseStamp} = itc:explode(itc:seed()),
+    {_, ClientStamp} = itc:explode(itc:event(itc:rebuild(ClientId, BaseStamp))),
+    {_, ServerStamp} = itc:explode(itc:event(itc:rebuild(ServerId, BaseStamp))),
+    %% now in initialized mode
+    %% Write files: create conflicts ahead of time that have both local and
+    %% multipart portions
+    %% client side
+    TmpFClient = filename:join([PrivDir, "client"]),
+    ok = file:write_file(TmpFClient, "c1"),
+    revault_dirmon_tracker:conflict(Client, "client", TmpFClient, {ClientStamp, revault_file:hash(TmpFClient)}),
+    ok = file:write_file(TmpFClient, <<"c2", 0:(?MULTIPART_SIZE*2)>>),
+    revault_dirmon_tracker:conflict(Client, "client", TmpFClient, {ClientStamp, revault_file:hash(TmpFClient)}),
+    ok = file:write_file(TmpFClient, <<"c3", 0:(?MULTIPART_SIZE*2)>>),
+    revault_dirmon_tracker:conflict(Client, "client", TmpFClient, {ClientStamp, revault_file:hash(TmpFClient)}),
+    ok = file:write_file(TmpFClient, "c4"),
+    revault_dirmon_tracker:conflict(Client, "client", TmpFClient, {ClientStamp, revault_file:hash(TmpFClient)}),
+    %% make sure they're all tracked right
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client.D0F631CA"]))),
+    ?assertEqual({ok, <<"c2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client.C9815A5E"]))),
+    ?assertEqual({ok, <<"c3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client.CF12EFCD"]))),
+    ?assertEqual({ok, <<"c4">>}, file:read_file(filename:join([ClientPath, "client.0012A3FA"]))),
+    ?assertEqual({ok, <<"0012A3FA000C5DC26EE658C3C58E12CECD58D6455CEC3D5621F0C787675B38AA\n"
+                        "C9815A5E8175C7DDBB94BE596081E809A9DEF2F7D723A431ABD8B070B000B96D\n"
+                        "CF12EFCDC418FA75954F09B7503F2485338EB0A27F7B7FDA6063F15E8FF9DB81\n"
+                        "D0F631CA1DDBA8DB3BCFCB9E057CDC98D0379F1BEE00E75A545147A27DADD982">>},
+                 file:read_file(filename:join([ClientPath, "client.conflict"]))),
+    %% server side
+    TmpFServer = filename:join([PrivDir, "server"]),
+    ok = file:write_file(TmpFServer, "s1"),
+    revault_dirmon_tracker:conflict(Server, "server", TmpFServer, {ServerStamp, revault_file:hash(TmpFServer)}),
+    ok = file:write_file(TmpFServer, <<"s2", 0:(?MULTIPART_SIZE*2)>>),
+    revault_dirmon_tracker:conflict(Server, "server", TmpFServer, {ServerStamp, revault_file:hash(TmpFServer)}),
+    ok = file:write_file(TmpFServer, <<"s3", 0:(?MULTIPART_SIZE*2)>>),
+    revault_dirmon_tracker:conflict(Server, "server", TmpFServer, {ServerStamp, revault_file:hash(TmpFServer)}),
+    ok = file:write_file(TmpFServer, "s4"),
+    revault_dirmon_tracker:conflict(Server, "server", TmpFServer, {ServerStamp, revault_file:hash(TmpFServer)}),
+    %% make sure they're all tracked right
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server.E8BC163C"]))),
+    ?assertEqual({ok, <<"s2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "server.04CEDE58"]))),
+    ?assertEqual({ok, <<"s3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "server.358FB99D"]))),
+    ?assertEqual({ok, <<"s4">>}, file:read_file(filename:join([ServerPath, "server.5B840157"]))),
+    ?assertEqual({ok, <<"04CEDE581E3FD61D73E4B4E36A47CA7A49BDFDE713ABE1705C959C2AE0E03ED3\n"
+                        "358FB99DF3603AEEAB75B31A5FD3DC3C8221FBA96064A4669C6C2AAA22661CDE\n"
+                        "5B840157E7E86AEF3B3FD0FC24F3ADD34D3E7F210370D429475ED1BCD3E7FCA2\n"
+                        "E8BC163C82EEE18733288C7D4AC636DB3A6DEB013EF2D37B68322BE20EDC45CC">>},
+                 file:read_file(filename:join([ServerPath, "server.conflict"]))),
+    %% Sync em
+    ok = revault_fsm:sync(Client, Remote),
+    %% See the result
+    %% 1. all local files are left in place
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ClientPath, "client.D0F631CA"]))),
+    ?assertEqual({ok, <<"c2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client.C9815A5E"]))),
+    ?assertEqual({ok, <<"c3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "client.CF12EFCD"]))),
+    ?assertEqual({ok, <<"c4">>}, file:read_file(filename:join([ClientPath, "client.0012A3FA"]))),
+    ?assertEqual({ok, <<"0012A3FA000C5DC26EE658C3C58E12CECD58D6455CEC3D5621F0C787675B38AA\n"
+                        "C9815A5E8175C7DDBB94BE596081E809A9DEF2F7D723A431ABD8B070B000B96D\n"
+                        "CF12EFCDC418FA75954F09B7503F2485338EB0A27F7B7FDA6063F15E8FF9DB81\n"
+                        "D0F631CA1DDBA8DB3BCFCB9E057CDC98D0379F1BEE00E75A545147A27DADD982">>},
+                 file:read_file(filename:join([ClientPath, "client.conflict"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ServerPath, "server.E8BC163C"]))),
+    ?assertEqual({ok, <<"s2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "server.04CEDE58"]))),
+    ?assertEqual({ok, <<"s3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "server.358FB99D"]))),
+    ?assertEqual({ok, <<"s4">>}, file:read_file(filename:join([ServerPath, "server.5B840157"]))),
+    ?assertEqual({ok, <<"04CEDE581E3FD61D73E4B4E36A47CA7A49BDFDE713ABE1705C959C2AE0E03ED3\n"
+                        "358FB99DF3603AEEAB75B31A5FD3DC3C8221FBA96064A4669C6C2AAA22661CDE\n"
+                        "5B840157E7E86AEF3B3FD0FC24F3ADD34D3E7F210370D429475ED1BCD3E7FCA2\n"
+                        "E8BC163C82EEE18733288C7D4AC636DB3A6DEB013EF2D37B68322BE20EDC45CC">>},
+                 file:read_file(filename:join([ServerPath, "server.conflict"]))),
+    %% 2. all remote files have been sync'd
+    ?assertEqual({ok, <<"c1">>}, file:read_file(filename:join([ServerPath, "client.D0F631CA"]))),
+    ?assertEqual({ok, <<"c2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "client.C9815A5E"]))),
+    ?assertEqual({ok, <<"c3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ServerPath, "client.CF12EFCD"]))),
+    ?assertEqual({ok, <<"c4">>}, file:read_file(filename:join([ServerPath, "client.0012A3FA"]))),
+    ?assertEqual({ok, <<"0012A3FA000C5DC26EE658C3C58E12CECD58D6455CEC3D5621F0C787675B38AA\n"
+                        "C9815A5E8175C7DDBB94BE596081E809A9DEF2F7D723A431ABD8B070B000B96D\n"
+                        "CF12EFCDC418FA75954F09B7503F2485338EB0A27F7B7FDA6063F15E8FF9DB81\n"
+                        "D0F631CA1DDBA8DB3BCFCB9E057CDC98D0379F1BEE00E75A545147A27DADD982">>},
+                 file:read_file(filename:join([ServerPath, "client.conflict"]))),
+    ?assertEqual({ok, <<"s1">>}, file:read_file(filename:join([ClientPath, "server.E8BC163C"]))),
+    ?assertEqual({ok, <<"s2", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "server.04CEDE58"]))),
+    ?assertEqual({ok, <<"s3", 0:(?MULTIPART_SIZE*2)>>}, file:read_file(filename:join([ClientPath, "server.358FB99D"]))),
+    ?assertEqual({ok, <<"s4">>}, file:read_file(filename:join([ClientPath, "server.5B840157"]))),
+    ?assertEqual({ok, <<"04CEDE581E3FD61D73E4B4E36A47CA7A49BDFDE713ABE1705C959C2AE0E03ED3\n"
+                        "358FB99DF3603AEEAB75B31A5FD3DC3C8221FBA96064A4669C6C2AAA22661CDE\n"
+                        "5B840157E7E86AEF3B3FD0FC24F3ADD34D3E7F210370D429475ED1BCD3E7FCA2\n"
+                        "E8BC163C82EEE18733288C7D4AC636DB3A6DEB013EF2D37B68322BE20EDC45CC">>},
+                 file:read_file(filename:join([ClientPath, "server.conflict"]))),
     ok.
 
 %% TODO: dealing with interrupted connections?

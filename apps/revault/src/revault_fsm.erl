@@ -100,9 +100,12 @@
 
 -record(client_sync, {from, marker, remote,
                       queue=new_schedule_queue(),
+                      multiparts=#{},
                       acc=[]}).
 
--record(server, {remote}).
+-record(server, {remote,
+                 queue=new_schedule_queue(),
+                 multiparts=#{}}).
 
 %% Top-level data records
 -record(uninit, {
@@ -563,20 +566,52 @@ client_sync_files(cast, {send, File},
                                 sub=S=#client_sync{remote=R, queue=Q}}) ->
     Data = start_span(<<"file_send">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File} | ?attrs(Data)]),
-    Payload = case revault_dirmon_tracker:file(Name, File) of
+    {NewCb, Q2} = case revault_dirmon_tracker:file(Name, File) of
         {Vsn, deleted} ->
-            revault_data_wrapper:send_deleted(File, Vsn);
+            Payload = revault_data_wrapper:send_deleted(File, Vsn),
+            %% TODO: track the success or failures of transfers, detect disconnections
+            {_Marker, Cb2} = apply_cb(Cb, send, [R, Payload]),
+            {Cb2, Q};
+        {Vsn, {conflict, Hashes, _}} ->
+            set_attribute(<<"conflict">>, length(Hashes)),
+            {PreQ,  _} = lists:foldl(
+                fun(Hash, {QAcc, Ct}) ->
+                    FHash = revault_conflict_file:conflicting(File, Hash),
+                    case transfer_schedule({conflict_file, File, Ct}, Path, FHash, Vsn, Hash) of
+                        {parts, Parts} ->
+                            %% because we enqueue many parts, they need to all be sent in order.
+                            {QAcc++Parts, Ct-1};
+                        {{conflict_file, File, Ct}, FHash, Vsn, Hash} ->
+                            %% all conflict file segments must be sent in the same order, whether
+                            %% they are multipart or not for total safety on the 0-count, otherwise
+                            %% file 0 (the last one) can be sent before others.
+                            %% To make this work, we create an 'apply' schedule action to maintain
+                            %% ordering between immediate and deferred calls.
+                            %% TODO: defer this call so we don't send tons of small files at once
+                            %% and fill local memory
+                            {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
+                            NewPayload = revault_data_wrapper:send_conflict_file(File, FHash, Ct, {Vsn, Hash}, Bin),
+                            {QAcc ++ [{apply_cb, send, [R, NewPayload]}], Ct-1}
+                    end
+                end,
+                {[], length(Hashes)-1},
+                Hashes
+            ),
+            {Cb, inject_transfers(Q, PreQ)};
         {Vsn, Hash} ->
-            %% TODO: optimize to read and send files in parts rather than
-            %% just reading it all at once and loading everything in memory
-            %% and shipping it in one block
-            {ok, Bin} = revault_file:read_file(filename:join(Path, File)),
-            revault_data_wrapper:send_file(File, Vsn, Hash, Bin)
+            case transfer_schedule(file, Path, File, Vsn, Hash) of
+                {file, File, Vsn, Hash} ->
+                    {ok, Bin} = revault_file:read_file(filename:join(Path, File)),
+                    Payload = revault_data_wrapper:send_file(File, Vsn, Hash, Bin),
+                    %% TODO: track the success or failures of transfers, detect disconnections
+                    {_Marker, Cb2} = apply_cb(Cb, send, [R, Payload]),
+                    {Cb2, Q};
+                {parts, Parts} ->
+                    {Cb, inject_transfers(Q, Parts)}
+            end
     end,
-    %% TODO: track the success or failures of transfers, detect disconnections
-    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
     NewData = end_span(DataTmp),
-    NewQ = send_next_scheduled(Q),
+    NewQ = send_next_scheduled(Q2),
     {keep_state, NewData#data{callback=NewCb,
                               sub=S#client_sync{queue=NewQ}}};
 client_sync_files(cast, {fetch, File},
@@ -592,6 +627,41 @@ client_sync_files(cast, {fetch, File},
             {keep_state, Data#data{callback=NewCb,
                                    sub=S#client_sync{queue=NewQ, acc=[File|Acc]}}}
         end);
+client_sync_files(cast, {part, file, File, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts},
+                  DataTmp=#data{path=Path, callback=Cb,
+                                sub=S=#client_sync{remote=R, queue=Q}}) ->
+    Data = start_span(<<"file_send_part">>, DataTmp),
+    set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File}, {<<"size">>, SizeBytes},
+                    {<<"part">>, ?str(NumPart)}, {<<"parts">>, ?str(TotalParts)}
+                    | ?attrs(Data)]),
+    %% If it's the first part, open the file handler, or just assume all non-last
+    %% parts are the same size?
+    {ok, Bin} = revault_file:read_range(filename:join(Path, File), Offset, SizeBytes),
+    Payload = revault_data_wrapper:send_multipart_file(File, Vsn, Hash, NumPart, TotalParts, Bin),
+    %% TODO: track the success or failures of transfers, detect disconnections
+    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+    NewData = end_span(Data),
+    NewQ = send_next_scheduled(Q),
+    {keep_state, NewData#data{callback=NewCb,
+                              sub=S#client_sync{queue=NewQ}}};
+client_sync_files(cast, {part, {conflict_file, F, Ct}, FHash, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts},
+                  DataTmp=#data{path=Path, callback=Cb,
+                                sub=S=#client_sync{remote=R, queue=Q}}) ->
+    %% TODO: wrap in with_span
+    {ok, Bin} = revault_file:read_range(filename:join(Path, FHash), Offset, SizeBytes),
+    Payload = revault_data_wrapper:send_conflict_multipart_file(F, FHash, Ct, {Vsn, Hash}, NumPart, TotalParts, Bin),
+    %% TODO: track the success or failures of transfers, detect disconnections
+    {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
+    NewQ = send_next_scheduled(Q),
+    {keep_state, DataTmp#data{callback=NewCb,
+                              sub=S#client_sync{queue=NewQ}}};
+client_sync_files(cast, {apply_cb, Action, Args}, DataTmp=#data{callback=Cb, sub=C=#client_sync{queue=Q}}) ->
+    %% Experimental call to defer sending on schedule
+    %% TODO: track failing or succeeding transfers?
+    {_Marker, NewCb} = apply_cb(Cb, Action, Args),
+    NewQ = send_next_scheduled(Q),
+    NewData = DataTmp#data{callback=NewCb, sub=C#client_sync{queue=NewQ}},
+    {keep_state, NewData};
 client_sync_files(cast, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
     #data{callback=Cb, sub=#client_sync{remote=R}} = Data,
     Payload = revault_data_wrapper:sync_complete(),
@@ -615,24 +685,16 @@ client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
             handle_file_sync(Name, Id, F, Meta, Bin)
         end),
     NewQ = send_next_scheduled(Q),
-    case Acc -- [F] of
-        [] ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
-        NewAcc ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
-    end;
+    NewAcc = Acc -- [F],
+    {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}};
 client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     #data{name=Name, id=Id, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
                                                | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
     NewQ = send_next_scheduled(Q),
-    case Acc -- [F] of
-        [] ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
-        NewAcc ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
-    end;
+    NewAcc = Acc -- [F],
+    {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}};
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(
@@ -652,12 +714,32 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
         false ->
             %% more of the same conflict file to come
             {keep_state, Data#data{scan=true}};
-        [] ->
-            NewQ = send_next_scheduled(Q),
-            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
         NewAcc ->
             NewQ = send_next_scheduled(Q),
             {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
+    end;
+client_sync_files(info, {revault, _Marker, {file, F, Meta, PartNum, PartTotal, Bin}}, Data) ->
+    #data{name=Name, id=Id, sub=S=#client_sync{multiparts=MP, queue=Q, acc=Acc}} = Data,
+    %% TODO: wrap in with_span
+    {MPStage, NewMP} = handle_multipart_file_sync(MP, Name, Id, F, Meta, PartNum, PartTotal, Bin),
+    NewQ = send_next_scheduled(Q),
+    NewAcc = case MPStage of
+        done -> Acc -- [F];
+        _ -> Acc
+    end,
+    {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc, multiparts=NewMP}}};
+client_sync_files(info, {revault, _Marker, {conflict_multipart_file, WorkF, F, CountLeft, Meta, PartNum, PartTotal, Bin}}, Data) ->
+    #data{name=Name, sub=S=#client_sync{multiparts=MP, queue=Q, acc=Acc}} = Data,
+    %% TODO: wrap in with_span
+    {MPStage, NewMP} = handle_multipart_conflict_file_sync(MP, Name, WorkF, F, Meta, PartNum, PartTotal, Bin),
+    case {MPStage, CountLeft} of
+        {done, 0} ->
+            %% conflict file complete.
+            NewQ = send_next_scheduled(Q),
+            NewAcc = Acc -- [WorkF],
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc, multiparts=NewMP}}};
+        {_, _} ->
+            {keep_state, Data#data{scan=true, sub=S#client_sync{multiparts=NewMP}}}
     end;
 client_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
@@ -798,6 +880,12 @@ server_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}},
             handle_file_sync(Name, Id, F, Meta, Bin)
         end),
     {keep_state, Data#data{scan=true}};
+server_sync_files(info, {revault, _Marker, {file, F, Meta, PartNum, PartTotal, Bin}},
+                  Data=#data{name=Name, id=Id,
+                             sub=S=#server{multiparts=MP}}) ->
+    %% TODO: wrap in with_span
+    {_, NewMP} = handle_multipart_file_sync(MP, Name, Id, F, Meta, PartNum, PartTotal, Bin),
+    {keep_state, Data#data{scan=true, sub=S#server{multiparts=NewMP}}};
 server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
                   Data=#data{name=Name, id=Id}) ->
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
@@ -819,8 +907,40 @@ server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta,
        end
     ),
     {keep_state, Data#data{scan=true}};
+server_sync_files(info, {revault, _M, {conflict_multipart_file, WorkF, F, _CountLeft, Meta, PartNum, PartTotal, Bin}},
+                  Data=#data{name=Name, sub=S=#server{multiparts=MP}}) ->
+    %% TODO: wrap in with_span
+    {_, NewMP} = handle_multipart_conflict_file_sync(MP, Name, WorkF, F, Meta, PartNum, PartTotal, Bin),
+    {keep_state, Data#data{scan=true, sub=S#server{multiparts=NewMP}}};
 server_sync_files(info, {revault, Marker, {fetch, F}}, Data) ->
     NewData = handle_file_demand(F, Marker, Data),
+    {keep_state, NewData};
+server_sync_files(cast, {part, {file, Marker}, File, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts},
+                  DataTmp=#data{path=Path, callback=Cb, sub=S=#server{remote=R, queue=Q}}) ->
+    %% TODO: wrap in with_span
+    {ok, Bin} = revault_file:read_range(filename:join(Path, File), Offset, SizeBytes),
+    Payload = revault_data_wrapper:send_multipart_file(File, Vsn, Hash, NumPart, TotalParts, Bin),
+    %% TODO: track the success or failures of transfers, detect disconnections
+    {ok, NewCb} = apply_cb(Cb, reply, [R, Marker, Payload]),
+    NewQ = send_next_scheduled(Q),
+    NewData = DataTmp#data{callback=NewCb, sub=S#server{queue=NewQ}},
+    {keep_state, NewData};
+server_sync_files(cast, {part, {conflict_file, F, Ct, Marker}, FHash, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts},
+                  DataTmp=#data{path=Path, callback=Cb, sub=S=#server{remote=R, queue=Q}}) ->
+    %% TODO: wrap in with_span
+    {ok, Bin} = revault_file:read_range(filename:join(Path, FHash), Offset, SizeBytes),
+    Payload = revault_data_wrapper:send_conflict_multipart_file(F, FHash, Ct, {Vsn, Hash}, NumPart, TotalParts, Bin),
+    %% TODO: track the success or failures of transfers, detect disconnections
+    {ok, NewCb} = apply_cb(Cb, reply, [R, Marker, Payload]),
+    NewQ = send_next_scheduled(Q),
+    NewData = DataTmp#data{callback=NewCb, sub=S#server{queue=NewQ}},
+    {keep_state, NewData};
+server_sync_files(cast, {apply_cb, Action, Args}, DataTmp=#data{callback=Cb, sub=S=#server{queue=Q}}) ->
+    %% Experimental call to defer sending on schedule
+    %% TODO: track failing or succeeding transfers?
+    {ok, NewCb} = apply_cb(Cb, Action, Args),
+    NewQ = send_next_scheduled(Q),
+    NewData = DataTmp#data{callback=NewCb, sub=S#server{queue=NewQ}},
     {keep_state, NewData};
 server_sync_files(info, {revault, Marker, sync_complete},
                   DataTmp=#data{name=Name, callback=Cb, scan=ScanNeeded,
@@ -958,6 +1078,10 @@ schedule_file_transfers(Q, Local, Remote) ->
              queue:join(queue:join(Q, queue:from_list(Local)),
                         queue:from_list(Remote))).
 
+%% @private add multiple elements to the front of the file transfer queue.
+inject_transfers(Q, As) when is_list(As) ->
+    queue:join(queue:from_list(As), Q).
+
 %% @private add an element to the file transfer queue.
 schedule_transfer(Q, A) ->
     queue:in(A, Q).
@@ -997,15 +1121,6 @@ handle_delete_sync(Name, Id, F, Meta = {Vsn, deleted}) ->
             end
     end.
 
-handle_file_sync(Name, Id, F, Meta = {_Vsn, Hash}, Bin) ->
-    case validate_hash(Hash, Bin) of
-        false ->
-            %% TODO: add some logging when the hash doesn't match
-            skip;
-        true ->
-            do_handle_file_sync(Name, Id, F, Meta, Bin)
-    end.
-
 do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
     %% is this file a conflict or an update?
     case revault_dirmon_tracker:file(Name, F) of
@@ -1023,6 +1138,98 @@ do_handle_file_sync(Name, Id, F, Meta = {Vsn, Hash}, Bin) ->
                     update_file(Name, F, Meta, Bin)
             end
     end.
+
+handle_file_sync(Name, Id, F, Meta = {_Vsn, Hash}, Bin) ->
+    case validate_hash(Hash, Bin) of
+        false ->
+            %% TODO: add some logging when the hash doesn't match
+            skip;
+        true ->
+            do_handle_file_sync(Name, Id, F, Meta, Bin)
+    end.
+
+handle_multipart_file_sync(MPState, _Name, _Id, F, _Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                           when PartNum =:= 1 ->
+    %% use an unpredictable rand file since this may be one of many incidentally
+    %% conflicting files sharing the same name, even if unlikely. Better to protect
+    %% against overlapping runs.
+    TmpF = revault_file:tmp(),
+    State = revault_file:multipart_init(TmpF, PartTotal, Hash),
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    {new, MPState#{F => {TmpF, NewState}}};
+handle_multipart_file_sync(MPState, _Name, _Id, F, _Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                           when PartNum =/= PartTotal ->
+    #{F := {TmpF, State}} = MPState,
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    {continue, MPState#{F => {TmpF, NewState}}};
+handle_multipart_file_sync(MPState, Name, Id, F, Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                           when PartNum =:= PartTotal ->
+    #{F := {TmpF, State}} = MPState,
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    ok = revault_file:multipart_final(NewState, TmpF, PartTotal, Hash),
+    %% the hash check may already have been done by the multipart file consistency
+    %% checks.
+    %% TODO: validate whether this is part of the interface in tests before removing
+    %%       the check.
+    case validate_file_hash(Hash, TmpF) of
+        false ->
+            %% TODO: add some logging when the hash doesn't match
+            skip;
+        true ->
+            do_handle_multipart_file_sync(Name, Id, F, Meta, TmpF)
+    end,
+    {done, maps:remove(F, MPState)}.
+
+
+do_handle_multipart_file_sync(Name, Id, F, Meta = {Vsn, _Hash}, TmpF) ->
+    %% is this file a conflict or an update?
+    case revault_dirmon_tracker:file(Name, F) of
+        undefined ->
+            revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
+            revault_file:delete(TmpF);
+        {LVsn, _HashOrStatus} ->
+            case compare(Id, LVsn, Vsn) of
+                conflict ->
+                    revault_dirmon_tracker:conflict(Name, F, TmpF, Meta),
+                    revault_file:delete(TmpF);
+                _ ->
+                    revault_dirmon_tracker:update_file(Name, F, TmpF, Meta),
+                    revault_file:delete(TmpF)
+            end
+    end.
+
+handle_multipart_conflict_file_sync(MPState, _Name, _WorkF, F, _Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                                    when PartNum =:= 1 ->
+    %% use an unpredictable rand file since this may be one of many incidentally
+    %% conflicting files sharing the same name, even if unlikely. Better to protect
+    %% against overlapping runs.
+    TmpF = revault_file:tmp(),
+    State = revault_file:multipart_init(TmpF, PartTotal, Hash),
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    {new, MPState#{F => {TmpF, NewState}}};
+handle_multipart_conflict_file_sync(MPState, _Name, _WorkF, F, _Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                                    when PartNum =/= PartTotal ->
+    #{F := {TmpF, State}} = MPState,
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    {continue, MPState#{F => {TmpF, NewState}}};
+handle_multipart_conflict_file_sync(MPState, Name, WorkF, F, Meta = {_Vsn, Hash}, PartNum, PartTotal, Bin)
+                                    when PartNum =:= PartTotal ->
+    #{F := {TmpF, State}} = MPState,
+    {ok, NewState} = revault_file:multipart_update(State, TmpF, PartNum, PartTotal, Hash, Bin),
+    ok = revault_file:multipart_final(NewState, TmpF, PartTotal, Hash),
+    %% the hash check may already have been done by the multipart file consistency
+    %% checks.
+    %% TODO: validate whether this is part of the interface in tests before removing
+    %%       the check.
+    case validate_file_hash(Hash, TmpF) of
+        false ->
+            %% TODO: add some logging when the hash doesn't match
+            skip;
+        true ->
+            revault_dirmon_tracker:conflict(Name, WorkF, TmpF, Meta),
+            revault_file:delete(TmpF)
+    end,
+    {done, maps:remove(F, MPState)}.
 
 delete_file(Name, F, Meta) ->
     case revault_file:delete(F) of
@@ -1044,8 +1251,17 @@ validate_hash({conflict, Hashes, _}, Bin) ->
 validate_hash(Hash, Bin) ->
     Hash =:= revault_file:hash_bin(Bin).
 
+% @private commenting out the conflict version because conflict files are currently
+% sent only with their specific hashes and not the group, so the first clause
+% is never used.
+%validate_file_hash({conflict, Hashes, _}, Path) ->
+%    Hash = revault_file:hash(Path),
+%    lists:member(Hash, Hashes);
+validate_file_hash(Hash, Path) ->
+    Hash =:= revault_file:hash(Path).
+
 handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
-                                            sub=#server{remote=R}}) ->
+                                            sub=S=#server{remote=R, queue=Q1}}) ->
     Data = start_span(<<"file_demand">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, F} | ?attrs(Data)]),
     case revault_dirmon_tracker:file(Name, F) of
@@ -1053,21 +1269,34 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
             %% Stream all the files, mark as conflicts?
             %% just inefficiently read the whole freaking thing at once
             %% TODO: optimize to better read and send file parts
-            {Cb2, _} = lists:foldl(
-                fun(Hash, {CbAcc1, Ct}) ->
+            {PreQ,  _} = lists:foldl(
+                fun(Hash, {QAcc, Ct}) ->
                     FHash = revault_conflict_file:conflicting(F, Hash),
-                    {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
-                    NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
-                    %% TODO: track failing or succeeding transfers?
-                    {ok, CbAcc2} = apply_cb(CbAcc1, reply, [R, Marker, NewPayload]),
-                    {CbAcc2, Ct-1}
+                    case transfer_schedule({conflict_file, F, Ct, Marker}, Path, FHash, Vsn, Hash) of
+                        {parts, Parts} ->
+                            %% because we enqueue many parts, they need to all be sent in order.
+                            {QAcc++Parts, Ct-1};
+                        {{conflict_file, F, Ct, Marker}, FHash, Vsn, Hash} ->
+                            %% all conflict file segments must be sent in the same order, whether
+                            %% they are multipart or not for total safety on the 0-count, otherwise
+                            %% file 0 (the last one) can be sent before others.
+                            %% To make this work, we create an 'apply' schedule action to maintain
+                            %% ordering between immediate and deferred calls.
+                            %% TODO: defer this call so we don't send tons of small files at once
+                            %% and fill local memory
+                            {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
+                            NewPayload = revault_data_wrapper:send_conflict_file(F, FHash, Ct, {Vsn, Hash}, Bin),
+                            {QAcc ++ [{apply_cb, reply, [R, Marker, NewPayload]}], Ct-1}
+                    end
                 end,
-                {Cb1, length(Hashes)-1},
+                {[], length(Hashes)-1},
                 Hashes
             ),
+            Q2 = inject_transfers(Q1, PreQ),
             set_attribute(<<"conflict">>, length(Hashes)),
             NewData = end_span(Data),
-            NewData#data{callback=Cb2};
+            NewQ = send_next_scheduled(Q2),
+            NewData#data{sub=S#server{queue=NewQ}};
         {Vsn, deleted} ->
             NewPayload = revault_data_wrapper:send_deleted(F, Vsn),
             %% TODO: track failing or succeeding transfers?
@@ -1075,14 +1304,45 @@ handle_file_demand(F, Marker, DataTmp=#data{name=Name, path=Path, callback=Cb1,
             NewData = end_span(Data),
             NewData#data{callback=Cb2};
         {Vsn, Hash} ->
-            %% just inefficiently read the whole freaking thing at once
-            %% TODO: optimize to better read and send file parts
-            {ok, Bin} = revault_file:read_file(filename:join(Path, F)),
-            NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
-            %% TODO: track failing or succeeding transfers?
-            {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
+            {Cb3, Q2} = case transfer_schedule({file, Marker}, Path, F, Vsn, Hash) of
+                {{file, Marker}, F, Vsn, Hash} ->
+                    %% just inefficiently read the whole freaking thing at once
+                    {ok, Bin} = revault_file:read_file(filename:join(Path, F)),
+                    NewPayload = revault_data_wrapper:send_file(F, Vsn, Hash, Bin),
+                    %% TODO: track failing or succeeding transfers?
+                    {ok, Cb2} = apply_cb(Cb1, reply, [R, Marker, NewPayload]),
+                    {Cb2, Q1};
+                {parts, Parts} ->
+                    {Cb1, inject_transfers(Q1, Parts)}
+            end,
             NewData = end_span(Data),
-            NewData#data{callback=Cb2}
+            Q3 = send_next_scheduled(Q2),
+            NewData#data{callback=Cb3, sub=S#server{queue=Q3}}
+    end.
+
+
+transfer_schedule(Tag, Path, File, Vsn, Hash) ->
+    {ok, SizeBytes} = revault_file:size(filename:join(Path, File)),
+    case application:get_env(revault, multipart_size) of
+        undefined ->
+            {Tag, File, Vsn, Hash};
+        {ok, Threshold} when SizeBytes =< Threshold ->
+            {Tag, File, Vsn, Hash};
+        {ok, Threshold} when SizeBytes > Threshold ->
+            FullParts = SizeBytes div Threshold,
+            TrailBytes = SizeBytes rem Threshold,
+            TotalParts = FullParts + if TrailBytes /= 0 -> 1;
+                                        TrailBytes == 0 -> 0
+                                     end,
+            Parts =  [{part, Tag, File, Vsn, Hash,
+                       Threshold*(N-1), Threshold, N, TotalParts}
+                      || N <- lists:seq(1, FullParts)],
+            TrailParts = if TotalParts =/= FullParts ->
+                             [{part, Tag, File, Vsn, Hash, Threshold*FullParts, TrailBytes, TotalParts, TotalParts}];
+                            TotalParts == FullParts ->
+                             []
+                         end,
+            {parts, Parts ++ TrailParts}
     end.
 
 attrs(#data{name=Dir, uuid=DirUUID}) ->

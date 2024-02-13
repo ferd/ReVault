@@ -2,7 +2,8 @@
 -module(revault_s3).
 -export([hash/1, copy/2,
          tmp/0, tmp/1,
-         find_hashes/2, find_hashes_uncached/2,
+         find_hashes/2, find_hashes_uncached/2, size/1,
+         multipart_init/3, multipart_update/6, multipart_final/4,
          %%% wrappers to file module; can never use a cache if we
          %%% want the cache module to safely use these.
          delete/1, consult/1, read_file/1, ensure_dir/1, is_regular/1,
@@ -24,6 +25,7 @@ hash(Path) ->
     base64:decode(HashB64).
 
 copy(From, To) ->
+    %% TODO: support copying with multipart for large files, with parallelism
     Source = filename:join([uri_string:quote(Part) || Part <- [bucket() | filename:split(From)]]),
     Res = aws_s3:copy_object(client(), bucket(), To,
                              #{<<"CopySource">> => Source}),
@@ -72,6 +74,38 @@ find_hashes(Dir, Pred) ->
     end, [], Files),
     revault_s3_cache:save(Dir),
     NewList.
+
+-spec size(file:filename()) -> {ok, non_neg_integer()} | {error, term()}.
+size(_Path) ->
+    error(not_implemented).
+
+-spec multipart_init(Path, PartsTotal, Hash) -> State when
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: revault_file:hash(),
+    State :: revault_file:multipart_state().
+multipart_init(_Path, _PartsTotal, _Hash) ->
+    error(not_implemented).
+
+-spec multipart_update(State, Path, PartNum, PartsTotal, Hash, binary()) ->
+    {ok, revault_file:multipart_state()} when
+        State :: revault_file:multipart_state(),
+        Path :: file:filename(),
+        PartNum :: 1..10000,
+        PartsTotal :: 1..10000,
+        Hash :: revault_file:hash().
+multipart_update({state, Path, _PartsSeen, PartsTotal, Hash, _Term},
+                 Path, _PartNum, PartsTotal, Hash, _Bin) ->
+    error(not_implemented).
+
+-spec multipart_final(State, Path, PartsTotal, Hash) -> ok when
+        State :: revault_file:multipart_state(),
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: revault_file:hash().
+multipart_final({state, Path, _PartsSeen, PartsTotal, Hash, _Term},
+                Path, PartsTotal, Hash) ->
+    error(not_implemented).
 
 %%%%%%%%%%%%%%%%%%%%%
 %%% FILE WRAPPERS %%%

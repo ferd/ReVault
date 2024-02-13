@@ -79,11 +79,14 @@ unpack({error, ?VSN, R}) -> {error, R};
 unpack({manifest, ?VSN}) -> manifest;
 unpack({manifest, ?VSN, Data}) -> {manifest, Data};
 unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
+unpack({file, ?VSN, Path, Meta, PartNum, PartTotal, Bin}) -> {file, Path, Meta, PartNum, PartTotal, Bin};
 unpack({fetch, ?VSN, Path}) -> {fetch, Path};
 unpack({sync_complete, ?VSN}) -> sync_complete;
 unpack({deleted_file, ?VSN, Path, Meta}) -> {deleted_file, Path, Meta};
 unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
     {conflict_file, WorkPath, Path, Count, Meta, Bin};
+unpack({conflict_multipart_file, ?VSN, WorkPath, Path, Count, Meta, PartNum, PartTotal, Bin}) ->
+    {conflict_multipart_file, WorkPath, Path, Count, Meta, PartNum, PartTotal, Bin};
 unpack(Term) ->
     Term.
 
