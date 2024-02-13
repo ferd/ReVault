@@ -4,12 +4,17 @@
          copy/2,
          tmp/0, tmp/1, extension/2,
          find_hashes/2,
+         multipart_init/3, multipart_update/6, multipart_final/4,
          %% wrappers to file module
          delete/1, consult/1, read_file/1, ensure_dir/1, is_regular/1,
          write_file/2, write_file/3, rename/2]).
 
 -type hash() :: binary().
--export_type([hash/0]).
+-type multipart_state() :: {state,
+                            file:filename(),
+                            non_neg_integer(), pos_integer(),
+                            hash(), term()}.
+-export_type([hash/0, multipart_state/0]).
 
 %% @doc takes a file and computes a hash for it as used to track changes
 %% in ReVault. This hash is not guaranteed to be stable, but at this time
@@ -92,6 +97,32 @@ extension(Path, Ext) when is_binary(Path) ->
     Pred :: fun((file:filename()) -> boolean()).
 find_hashes(Dir, Pred) ->
     (mod()):find_hashes(Dir, Pred).
+
+-spec multipart_init(Path, PartsTotal, Hash) -> State when
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: hash(),
+    State :: multipart_state().
+multipart_init(Path, PartsTotal, Hash) ->
+    (mod()):multipart_init(Path, PartsTotal, Hash).
+
+-spec multipart_update(multipart_state(), Path, PartNum, PartsTotal, Hash, binary()) ->
+    {ok, multipart_state()} when
+        Path :: file:filename(),
+        PartNum :: 1..10000,
+        PartsTotal :: 1..10000,
+        Hash :: hash().
+multipart_update(State={state, Path, PartsSeen, PartsTotal, Hash, _Term},
+                 Path, PartNum, PartsTotal, Hash, Bin) when PartNum =:= PartsSeen+1 ->
+    (mod()):multipart_update(State, Path, PartNum, PartsTotal, Hash, Bin).
+
+-spec multipart_final(multipart_state(), Path, PartsTotal, Hash) -> ok when
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: hash().
+multipart_final(State={state, Path, PartsSeen, PartsTotal, Hash, _Term},
+                Path, PartsTotal, Hash) when PartsSeen =:= PartsTotal ->
+    (mod()):multipart_final(State, Path, PartsTotal, Hash).
 
 %%%%%%%%%%%%%%%%%%%%%
 %%% FILE WRAPPERS %%%

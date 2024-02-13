@@ -98,7 +98,9 @@
 
 -record(id_sync, {from, marker, remote}).
 
--record(client_sync, {from, marker, remote, acc=[]}).
+-record(client_sync, {from, marker, remote,
+                      queue=new_schedule_queue(),
+                      acc=[]}).
 
 -record(server, {remote}).
 
@@ -540,25 +542,25 @@ client_sync_manifest(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
-                     DataTmp=#data{sub=#client_sync{marker=Marker},
+                     DataTmp=#data{sub=S=#client_sync{marker=Marker, queue=Q},
                                    name=Name, id=Id}) ->
     Data = start_span(<<"diff_manifest">>, end_span(DataTmp)),
     LManifest = revault_dirmon_tracker:files(Name),
     {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
-    Actions = schedule_file_transfers(Local, Remote),
+    NewQ = send_next_scheduled(schedule_file_transfers(Q, Local, Remote)),
     set_attributes([{<<"to_send">>, length(Local)},
                     {<<"to_recv">>, length(Remote)} | ?attrs(Data)]),
     NewData = end_span(Data),
-    {next_state, client_sync_files, NewData,
-     Actions ++ [{next_event, internal, sync_complete}]};
+    {next_state, client_sync_files,
+     NewData#data{sub=S#client_sync{queue=NewQ}}};
 client_sync_manifest(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
 client_sync_files(enter, _, Data) ->
     {keep_state, Data};
-client_sync_files(internal, {send, File},
+client_sync_files(cast, {send, File},
                   DataTmp=#data{name=Name, path=Path, callback=Cb,
-                                sub=#client_sync{remote=R}}) ->
+                                sub=S=#client_sync{remote=R, queue=Q}}) ->
     Data = start_span(<<"file_send">>, DataTmp),
     set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File} | ?attrs(Data)]),
     Payload = case revault_dirmon_tracker:file(Name, File) of
@@ -574,59 +576,65 @@ client_sync_files(internal, {send, File},
     %% TODO: track the success or failures of transfers, detect disconnections
     {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
     NewData = end_span(DataTmp),
-    {keep_state, NewData#data{callback=NewCb}};
-client_sync_files(internal, {fetch, File},
-                  Data=#data{callback=Cb, sub=S=#client_sync{remote=R, acc=Acc}}) ->
+    NewQ = send_next_scheduled(Q),
+    {keep_state, NewData#data{callback=NewCb,
+                              sub=S#client_sync{queue=NewQ}}};
+client_sync_files(cast, {fetch, File},
+                  Data=#data{callback=Cb,
+                             sub=S=#client_sync{remote=R, queue=Q, acc=Acc}}) ->
     ?with_span(<<"file_fetch">>,
         #{attributes => [{<<"path">>, File}, {<<"peer">>, ?str(R)} | ?attrs(Data)]},
         fun(_SpanCtx) ->
             Payload = revault_data_wrapper:fetch_file(File),
             %% TODO: track the incoming transfers to know when we're done syncing
             {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
-            {keep_state, Data#data{callback=NewCb, sub=S#client_sync{acc=[File|Acc]}}}
+            NewQ = send_next_scheduled(Q),
+            {keep_state, Data#data{callback=NewCb,
+                                   sub=S#client_sync{queue=NewQ, acc=[File|Acc]}}}
         end);
-client_sync_files(internal, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
+client_sync_files(cast, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
     #data{callback=Cb, sub=#client_sync{remote=R}} = Data,
     Payload = revault_data_wrapper:sync_complete(),
     %% TODO: handle failure here
     {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
     {next_state, client_sync_complete, Data#data{callback=NewCb}};
-client_sync_files(internal, sync_complete, Data) ->
+client_sync_files(cast, sync_complete, Data=#data{sub=S=#client_sync{queue=Q}}) ->
     %% wait for all files we're fetching to be here, and when the last one is in,
     %% re-trigger a sync_complete message
-    {keep_state, Data};
+    NewQ = schedule_transfer(Q, sync_complete),
+    {keep_state, Data#data{sub=S#client_sync{queue=NewQ}}};
 client_sync_files(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_files(info, {revault, _Marker, {file, F, Meta, Bin}}, Data) ->
-    #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
+    #data{name=Name, id=Id, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(<<"file_recv">>,
         #{attributes => [{<<"path">>, F}, {<<"size">>, byte_size(Bin)},
                          {<<"meta">>, ?str(Meta)} | ?attrs(Data)]},
         fun(_SpanCtx) ->
             handle_file_sync(Name, Id, F, Meta, Bin)
         end),
+    NewQ = send_next_scheduled(Q),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
-             [{next_event, internal, sync_complete}]};
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
         NewAcc ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
-    #data{name=Name, id=Id, sub=S=#client_sync{acc=Acc}} = Data,
+    #data{name=Name, id=Id, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
                                                | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
+    NewQ = send_next_scheduled(Q),
     case Acc -- [F] of
         [] ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
-             [{next_event, internal, sync_complete}]};
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
         NewAcc ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
     end;
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
-    #data{name=Name, sub=S=#client_sync{acc=Acc}} = Data,
+    #data{name=Name, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(
        <<"conflict">>,
        #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)},
@@ -645,10 +653,11 @@ client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, 
             %% more of the same conflict file to come
             {keep_state, Data#data{scan=true}};
         [] ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=[]}},
-             [{next_event, internal, sync_complete}]};
+            NewQ = send_next_scheduled(Q),
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=[]}}};
         NewAcc ->
-            {keep_state, Data#data{scan=true, sub=S#client_sync{acc=NewAcc}}}
+            NewQ = send_next_scheduled(Q),
+            {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
     end;
 client_sync_files(_, _, Data) ->
     {keep_state, Data, [postpone]}.
@@ -934,9 +943,35 @@ diff_manifests(_Id, Loc, [], LAcc, RAcc) ->
 diff_manifests(_Id, [], Rem, LAcc, RAcc) ->
     {LAcc, [{fetch, F} || {F, _} <- Rem] ++ RAcc}.
 
-schedule_file_transfers(Local, Remote) ->
-    %% TODO: Do something smart at some point. Right now, who cares.
-    [{next_event, internal, Event} || Event <- Remote ++ Local].
+
+new_schedule_queue() ->
+    queue:new().
+
+%% @private we could interleave the local and remote queues to do some
+%% sort of incidental rate-limit (asking for a file after having sent
+%% data means we wait on completion), but because there's no guarantee
+%% there are bidirectional requests, we don't want to accidentally rely
+%% on incidental behavior. Just slam them one after the other and find
+%% issues if there are any.
+schedule_file_transfers(Q, Local, Remote) ->
+    queue:in(sync_complete,
+             queue:join(queue:join(Q, queue:from_list(Local)),
+                        queue:from_list(Remote))).
+
+%% @private add an element to the file transfer queue.
+schedule_transfer(Q, A) ->
+    queue:in(A, Q).
+
+%% @private send the next scheduled event to the current FSM, and
+%% return the queue.
+send_next_scheduled(Q) ->
+    case queue:out(Q) of
+        {empty, _} ->
+            Q;
+        {{value, Msg}, NewQ} ->
+            gen_statem:cast(self(), Msg),
+            NewQ
+    end.
 
 compare(Id, Ct1, Ct2) ->
     ITC1 = itc:rebuild(Id, Ct1),

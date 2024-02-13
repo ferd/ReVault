@@ -7,6 +7,7 @@
 -module(revault_tls).
 
 -include_lib("public_key/include/public_key.hrl").
+-include("revault_data_wrapper.hrl").
 -include("revault_tls.hrl").
 
 -record(buf, {acc=[<<>>], seen=0, needed=0}).

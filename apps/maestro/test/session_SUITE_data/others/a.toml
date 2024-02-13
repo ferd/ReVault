@@ -9,7 +9,7 @@
 [server]
     [server.auth.tls]
     # status = "disabled"
-    port = 8022
+    port = 8822
     certfile = "./others/certs/a.crt"
     keyfile = "./others/certs/a.key"
     [server.auth.tls.authorized]

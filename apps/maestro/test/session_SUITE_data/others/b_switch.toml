@@ -9,7 +9,7 @@
 [peers]
   [peers.a]
   sync = ["test"]
-  url = "127.0.0.1:8022"
+  url = "127.0.0.1:8822"
     [peers.a.auth]
     type = "tls"
     certfile = "./others/certs/b.crt"
@@ -19,7 +19,7 @@
 [server]
     [server.auth.tls]
     # status = "disabled"
-    port = 8023
+    port = 8823
     certfile = "./others/certs/b.crt"
     keyfile = "./others/certs/b.key"
     [server.auth.tls.authorized]

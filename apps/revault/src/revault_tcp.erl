@@ -6,11 +6,12 @@
 %%% one internal API to be used by the client and servers.
 -module(revault_tcp).
 
+-include("revault_data_wrapper.hrl").
 -include("revault_tcp.hrl").
 
 %% stack-specific calls to be made from an initializing process and that
 %% are not generic.
--export([wrap/1, unwrap/1, send_local/2]).
+-export([wrap/1, unwrap/1, unwrap_all/1, send_local/2]).
 %% callbacks from within the FSM
 -export([callback/1, mode/2, peer/4, accept_peer/3, unpeer/3, send/3, reply/4, unpack/2]).
 
@@ -110,6 +111,17 @@ unwrap(<<Size:64/unsigned, ?VSN:16/unsigned, Payload/binary>>) ->
     end;
 unwrap(<<_/binary>>) ->
     {error, incomplete}.
+
+unwrap_all(Buf) ->
+    unwrap_all(Buf, []).
+
+unwrap_all(Buf, Acc) ->
+    case revault_tcp:unwrap(Buf) of
+        {error, incomplete} ->
+            {lists:reverse(Acc), Buf};
+        {ok, ?VSN, Payload, NewBuf} ->
+            unwrap_all(NewBuf, [Payload|Acc])
+    end.
 
 unpack({peer, ?VSN, Remote, Attrs}) -> {peer, Remote, Attrs};
 unpack({ask, ?VSN}) -> ask;

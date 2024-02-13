@@ -5,6 +5,7 @@
 -behaviour(gen_statem).
 
 -include("revault_tcp.hrl").
+
 %%%%%%%%%%%%%%%%%%
 %%% PUBLIC API %%%
 %%%%%%%%%%%%%%%%%%
@@ -84,7 +85,7 @@ handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, Data=#client{
     end;
 handle_event(info, {tcp, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
     inet:setopts(Sock, [{active, once}]),
-    {Unwrapped, IncompleteBuf} = unwrap_all(<<Buf0/binary, Bin/binary>>),
+    {Unwrapped, IncompleteBuf} = revault_tcp:unwrap_all(<<Buf0/binary, Bin/binary>>),
     [revault_tcp:send_local(Name, Msg) || Msg <- Unwrapped],
     {next_state, connected, Data#client{buf=IncompleteBuf}};
 handle_event(info, {tcp_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
@@ -122,13 +123,3 @@ parse_url(Url) when is_binary(Url) ->
 -spec port_range(integer()) -> 0..65535.
 port_range(N) when N >= 0, N =< 65535 -> N.
 
-unwrap_all(Buf) ->
-    unwrap_all(Buf, []).
-
-unwrap_all(Buf, Acc) ->
-    case revault_tcp:unwrap(Buf) of
-        {error, incomplete} ->
-            {lists:reverse(Acc), Buf};
-        {ok, ?VSN, Payload, NewBuf} ->
-            unwrap_all(NewBuf, [Payload|Acc])
-    end.
