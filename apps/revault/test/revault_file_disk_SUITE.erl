@@ -4,7 +4,7 @@
 -include_lib("common_test/include/ct.hrl").
 
 all() ->
-    [read_range, multipart].
+    [read_range, multipart, multipart_hash].
 
 read_range() ->
     [{doc, "general checks on reading subsets of files"}].
@@ -46,4 +46,26 @@ multipart(Config) ->
     ),
     ok = revault_file_disk:multipart_final(State, File, Parts, Hash),
     ?assertEqual({ok, Bin}, file:read_file(File)),
+    ok.
+
+multiparti_hash() ->
+    [{doc, "Multipart API validates the hash when finalizing"}].
+multipart_hash(Config) ->
+    WidthBytes = 100,
+    WidthBits = 8*WidthBytes,
+    Parts = 11,
+    Bin = <<0:WidthBits, 1:WidthBits, 2:WidthBits, 3:WidthBits, 4:WidthBits,
+            5:WidthBits, 6:WidthBits, 7:WidthBits, 8:WidthBits, 9:WidthBits, 10>>,
+    Hash = revault_file_disk:hash_bin(<<1, Bin/binary>>),
+    File = filename:join([?config(priv_dir, Config), "multipart.scratch"]),
+    {_, State} = lists:foldl(
+        fun(Part, {N,S}) ->
+            {ok, NewS} = revault_file_disk:multipart_update(S, File, N, Parts, Hash, Part),
+            {N+1, NewS}
+        end,
+        {1, revault_file_disk:multipart_init(File, Parts, Hash)},
+        [<<N:WidthBits>> || N <- lists:seq(0,Parts-2)]++[<<10>>]
+    ),
+    ?assertError(invalid_hash,
+                 revault_file_disk:multipart_final(State, File, Parts, Hash)),
     ok.

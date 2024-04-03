@@ -148,8 +148,10 @@ multipart_final({state, Path, _PartsSeen, PartsTotal, Hash,
                  {Fd, HashState}},
                 Path, PartsTotal, Hash) ->
     ok = file:close(Fd),
-    Hash = crypto:hash_final(HashState),
-    ok.
+    case crypto:hash_final(HashState) of
+        Hash -> ok;
+        _BadHash -> error(invalid_hash)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%
 %%% FILE WRAPPERS %%%

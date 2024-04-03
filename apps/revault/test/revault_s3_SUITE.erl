@@ -1,3 +1,6 @@
+%% Cover similar content as s3_integration_SUITE, but do it with mocking
+%% so we test our interface often, without paying AWS nor having to set
+%% things up in a bucket.
 -module(revault_s3_SUITE).
 -compile(export_all).
 -include_lib("common_test/include/ct.hrl").
@@ -6,7 +9,8 @@
 all() ->
     [client_cache, consult, hash_cache, hash,
      copy, list_uncached, list_cached, is_regular,
-     write_file, delete].
+     write_file, delete, size, multipart, multipart_hash,
+     read_range].
 
 init_per_suite(Config) ->
     InitBucket = application:get_env(revault, bucket, undefined),
@@ -333,6 +337,149 @@ delete(_Config) ->
                     {ok, #{}, {204, [], make_ref()}}
                 end),
     ?assertEqual(ok, revault_s3:delete(<<"a">>)),
+    ok.
+
+size() ->
+    [{doc, "mocked out call to the size function, based "
+           "on data from the integration suite"}].
+size(_Config) ->
+    meck:expect(aws_s3, head_object,
+                fun(_Cli, _Bucket, <<"a">>, _) ->
+                    {ok, #{<<"ContentLength">> => <<"1234">>},
+                     {200, [], make_ref()}}
+                end),
+    ?assertEqual({ok, 1234}, revault_s3:size(<<"a">>)),
+    ok.
+
+multipart() ->
+    [{doc, "mocked out call to the multipart functions, based "
+           "on data from the integration suite"}].
+multipart(_Config) ->
+    UploadId = <<"123456">>,
+    P1 = <<1>>,
+    P2 = <<2>>,
+    P3 = <<3>>,
+    Whole = <<P1/binary,P2/binary,P3/binary>>,
+    H1 = revault_file:hash_bin(P1),
+    H2 = revault_file:hash_bin(P2),
+    H3 = revault_file:hash_bin(P3),
+    HA = revault_file:hash_bin(Whole),
+    CM = << (base64:encode(revault_file:hash_bin(<<H1/binary, H2/binary, H3/binary>>)))/binary, "-3" >>,
+    CA = base64:encode(HA),
+    meck:expect(aws_s3, create_multipart_upload,
+                fun(_Cli, _Bucket, _Path, _Query, _Opts) ->
+                    {ok, #{<<"InitiateMultipartUploadResult">> =>
+                           #{<<"UploadId">> => UploadId}},
+                     {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, upload_part,
+                fun(_Cli, _Bucket, _Path,
+                    #{<<"PartNumber">> := _, <<"ChecksumSHA256">> := Chk},
+                    _Opts) ->
+                    {ok, #{<<"ETag">> => Chk, <<"ChecksumSHA256">> => Chk}, {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, complete_multipart_upload,
+                fun(_Cli, _Bucket, _Path, _Query, _Opts) ->
+                    {ok, #{<<"CompleteMultipartUploadResult">> =>
+                           #{<<"ChecksumSHA256">> => CM}},
+                     {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, copy_object,
+                fun(_Cli, _Bucket, _To, _Query) ->
+                    {ok, #{<<"CopyObjectResult">> => #{<<"ChecksumSHA256">> => CA}}, {200, []}}
+                end),
+    meck:expect(aws_s3, delete_object,
+                fun(_Cli, _Bucket, _Path, _Query) -> {ok, #{}, {200, []}} end),
+    S0 = revault_s3:multipart_init(<<"path">>, 3, HA),
+    {ok, S1} = revault_s3:multipart_update(S0, <<"path">>, 1, 3, HA, P1),
+    {ok, S2} = revault_s3:multipart_update(S1, <<"path">>, 2, 3, HA, P2),
+    {ok, S3} = revault_s3:multipart_update(S2, <<"path">>, 3, 3, HA, P3),
+    ?assertEqual(ok, revault_s3:multipart_final(S3, <<"path">>, 3, HA)),
+    ok.
+
+multipart_hash() ->
+    [{doc, "mocked out call to the multipart functions, based "
+           "on data from the integration suite, checking checksums."}].
+multipart_hash(_Config) ->
+    UploadId = <<"123456">>,
+    P1 = <<1>>,
+    P2 = <<2>>,
+    P3 = <<3>>,
+    Whole = <<P1/binary,P2/binary,P3/binary>>,
+    H1 = revault_file:hash_bin(P1),
+    H2 = revault_file:hash_bin(P2),
+    H3 = revault_file:hash_bin(P3),
+    HA = <<1, (revault_file:hash_bin(Whole))/binary>>,
+    CM = << (base64:encode(revault_file:hash_bin(<<H1/binary, H2/binary, H3/binary>>)))/binary, "-3" >>,
+    CA = base64:encode(HA),
+    meck:expect(aws_s3, create_multipart_upload,
+                fun(_Cli, _Bucket, _Path, _Query, _Opts) ->
+                    {ok, #{<<"InitiateMultipartUploadResult">> =>
+                           #{<<"UploadId">> => UploadId}},
+                     {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, upload_part,
+                fun(_Cli, _Bucket, _Path,
+                    #{<<"PartNumber">> := _, <<"ChecksumSHA256">> := Chk},
+                    _Opts) ->
+                    {ok, #{<<"ETag">> => Chk, <<"ChecksumSHA256">> => Chk}, {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, complete_multipart_upload,
+                fun(_Cli, _Bucket, _Path, _Query, _Opts) ->
+                    {ok, #{<<"CompleteMultipartUploadResult">> =>
+                           #{<<"ChecksumSHA256">> => CM}},
+                     {200, [], make_ref()}}
+                end),
+    meck:expect(aws_s3, copy_object,
+                fun(_Cli, _Bucket, _To, _Query) ->
+                    {ok, #{<<"CopyObjectResult">> => #{<<"ChecksumSHA256">> => CA}}, {200, []}}
+                end),
+    meck:expect(aws_s3, delete_object,
+                fun(_Cli, _Bucket, _Path, _Query) -> {ok, #{}, {200, []}} end),
+    S0 = revault_s3:multipart_init(<<"path">>, 3, HA),
+    {ok, S1} = revault_s3:multipart_update(S0, <<"path">>, 1, 3, HA, P1),
+    {ok, S2} = revault_s3:multipart_update(S1, <<"path">>, 2, 3, HA, P2),
+    {ok, S3} = revault_s3:multipart_update(S2, <<"path">>, 3, 3, HA, P3),
+    ?assertError(invalid_hash, revault_s3:multipart_final(S3, <<"path">>, 3, HA)),
+    ok.
+
+read_range() ->
+    [{doc, "mocked out call to the read object functions, based "
+           "on data from the integration suite"}].
+read_range(_Config) ->
+    WidthBytes = 100,
+    WidthBits = 8*WidthBytes,
+    Bin = <<0:WidthBits, 1:WidthBits, 2:WidthBits, 3:WidthBits, 4:WidthBits,
+            5:WidthBits, 6:WidthBits, 7:WidthBits, 8:WidthBits, 9:WidthBits>>,
+    Path = "whatever",
+    meck:expect(aws_s3, get_object,
+                fun(_Client, _Bucket, _Path, _Query, #{<<"Range">> := <<"bytes=", Trail/binary>>}) ->
+                    [StartBin,EndBin] = binary:split(Trail, <<"-">>),
+                    Start = binary_to_integer(StartBin),
+                    End = binary_to_integer(EndBin),
+                    Width = (End-Start)+1,
+                    case Bin of
+                        <<_:Start/binary, Part:Width/binary, _/binary>> ->
+                            {ok, #{<<"Body">> => Part,
+                                   <<"ContentLength">> => integer_to_binary(byte_size(Part))},
+                             {200, []}};
+                        <<_:Start/binary, Rest/binary>> ->
+                            {ok, #{<<"Body">> => Rest,
+                                   <<"ContentLength">> => integer_to_binary(byte_size(Rest))},
+                             {200, []}};
+                        _ ->
+                            {error, #{<<"Error">> => #{<<"Code">> => <<"InvalidRange">>}}, {400,[]}}
+                    end
+                end),
+    ?assertMatch({ok, Bin}, revault_s3:read_range(Path, 0, WidthBytes*10)),
+    ?assertMatch({error, _}, revault_s3:read_range(Path, 0, WidthBytes*10+1000)),
+    ?assertMatch({error, _}, revault_s3:read_range(Path, WidthBytes*1000, 1)),
+    ?assertMatch({ok, <<5:100/unit:8, _:400/binary>>},
+                 revault_s3:read_range(Path, WidthBytes*5, WidthBytes*5)),
+    ?assertMatch({ok, <<5:100/unit:8>>},
+                 revault_s3:read_range(Path, WidthBytes*5, WidthBytes)),
+    ?assertMatch({ok, <<5:100/unit:8, 0>>},
+                 revault_s3:read_range(Path, WidthBytes*5, WidthBytes+1)),
     ok.
 
 

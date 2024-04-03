@@ -1116,8 +1116,6 @@ handle_multipart_file(MPState, F, Hash, PartNum, PartTotal, Bin) when PartNum =:
     #{F := State} = MPState,
     {ok, NewState} = revault_file:multipart_update(State, F, PartNum, PartTotal, Hash, Bin),
     ok = revault_file:multipart_final(NewState, F, PartTotal, Hash),
-    %% TODO: validate whether multipart file handling validates the
-    %%       hash we pass in, and otherwise add an explicit check
     {done, maps:remove(F, MPState)}.
 
 delete_file(Name, F, Meta) ->
