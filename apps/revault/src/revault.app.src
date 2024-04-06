@@ -18,7 +18,8 @@
     aws, jsx
   ]},
   {env, [
-    {backend, disk}
+    {backend, disk},
+    {multipart_size, 52428800} % 50MiB
   ]},
   {modules, []},
 
