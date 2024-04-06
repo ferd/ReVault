@@ -1,8 +1,13 @@
 -module(revault_file_disk).
+
+-include_lib("kernel/include/file.hrl").
+
 -export([hash/1, hash_bin/1,
          copy/2,
          tmp/0, tmp/1,
-         find_hashes/2,
+         find_hashes/2, size/1,
+         read_range/3,
+         multipart_init/3, multipart_update/6, multipart_final/4,
          %% wrappers to file module
          delete/1, consult/1, read_file/1, ensure_dir/1, is_regular/1,
          write_file/2, write_file/3, rename/2]).
@@ -15,6 +20,7 @@
 %% it is SHA256.
 -spec hash(file:filename_all()) -> hash().
 hash(Path) ->
+    %% TODO: support large files on this too
     {ok, Bin} = read_file(Path),
     hash_bin(Bin).
 
@@ -81,6 +87,69 @@ find_hashes(Dir, Pred) ->
       end,
       []
     ).
+
+-spec size(file:filename()) -> {ok, non_neg_integer()} | {error, term()}.
+size(Path) ->
+    maybe
+        {ok, Rec} ?= file:read_file_info(Path),
+        {ok, Rec#file_info.size}
+    end.
+
+-spec read_range(Path, Offset, Bytes) -> {ok, binary()} | {error, term()} when
+      Path :: file:filename(),
+      Offset :: non_neg_integer(),
+      Bytes :: pos_integer().
+read_range(Path, Offset, Bytes) ->
+    maybe
+        {ok, Fd} ?= file:open(Path, [read, raw, binary]),
+        Res = file:pread(Fd, Offset, Bytes),
+        file:close(Fd),
+        case Res of
+            {ok, Bin} when byte_size(Bin) =:= Bytes -> Res;
+            {error, _} -> Res;
+            {ok, Bin} when byte_size(Bin) =/= Bytes -> {error, invalid_range};
+            eof -> {error, invalid_range}
+        end
+    end.
+
+-spec multipart_init(Path, PartsTotal, Hash) -> State when
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: revault_file:hash(),
+    State :: revault_file:multipart_state().
+multipart_init(Path, PartsTotal, Hash) ->
+    {ok, Fd} = file:open(Path, [raw, write]),
+    HashState = crypto:hash_init(sha256),
+    {state, Path, 0, PartsTotal, Hash,
+     {Fd, HashState}}.
+
+-spec multipart_update(State, Path, PartNum, PartsTotal, Hash, binary()) ->
+    {ok, revault_file:multipart_state()} when
+        State :: revault_file:multipart_state(),
+        Path :: file:filename(),
+        PartNum :: 1..10000,
+        PartsTotal :: 1..10000,
+        Hash :: revault_file:hash().
+multipart_update({state, Path, _PartsSeen, PartsTotal, Hash,
+                  {Fd, HashState}},
+                 Path, PartNum, PartsTotal, Hash, Bin) ->
+    ok = file:write(Fd, Bin),
+    NewHashState = crypto:hash_update(HashState, Bin),
+    {ok, {state, Path, PartNum, PartsTotal, Hash, {Fd, NewHashState}}}.
+
+-spec multipart_final(State, Path, PartsTotal, Hash) -> ok when
+        State :: revault_file:multipart_state(),
+    Path :: file:filename(),
+    PartsTotal :: pos_integer(),
+    Hash :: revault_file:hash().
+multipart_final({state, Path, _PartsSeen, PartsTotal, Hash,
+                 {Fd, HashState}},
+                Path, PartsTotal, Hash) ->
+    ok = file:close(Fd),
+    case crypto:hash_final(HashState) of
+        Hash -> ok;
+        _BadHash -> error(invalid_hash)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%
 %%% FILE WRAPPERS %%%

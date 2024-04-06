@@ -14,7 +14,9 @@
 %%% converters to deal with various encodings and wire formats.
 -module(revault_disterl).
 -export([callback/1, mode/1, peer/3, accept_peer/2, unpeer/2, send/2, reply/3, unpack/1]).
--define(VSN, 1).
+
+-include("revault_data_wrapper.hrl").
+
 -type state() :: ?MODULE.
 -export_type([state/0]).
 
@@ -77,11 +79,14 @@ unpack({error, ?VSN, R}) -> {error, R};
 unpack({manifest, ?VSN}) -> manifest;
 unpack({manifest, ?VSN, Data}) -> {manifest, Data};
 unpack({file, ?VSN, Path, Meta, Bin}) -> {file, Path, Meta, Bin};
+unpack({file, ?VSN, Path, Meta, PartNum, PartTotal, Bin}) -> {file, Path, Meta, PartNum, PartTotal, Bin};
 unpack({fetch, ?VSN, Path}) -> {fetch, Path};
 unpack({sync_complete, ?VSN}) -> sync_complete;
 unpack({deleted_file, ?VSN, Path, Meta}) -> {deleted_file, Path, Meta};
 unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
     {conflict_file, WorkPath, Path, Count, Meta, Bin};
+unpack({conflict_multipart_file, ?VSN, WorkPath, Path, Count, Meta, PartNum, PartTotal, Bin}) ->
+    {conflict_multipart_file, WorkPath, Path, Count, Meta, PartNum, PartTotal, Bin};
 unpack(Term) ->
     Term.
 
