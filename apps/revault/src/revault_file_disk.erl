@@ -1,6 +1,7 @@
 -module(revault_file_disk).
 
 -include_lib("kernel/include/file.hrl").
+-compile({no_auto_import,[size/1]}).
 
 -export([hash/1, hash_bin/1,
          copy/2,
@@ -20,9 +21,18 @@
 %% it is SHA256.
 -spec hash(file:filename_all()) -> hash().
 hash(Path) ->
-    %% TODO: support large files on this too
-    {ok, Bin} = read_file(Path),
-    hash_bin(Bin).
+    {ok, Size} = size(Path),
+    case application:get_env(revault, multipart_size) of
+        {ok, Threshold} when Size > Threshold ->
+            {ok, Fd} = file:open(Path, [read, raw, binary]),
+            HashState = crypto:hash_init(sha256),
+            NewHashState = hash_fd(Fd, 0, Size, Threshold, HashState),
+            file:close(Fd),
+            crypto:hash_final(NewHashState);
+        _ ->
+            {ok, Bin} = read_file(Path),
+            hash_bin(Bin)
+    end.
 
 %% @doc takes a binary and computes a hash for it as used to track changes
 %% and validate payloads in ReVault. This hash is not guaranteed to be
@@ -252,3 +262,10 @@ detect_tmpdir() ->
 randname() ->
     float_to_list(rand:uniform()).
 
+hash_fd(_Fd, Offset, Size, _Threshold, HashState) when Offset =:= Size ->
+    HashState;
+hash_fd(Fd, Offset, Size, Threshold, HashState) when Offset < Size ->
+    Bytes = min(Size-Offset, Threshold),
+    {ok, Bin} = file:pread(Fd, Offset, Bytes),
+    hash_fd(Fd, Offset+Bytes, Size, Threshold,
+            crypto:hash_update(HashState, Bin)).

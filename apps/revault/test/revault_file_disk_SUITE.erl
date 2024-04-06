@@ -4,7 +4,8 @@
 -include_lib("common_test/include/ct.hrl").
 
 all() ->
-    [read_range, multipart, multipart_hash].
+    [read_range, multipart, multipart_hash,
+     hash_large_file].
 
 read_range() ->
     [{doc, "general checks on reading subsets of files"}].
@@ -68,4 +69,26 @@ multipart_hash(Config) ->
     ),
     ?assertError(invalid_hash,
                  revault_file_disk:multipart_final(State, File, Parts, Hash)),
+    ok.
+
+hash_large_file() ->
+    [{doc, "hashing large files can be done in an iterative manner"}].
+hash_large_file(Config) ->
+    WidthBytes = 100,
+    WidthBits = 8*WidthBytes,
+    Parts = 11,
+    Bin = <<0:WidthBits, 1:WidthBits, 2:WidthBits, 3:WidthBits, 4:WidthBits,
+            5:WidthBits, 6:WidthBits, 7:WidthBits, 8:WidthBits, 9:WidthBits, 10>>,
+    File = filename:join([?config(priv_dir, Config), "multipart.scratch"]),
+    ok = file:write_file(File, Bin),
+    Hash = revault_file_disk:hash_bin(<<Bin/binary>>),
+    %% do the streaming hash read
+    Multipart = application:get_env(revault, multipart_size),
+    application:set_env(revault, multipart_size, WidthBytes),
+    HashDisk = revault_file_disk:hash(File),
+    case Multipart of
+        undefined -> application:unset_env(revault, multipart_size);
+        {ok, Multipart} -> application:set_env(revault, multipart_size, Multipart)
+    end,
+    ?assertEqual(HashDisk, Hash),
     ok.
