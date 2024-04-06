@@ -104,8 +104,6 @@ read_range(Path, Offset, Bytes) ->
         {ok, Fd} ?= file:open(Path, [read, raw, binary]),
         Res = file:pread(Fd, Offset, Bytes),
         file:close(Fd),
-        %% TODO: compare with S3 on the behavior of going past the EOF and see
-        %% that we align errors.
         case Res of
             {ok, Bin} when byte_size(Bin) =:= Bytes -> Res;
             {error, _} -> Res;
