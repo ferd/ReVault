@@ -24,7 +24,7 @@ hash(Path) ->
     {ok, Size} = size(Path),
     case application:get_env(revault, multipart_size) of
         {ok, Threshold} when Size > Threshold ->
-            {ok, Fd} = file:open(Path, [read, raw, binary]),
+            {ok, Fd} = file:open(Path, [read, raw, binary, {read_ahead, Threshold}]),
             HashState = crypto:hash_init(sha256),
             NewHashState = hash_fd(Fd, 0, Size, Threshold, HashState),
             file:close(Fd),
