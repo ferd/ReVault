@@ -94,7 +94,7 @@ scan(_Args = #{node := NodeStr, dirs := Dirs}) ->
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),
-        show(scan_dirs(Node, Dirs))
+        ok ?= scan_dirs(Node, Dirs)
     else
         {error, no_dist} ->
             io:format("Erlang distribution seems to be off.~n");
@@ -119,7 +119,7 @@ sync(#{node := NodeStr, dirs := Dirs = [_|_], peer := [Peer]}) ->
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),
-        show(sync_dirs(Node, Peer, Dirs))
+        ok ?= all_ok(sync_dirs(Node, Peer, Dirs), Dirs)
     else
         {error, no_dist} ->
             io:format("Erlang distribution seems to be off.~n");
@@ -185,16 +185,29 @@ config(Node) ->
     {config, Path, Config}.
 
 scan_dirs(Node, Dirs) ->
-    [{scan, Name,
-      rpc:call(Node, revault_dirmon_event, force_scan, [Name, infinity])}
-     || Name <- Dirs].
+    all_ok(scan_dirs_(Node, Dirs), Dirs).
+
+scan_dirs_(_, []) ->
+    [];
+scan_dirs_(Node, [Name|Dirs]) ->
+    io:format("Scanning ~ts: ", [Name]),
+    Res = rpc:call(Node, revault_dirmon_event, force_scan, [Name, infinity]),
+    io:format("~p~n", [Res]),
+    [Res | scan_dirs_(Node, Dirs)].
 
 sync_dirs(Node, Remote, Dirs) ->
-    scan_dirs(Node, Dirs)
-    ++
-    [{sync, Name, Remote,
-      rpc:call(Node, revault_fsm, sync, [Name, Remote])}
-     || Name <- Dirs].
+    case scan_dirs(Node, Dirs) of
+        ok -> all_ok(sync_dirs_(Node, Remote, Dirs), Dirs);
+        Other -> Other
+    end.
+
+sync_dirs_(_Node, _Remote, []) ->
+    [];
+sync_dirs_(Node, Remote, [Name|Dirs]) ->
+    io:format("Syncing ~ts with ~ts: ", [Name, Remote]),
+    Res = rpc:call(Node, revault_fsm, sync, [Name, Remote]),
+    io:format("~p~n", [Res]),
+    [Res | sync_dirs_(Node, Remote, Dirs)].
 
 seed_fork(Node, Path, Dirs) ->
     [{fork, Name, Path,
@@ -205,12 +218,17 @@ show(List) when is_list(List) ->
     [show(X) || X <- List];
 show({config, Path, Config}) ->
     io:format("Config parsed from ~ts:~n~p~n", [Path, Config]);
-show({scan, Dir, Res}) ->
-    io:format("Scanning ~ts: ~p~n", [Dir, Res]);
 show({sync, Dir, Peer, Res}) ->
     io:format("Syncing ~ts with ~ts: ~p~n", [Dir, Peer, Res]);
 show({fork, Name, Path, Res}) ->
     io:format("Forking ~ts in ~p: ~p~n", [Name, Path, Res]).
+
+all_ok(L, Keys) -> all_ok(L, Keys, []).
+
+all_ok([], [], []) -> ok;
+all_ok([], [], Bad) -> {error, Bad};
+all_ok([ok|T], [_|Ks], Bad) -> all_ok(T, Ks, Bad);
+all_ok([H|T], [K|Ks], Bad) -> all_ok(T, Ks, [{K,H}|Bad]).
 
 %% Copied from revault_tls
 make_selfsigned_cert(Dir, CertName) ->
