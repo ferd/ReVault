@@ -87,6 +87,12 @@ tmp(Path) ->
     Dir :: file:filename(),
     Pred :: fun((file:filename()) -> boolean()).
 find_hashes(Dir, Pred) ->
+    case application:get_env(revault, disk_hash_cache, false) of
+        false -> find_hashes_uncached(Dir, Pred);
+        true -> find_hashes_cached(Dir, Pred)
+    end.
+
+find_hashes_uncached(Dir, Pred) ->
     filelib:fold_files(
       Dir, ".*", true,
       fun(File, Acc) ->
@@ -97,6 +103,33 @@ find_hashes(Dir, Pred) ->
       end,
       []
     ).
+
+find_hashes_cached(Dir, Pred) ->
+    revault_disk_cache:ensure_loaded(Dir),
+    List = filelib:fold_files(
+      Dir, ".*", true,
+      fun(File, Acc) ->
+         case Pred(File) of
+             false ->
+                 Acc;
+             true ->
+                 RelFile = revault_file:make_relative(Dir, File),
+                 LastModified = filelib:last_modified(File),
+                 case revault_disk_cache:hash(Dir, RelFile) of
+                     {ok, {Hash, LastModified}} ->
+                         [{RelFile, Hash} | Acc];
+                     _R ->
+                         Hash = hash(File),
+                         revault_disk_cache:hash_store(Dir, RelFile, {Hash, LastModified}),
+                         [{RelFile, Hash} | Acc]
+                 end
+         end
+      end,
+      []
+    ),
+    revault_disk_cache:save(Dir),
+    List.
+
 
 -spec size(file:filename()) -> {ok, non_neg_integer()} | {error, term()}.
 size(Path) ->

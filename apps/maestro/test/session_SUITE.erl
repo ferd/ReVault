@@ -9,8 +9,12 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
-all() -> [setup_works, copy_and_sync, conflict_and_sync,
-          role_switch].
+all() -> [{group, default}, {group, with_hash_cache}].
+
+groups() -> [{default, [], [{group, sessions}]},
+             {with_hash_cache, [], [{group, sessions}]},
+             {sessions, [], [setup_works, copy_and_sync,
+                             conflict_and_sync, role_switch]}].
 
 %% These values are hardcoded in the toml config files in the suite's
 %% data_dir; changing them here requires changing them there too.
@@ -20,6 +24,16 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(Config) ->
+    Config.
+
+init_per_group(with_hash_cache, Config) ->
+    %% Since the last modified stamps require 1 second
+    %% to go by, scans won't be effective without a pause.
+    [{sync_pause, 1000} | Config];
+init_per_group(_, Config) ->
+    [{sync_pause, 0} | Config].
+
+end_per_group(Config) ->
     Config.
 
 init_per_testcase(set_up_files, Config) ->
@@ -45,14 +59,22 @@ init_per_testcase(set_up_peers, ConfigTmp) ->
     %% Set up the peer nodes
     {ok, PidA, NodeA} = ?CT_PEER(#{
         name => a, longnames => true, host => "127.0.0.1",
-        env => [{"REVAULT_CONFIG", ?config(conf_a, Config)}]
+        env => [{"REVAULT_CONFIG", ?config(conf_a, Config)}],
+        shutdown => close
     }),
     {ok, PidB, NodeB} = ?CT_PEER(#{
         name => b, longnames => true, host => "127.0.0.1",
-        env => [{"REVAULT_CONFIG", ?config(conf_b, Config)}]
+        env => [{"REVAULT_CONFIG", ?config(conf_b, Config)}],
+        shutdown => close
     }),
     ok = rpc:call(NodeA, file, set_cwd, [?config(priv_dir, Config)]),
     ok = rpc:call(NodeB, file, set_cwd, [?config(priv_dir, Config)]),
+    %% Set up config for cache
+    Priv = ?config(priv_dir, Config),
+    ok = rpc:call(NodeA, application, set_env, [revault, disk_hash_cache, true]),
+    ok = rpc:call(NodeA, application, set_env, [revault, disk_hash_cache_path, Priv]),
+    ok = rpc:call(NodeB, application, set_env, [revault, disk_hash_cache, true]),
+    ok = rpc:call(NodeB, application, set_env, [revault, disk_hash_cache_path, Priv]),
     [{peer_a, {PidA, NodeA}}, {peer_b, {PidB, NodeB}} | Config];
 init_per_testcase(_, ConfigTmp) ->
     Config = init_per_testcase(set_up_peers, ConfigTmp),
@@ -78,7 +100,9 @@ init_per_testcase(_, ConfigTmp) ->
 end_per_testcase(_, Config) ->
     {PidA, _NodeA} = ?config(peer_a, Config),
     {PidB, _NodeB} = ?config(peer_b, Config),
+    ct:pal("Stopping Peer A"),
     peer:stop(PidA),
+    ct:pal("Stopping Peer B"),
     peer:stop(PidB),
     Config.
 
@@ -110,6 +134,7 @@ copy_and_sync(Config) ->
     ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, sync, [Dir, ServerName])),
     ?assertEqual(tree(DirA), tree(DirB)),
     %% initial sync, now deal with some writes.
+    timer:sleep(?config(sync_pause, Config)),
     copy(filename:join(?config(data_dir, Config), "b"), DirB),
     ?assertNotEqual(tree(DirA), tree(DirB)),
     ok = rpc:call(ClientNode, revault_dirmon_event, force_scan, [Dir, infinity]),
@@ -137,12 +162,14 @@ conflict_and_sync(Config) ->
     %% resolves all conflicts to the server as the superset.
     ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, sync, [Dir, ServerName])),
     %% Now we can copy files and declare some conflicts.
+    timer:sleep(?config(sync_pause, Config)),
     copy(filename:join(?config(data_dir, Config), "b"), DirB),
     file:write_file(filename:join(DirA, "shared.txt"), <<"ccc\n">>),
     ?assertNotEqual(tree(DirA), tree(DirB)),
     ok = rpc:call(ClientNode, revault_dirmon_event, force_scan, [Dir, infinity]),
     ok = rpc:call(ServerNode, revault_dirmon_event, force_scan, [Dir, infinity]),
     %% Now we should sync and get conflict files
+    timer:sleep(?config(sync_pause, Config)),
     ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, sync, [Dir, ServerName])),
     TreeA = tree(DirA),
     TreeB = tree(DirB),
@@ -197,6 +224,7 @@ role_switch(Config) ->
     wait_until(fun() -> current == rpc:call(ServerNode, maestro_loader, status, []) end),
     wait_until(fun() -> current == rpc:call(ClientNode, maestro_loader, status, []) end),
     %% now deal with some writes.
+    timer:sleep(?config(sync_pause, Config)),
     copy(filename:join(?config(data_dir, Config), "b"), DirB),
     ?assertNotEqual(tree(DirA), tree(DirB)),
     ok = rpc:call(ClientNode, revault_dirmon_event, force_scan, [Dir, infinity]),

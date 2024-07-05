@@ -124,8 +124,30 @@ stop_workers() ->
     stop_backend(),
     ok.
 
-start_backend(#{<<"backend">> := #{<<"mode">> := <<"disk">>}}) ->
-    revault_backend_sup:start_disk_subtree(),
+start_backend(#{<<"backend">> := #{<<"mode">> := <<"disk">>},
+                <<"peers">> := PeersMap,
+                <<"server">> := ServMap,
+                <<"dirs">> := DirsMap}) ->
+    %% Get list of all directories that will need a cache
+    %% First the peers...
+    PeersDirs = [Dir || {_, #{<<"sync">> := DirList}} <- maps:to_list(PeersMap),
+                        Dir <- DirList],
+    %% The servers dirs list is more complex though, as we extract both
+    %% TLS and unauthentified ones.
+    AuthTypesMap = maps:get(<<"auth">>, ServMap, #{}),
+    TlsMap = maps:get(<<"tls">>, AuthTypesMap, #{}),
+    AuthMap = maps:get(<<"authorized">>, TlsMap, #{}),
+    TlsDirs = lists:usort(lists:append(
+        [maps:get(<<"sync">>, AuthCfg)
+         || {_Peer, AuthCfg} <- maps:to_list(AuthMap)]
+    )),
+    NoneMap = maps:get(<<"none">>, AuthTypesMap, #{}),
+    NoneDirs = lists:usort(maps:get(<<"sync">>, NoneMap, [])),
+    %% Put 'em together
+    AllDirs = lists:usort(PeersDirs ++ TlsDirs ++ NoneDirs),
+    DirPaths = [maps:get(<<"path">>, maps:get(Dir, DirsMap))
+                || Dir <- AllDirs],
+    [revault_backend_sup:start_disk_subtree(Path) || Path <- DirPaths],
     ok;
 start_backend(#{<<"backend">> := Backend=#{<<"mode">> := <<"s3">>},
                 <<"peers">> := PeersMap,

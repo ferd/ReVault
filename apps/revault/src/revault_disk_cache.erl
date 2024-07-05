@@ -1,7 +1,7 @@
--module(revault_s3_cache).
+-module(revault_disk_cache).
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
--export([start_link/2,
+-export([start_link/1,
          ensure_loaded/1, hash/2, hash_store/3, save/1, flush/1]).
 
 -record(state, {db_dir,
@@ -19,8 +19,8 @@
 -endif.
 
 %% `Name' is expected to be `Dir' by callers.
-start_link(DbDir, Name) ->
-    gen_server:start_link(?VIA_GPROC(Name), ?MODULE, {DbDir, Name}, ?DEBUG_OPTS).
+start_link(Name) ->
+    gen_server:start_link(?VIA_GPROC(Name), ?MODULE, Name, ?DEBUG_OPTS).
 
 ensure_loaded(Name) ->
     gen_server:call(?VIA_GPROC(Name), load, timer:minutes(1)).
@@ -43,22 +43,29 @@ flush(Name) ->
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
 %%%%%%%%%%%%%%%%%
-init({DbDir, Name}) ->
-    CacheFile = filename:join([DbDir, Name]),
+init(Name) ->
+    BaseCache = application:get_env(
+        revault,
+        disk_hash_cache_path,
+        filename:basedir(user_cache, filename:join(["ReVault"]))
+    ),
+    NonAbsParts = filename:split(Name) -- ["/", <<"/">>], % drop absolute path elements
+    CacheFile = filename:join([BaseCache, "disk_hashes" | NonAbsParts]),
+    filelib:ensure_dir(CacheFile),
     {ok, #state{cache_file=CacheFile, name=Name}}.
 
 handle_call(load, _From, S=#state{name=Name, cache_file=CacheFile}) ->
-    Cache = case revault_s3:consult(CacheFile) of
+    Cache = case revault_file_disk:consult(CacheFile) of
         {ok, [{Name, Map}]} when is_map(Map) -> Map;
         {error, enoent} -> #{}
     end,
     {reply, ok, S#state{cache=Cache}};
 handle_call(save, _From, S=#state{name=Name, cache_file=CacheFile, cache=Map}) ->
     Txt = io_lib:format("{~p,~p}.~n", [Name, Map]),
-    ok = revault_s3:write_file(CacheFile, unicode:characters_to_binary(Txt)),
+    ok = revault_file_disk:write_file(CacheFile, unicode:characters_to_binary(Txt)),
     {reply, ok, S};
 handle_call(flush, _From, S=#state{cache_file=CacheFile}) ->
-    _ = revault_s3:delete(CacheFile),
+    _ = revault_file_disk:delete(CacheFile),
     {reply, ok, S#state{cache=#{}}};
 handle_call({get, Key}, _From, S=#state{cache=Map}) ->
     Res = case Map of
@@ -77,4 +84,5 @@ handle_cast(_, S=#state{}) ->
 
 handle_info(_, S=#state{}) ->
     {noreply, S}.
+
 
