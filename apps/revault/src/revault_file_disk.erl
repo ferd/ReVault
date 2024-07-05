@@ -114,13 +114,13 @@ find_hashes_cached(Dir, Pred) ->
                  Acc;
              true ->
                  RelFile = revault_file:make_relative(Dir, File),
-                 LastModified = filelib:last_modified(File),
+                 CacheInfo = cache_info(File),
                  case revault_disk_cache:hash(Dir, RelFile) of
-                     {ok, {Hash, LastModified}} ->
+                     {ok, {Hash, CacheInfo}} ->
                          [{RelFile, Hash} | Acc];
                      _R ->
                          Hash = hash(File),
-                         revault_disk_cache:hash_store(Dir, RelFile, {Hash, LastModified}),
+                         revault_disk_cache:hash_store(Dir, RelFile, {Hash, CacheInfo}),
                          [{RelFile, Hash} | Acc]
                  end
          end
@@ -302,3 +302,7 @@ hash_fd(Fd, Offset, Size, Threshold, HashState) when Offset < Size ->
     {ok, Bin} = file:pread(Fd, Offset, Bytes),
     hash_fd(Fd, Offset+Bytes, Size, Threshold,
             crypto:hash_update(HashState, Bin)).
+
+cache_info(Path) ->
+    {ok, Rec} = file:read_file_info(Path, [raw]),
+    Rec#file_info{atime=undefined}.

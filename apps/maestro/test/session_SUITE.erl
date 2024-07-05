@@ -9,8 +9,12 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
-all() -> [setup_works, copy_and_sync, conflict_and_sync,
-          role_switch].
+all() -> [{group, default}, {group, with_hash_cache}].
+
+groups() -> [{default, [], [{group, sessions}]},
+             {with_hash_cache, [], [{group, sessions}]},
+             {sessions, [], [setup_works, copy_and_sync,
+                             conflict_and_sync, role_switch]}].
 
 %% These values are hardcoded in the toml config files in the suite's
 %% data_dir; changing them here requires changing them there too.
@@ -20,6 +24,21 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(Config) ->
+    Config.
+
+
+init_per_group(with_hash_cache, Config) ->
+    %% IMPORTANT: the cache tests only succeed because we were careful
+    %% to design the test files of each node to have different file sizes.
+    %% Otherwise, the time delays within a test run are too low to succeed
+    %% and the modified times don't register.
+    %%
+    %% Cached hashes are fundamentally less safe/sensitive.
+    [{with_hash_cache, true} | Config];
+init_per_group(_, Config) ->
+    Config.
+
+end_per_group(_, Config) ->
     Config.
 
 init_per_testcase(set_up_files, Config) ->
@@ -42,7 +61,9 @@ init_per_testcase(set_up_files, Config) ->
      {conf_a, ConfA}, {conf_b, ConfB} | Config];
 init_per_testcase(set_up_peers, ConfigTmp) ->
     Config = init_per_testcase(set_up_files, ConfigTmp),
-    %% Set up the peer nodes
+    %% Set up the peer nodes; running with coverage may
+    %% mess the shutdown option since the cover server mandates
+    %% a 10s max delay.
     {ok, PidA, NodeA} = ?CT_PEER(#{
         name => a, longnames => true, host => "127.0.0.1",
         env => [{"REVAULT_CONFIG", ?config(conf_a, Config)}],
@@ -55,6 +76,17 @@ init_per_testcase(set_up_peers, ConfigTmp) ->
     }),
     ok = rpc:call(NodeA, file, set_cwd, [?config(priv_dir, Config)]),
     ok = rpc:call(NodeB, file, set_cwd, [?config(priv_dir, Config)]),
+    %% Set up config for cache
+    Priv = ?config(priv_dir, Config),
+    case proplists:get_value(with_hash_cache, Config, false) of
+        false ->
+            ok;
+        true ->
+            ok = rpc:call(NodeA, application, set_env, [revault, disk_hash_cache, true]),
+            ok = rpc:call(NodeA, application, set_env, [revault, disk_hash_cache_path, Priv]),
+            ok = rpc:call(NodeB, application, set_env, [revault, disk_hash_cache, true]),
+            ok = rpc:call(NodeB, application, set_env, [revault, disk_hash_cache_path, Priv])
+    end,
     [{peer_a, {PidA, NodeA}}, {peer_b, {PidB, NodeB}} | Config];
 init_per_testcase(_, ConfigTmp) ->
     Config = init_per_testcase(set_up_peers, ConfigTmp),
@@ -86,7 +118,7 @@ end_per_testcase(_, Config) ->
 
 setup_works() ->
     [{doc, "The initialized peer nodes are running valid initialized FSMs"},
-     {timetrap, timer:seconds(5)}].
+     {timetrap, timer:seconds(15)}].
 setup_works(Config) ->
     {_, ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
@@ -97,7 +129,7 @@ setup_works(Config) ->
 
 copy_and_sync() ->
     [{doc, "Copying files end-to-end works fine, with conflicts omitted."},
-     {timetrap, timer:seconds(5)}].
+     {timetrap, timer:seconds(15)}].
 copy_and_sync(Config) ->
     {_, _ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
@@ -122,7 +154,7 @@ copy_and_sync(Config) ->
 conflict_and_sync() ->
     [{doc, "Copying files end-to-end works fine, including conflicts "
            "and resolution."},
-     {timetrap, timer:seconds(5)}].
+     {timetrap, timer:seconds(15)}].
 conflict_and_sync(Config) ->
     {_, ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
@@ -140,7 +172,7 @@ conflict_and_sync(Config) ->
     ?assertEqual(ok, rpc:call(ClientNode, revault_fsm, sync, [Dir, ServerName])),
     %% Now we can copy files and declare some conflicts.
     copy(filename:join(?config(data_dir, Config), "b"), DirB),
-    file:write_file(filename:join(DirA, "shared.txt"), <<"ccc\n">>),
+    file:write_file(filename:join(DirA, "shared.txt"), <<"ccccc\n">>),
     ?assertNotEqual(tree(DirA), tree(DirB)),
     ok = rpc:call(ClientNode, revault_dirmon_event, force_scan, [Dir, infinity]),
     ok = rpc:call(ServerNode, revault_dirmon_event, force_scan, [Dir, infinity]),
@@ -153,8 +185,8 @@ conflict_and_sync(Config) ->
     ?assertEqual(maps:without(["shared.txt"], TreeA),
                  maps:without(["shared.txt"], TreeB)),
     ?assertMatch(#{"shared.txt.conflict" := _,
-                   "shared.txt.3CF9A1A8" := <<"bbb\n">>,
-                   "shared.txt.5695D82A" := <<"ccc\n">>},
+                   "shared.txt.4551DB5F" := <<"bbbb\n">>,
+                   "shared.txt.38446FF6" := <<"ccccc\n">>},
                  TreeA),
     ?assertNotMatch(#{"same.txt.conflict" := _}, TreeA),
     %% Fix the conflict on either side
@@ -164,8 +196,8 @@ conflict_and_sync(Config) ->
     TreeAFix = tree(DirA),
     TreeBFix = tree(DirB),
     ?assertEqual(TreeAFix, TreeBFix),
-    ?assertNotMatch(#{"shared.txt.3CF9A1A8" := <<"bbb\n">>,
-                      "shared.txt.5695D82A" := <<"ccc\n">>},
+    ?assertNotMatch(#{"shared.txt.4551DB5F" := <<"bbbb\n">>,
+                      "shared.txt.38446FF6" := <<"ccccc\n">>},
                     TreeAFix),
     ok.
 
@@ -173,7 +205,7 @@ role_switch() ->
     [{doc, "Once set up, instances can be doing both a client and a server "
            "role, and create non-centralized topologies so long as peers "
            "are accessible"},
-     {timetrap, timer:seconds(5)}].
+     {timetrap, timer:seconds(15)}].
 role_switch(Config) ->
     {_, ServerNode} = ?config(peer_a, Config),
     {_, ClientNode} = ?config(peer_b, Config),
