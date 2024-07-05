@@ -44,7 +44,8 @@ flush(Name) ->
 %%% CALLBACKS %%%
 %%%%%%%%%%%%%%%%%
 init({DbDir, Name}) ->
-    CacheFile = filename:join([DbDir, Name]),
+    SplitName = filename:split(Name) -- ["/", <<"/">>],
+    CacheFile = filename:join([DbDir | SplitName]),
     {ok, #state{cache_file=CacheFile, name=Name}}.
 
 handle_call(load, _From, S=#state{name=Name, cache_file=CacheFile}) ->
