@@ -87,6 +87,12 @@ tmp(Path) ->
     Dir :: file:filename(),
     Pred :: fun((file:filename()) -> boolean()).
 find_hashes(Dir, Pred) ->
+    case application:get_env(revault, disk_hash_cache, false) of
+        false -> find_hashes_uncached(Dir, Pred);
+        true -> find_hashes_cached(Dir, Pred)
+    end.
+
+find_hashes_uncached(Dir, Pred) ->
     filelib:fold_files(
       Dir, ".*", true,
       fun(File, Acc) ->
@@ -97,6 +103,33 @@ find_hashes(Dir, Pred) ->
       end,
       []
     ).
+
+find_hashes_cached(Dir, Pred) ->
+    revault_disk_cache:ensure_loaded(Dir),
+    List = filelib:fold_files(
+      Dir, ".*", true,
+      fun(File, Acc) ->
+         case Pred(File) of
+             false ->
+                 Acc;
+             true ->
+                 RelFile = revault_file:make_relative(Dir, File),
+                 CacheInfo = cache_info(File),
+                 case revault_disk_cache:hash(Dir, RelFile) of
+                     {ok, {Hash, CacheInfo}} ->
+                         [{RelFile, Hash} | Acc];
+                     _R ->
+                         Hash = hash(File),
+                         revault_disk_cache:hash_store(Dir, RelFile, {Hash, CacheInfo}),
+                         [{RelFile, Hash} | Acc]
+                 end
+         end
+      end,
+      []
+    ),
+    revault_disk_cache:save(Dir),
+    List.
+
 
 -spec size(file:filename()) -> {ok, non_neg_integer()} | {error, term()}.
 size(Path) ->
@@ -269,3 +302,7 @@ hash_fd(Fd, Offset, Size, Threshold, HashState) when Offset < Size ->
     {ok, Bin} = file:pread(Fd, Offset, Bytes),
     hash_fd(Fd, Offset+Bytes, Size, Threshold,
             crypto:hash_update(HashState, Bin)).
+
+cache_info(Path) ->
+    {ok, Rec} = file:read_file_info(Path, [raw]),
+    Rec#file_info{atime=undefined}.

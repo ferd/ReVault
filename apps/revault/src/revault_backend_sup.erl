@@ -9,7 +9,7 @@
 
 %% API
 -export([start_link/0,
-         start_disk_subtree/0, start_s3_subtree/5,
+         start_disk_subtree/1, start_s3_subtree/5,
          stop_all/0]).
 
 %% Supervisor callbacks
@@ -24,7 +24,13 @@
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
-start_disk_subtree() ->
+start_disk_subtree(DirPath) ->
+    %% TODO: test, particularly the multi-start paths
+    supervisor:start_child(?SERVER, #{
+        id => {disk_cache, DirPath},
+        start => {revault_disk_cache, start_link, [DirPath]},
+        type => worker
+    }),
     application:set_env(revault, backend, disk),
     ok.
 
