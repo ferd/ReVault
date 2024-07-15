@@ -246,7 +246,7 @@ This shows the node is running, and the host name generated is `revault@ferd.loc
 We can validate the configuration seen by the host in its internal format:
 
 ```
-./_build/prod/bin/revault_cli list -node alpha@vps.ferd.site
+./_build/prod/bin/revault_cli list
 Config parsed from /home/ferd/.config/ReVault/config.toml:
 #{<<"backend">> => #{<<"mode">> => <<"disk">>},
   <<"db">> => #{<<"path">> => <<"/home/ferd/revault-docs/revault/db/">>},
@@ -270,7 +270,7 @@ Everything seems alright, and you can see that by default the app ignores the `.
 Let's scan the files:
 
 ```
-$ ./_build/prod/bin/revault_cli scan -node alpha@vps.ferd.site
+$ ./_build/prod/bin/revault_cli scan
 Scanning music: {badrpc,
     {'EXIT',
         {noproc,
@@ -365,9 +365,9 @@ The problem, of course, is that our initial node does not accept connections. Le
 This explicitly allows the `beta` certificate to synchronize the music directory.  Restart the initial node and retry seeding. It should look like the following:
 
 ```
-$ ./_build/prod/bin/revault_cli remote-seed -dirs music -node beta@vps.ferd.site -peer alpha
+$ ./_build/prod/bin/revault_cli remote-seed -dirs music -node beta@ferd.local -peer alpha
 Seeding music from alpha: ok
-$ ./_build/prod/bin/revault_cli scan -dirs music -node beta@vps.ferd.site
+$ ./_build/prod/bin/revault_cli scan -dirs music -node beta@ferd.local
 Scanning music: ok
 ```
 
@@ -382,7 +382,7 @@ The previous procedure works well when the new node can connect to the old node 
 This is a common pattern when you initialize the first node on your own computer, and want to synchronize with a new remote server that won't be able to connect to your home network. The `seed` command is useful for this:
 
 ```
-λ [vps] ReVault → main* → ./_build/prod/bin/revault_cli seed --help
+$ ./_build/prod/bin/revault_cli seed --help
 usage: revault-cli seed [-node <node>] [-path <path>] [-dirs <dirs>...]
 
 Optional arguments:
@@ -420,7 +420,7 @@ Assuming your hosts are all set up fine according to prior instructions, you can
 ```
 $ ls /tmp/revault-docs/music_beta/
 
-$ ./_build/prod/bin/revault_cli sync -dirs music -node beta@vps.ferd.site -peer alpha
+$ ./_build/prod/bin/revault_cli sync -dirs music -node beta@ferd.local -peer alpha
 Scanning music: ok
 Syncing music with alpha: ok
 $ ls /tmp/revault-docs/music_beta/
