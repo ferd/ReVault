@@ -6,19 +6,19 @@ If you do have any interest in using this software or have feedback on it, drop 
 
 ## Installing
 
-No pre-built artficats are currently provided. You must [build and compile from source](#Building) to run and install ReVault.
+No prebuilt artifacts are currently provided. You must [build and compile from source](#Building) to run and install ReVault.
 
-If you were to want pre-built artifacts, contact the maintainers about it so this could eventually get set up. Otherwise there is no incentive to the current maintainer team (of one) to actually provide this.
+If you were to want prebuilt artifacts, contact the maintainers about it so this could eventually get set up. Otherwise there is no incentive to the current maintainer team (of one) to actually provide this.
 
 ### Requirements
 
-ReVault is tested on both Linux (AlmaLinux, Raspberry Pi OS) and MacOS (M1 and M2 processors on Sonoma or later). Also it runs on whatever the GitHub runners are running as a Docker environment.
+ReVault is tested on both Linux (AlmaLinux, Raspberry Pi OS) and macOS (M1 and M2 processors on Sonoma or later). Also it runs on whatever the GitHub runners are running as a Docker environment.
 
-It expects a case-sensitive filesystem; While a case-insensitive file system might work, there's a much higher chance that synchronization costs over the network and conflict detection will be way too eager and it isn't a recommended environment.
+It expects a case-sensitive file system; While a case-insensitive file system might work, there's a much higher chance that synchronization costs over the network and conflict detection will be way too eager and it isn't a recommended environment.
 
-It is currently un-tested on Windows (because the maintainer's Windows computer is an old piece of garbage that can't boot well anymore), and it is unknown how it will behave with Windows's shorter file path limitations.
+It is currently untested on Windows (because the maintainer's Windows computer is an old piece of garbage that can't boot well anymore), and it is unknown how it will behave with Windows's shorter file path limitations.
 
-Additionally, most key tests for the software are run using a filesystem that is Unicode-aware. You may need to configure variables for your terminal to support it, such as:
+Additionally, most key tests for the software are run using a file system that is Unicode-aware. You may need to configure variables for your terminal to support it, such as:
 
 ```
 LANG: C.UTF-8
@@ -36,7 +36,7 @@ This software is built using Erlang, because that's a cool language and this isn
 
 Instructions are provided on [Adopting Erlang](https://adoptingerlang.org/docs/development/setup/).
 
-Use the newest Erlang versions available (OTP-27 at the time of this writing), or alternatively look at the [CI script to find the oldest version supported](https://github.com/ferd/ReVault/blob/main/.github/workflows/erlang-ci.yml#L30-L31).
+Use the newest Erlang versions available (OTP-27 at the time of this writing), or look at the [CI script to find the oldest version supported](https://github.com/ferd/ReVault/blob/main/.github/workflows/erlang-ci.yml#L30-L31).
 
 You will want to make sure the network on the loopback interface can let you talk to Erlang, as the management scripts will require it to work. You can test this once Erlang and Rebar3 are installed by running the following commands on multiple terminals:
 
@@ -57,11 +57,11 @@ Eshell V14.1.1 (press Ctrl+G to abort, type help(). for help)
 ```
 This shows creating an Erlang node named `a@127.0.0.1`, and then creating a second one called `b@127.0.0.1` which then creates a remote shell (`-remsh`) onto `a@127.0.0.1`, which is the node in the input prompt of both terminals.
 
-If this all works, you should be good to go. If it doesn't work, you'll need to look at things such as your firewall rules and other network configuration to make sure you can indeed connect over the loopback interface. If you see something about `epmd`, then that's a little tool Erlang requires and that points at your install being incomplete. This is likely the case if you installed from packages and disregarded the instructions on [Adopting Erlang](https://adoptingerlang.org/docs/development/setup/).
+If this all works, you should be good to go. If it doesn't work, you'll need to look at things such as your firewall rules and other network configuration to make sure you can indeed connect over the loopback interface. If you see something about `epmd`, then that's a little tool Erlang requires and that error may happen because your installation is incomplete. This is likely the case if you installed from packages and disregarded the instructions on [Adopting Erlang](https://adoptingerlang.org/docs/development/setup/).
 
 ### Releases and Tools
 
-You should also have installed `rebar3` in the previous step. With it installed, check-out ReVault and build it:
+You should also have installed `rebar3` in the previous step. With it installed, check out ReVault and build it:
 
 ```
 $ git clone git@github.com:ferd/ReVault.git
@@ -81,13 +81,13 @@ If this is built, you should be good to go. However, ReVault does nothing withou
 
 ### Directories
 
-ReVault works by synchronizing directories of a file system. I keep hearing younger generations no longer are familiar with filesystems which possibly means I've taken so long to build my project it became obsolete before shipping, but I'm going to assume the reader knows what they are if they're reading damn Erlang toy project docs.
+ReVault works by synchronizing directories of a file system. I keep hearing younger generations no longer are familiar with file systems which means I've taken so long to build my project it became obsolete before shipping, but I'm going to assume the reader knows what they are if they're reading damn Erlang toy project docs.
 
 The directories to synchronize are specified in a config file. Each directory is specified with an alias (`books`) and a path (`/home/ferd/docs/books`). Any directory within that path can be recursively synchronized, and ReVault will ignore anything on the same level or above in the hierarchy.
 
-The directory's alias will be used everywhere: you can synchronize between two hosts so long as they use the same alias, and you will be anle to configure access and patterns using the aliases.
+The directory's alias will be used everywhere: you can synchronize between two hosts so long as they use the same alias, and you will be able to configure access and patterns using the aliases.
 
-Generally, when "directories" are mentioned in terms of synchronization or configuration, the intended meaning is this higher level concept of "top-level definition of a directory and all its contents".
+Generally, when "directories" are mentioned in terms of synchronization or configuration, the intended meaning is this higher-level concept of "top-level definition of a directory and all its contents."
 
 ### Nodes
 
@@ -97,33 +97,33 @@ We'll make a distinction between a few words. A _host_ can refer to any machine 
 
 There can therefore be multiple ReVault nodes running on a single host. We can say that nodes talk to each other, and the implication here is that oke node uses its own host's network stack to connect to another host that runs another node and communicate with it.
 
-We will also use the terms _local_ and _remote_ as qualifier for nodes: local just means whichever node's context and perspective we're adopting rihht now, and remote is the peer the local node is communicating with.
+We will also use the terms _local_ and _remote_ as qualifiers for nodes: “local” just means whichever node's context and perspective we are adopting right now, and “remote” is the peer with whom the local node is communicating.
 
 ### Clients and Servers
 
 While _local_ and _remote_ are useful terms to denote peer-to-peer communications in a way that neither peer holds some authority over the other one, we will still need the concepts of _client_ and _server_ as well.
 
-Generally a _server_ is a host that idly awaits for connections and contains resources other hosts want to interact with. The _client_ is whatever host connects to the server to interact with it. Traditionally, the client therefore makes requests and the server sends responses.
+Generally, a _server_ is a host that idly awaits for connections and contains resources other hosts want to interact with. The _client_ is whatever host connects to the server to interact with it. Traditionally, the client therefore makes requests and the server sends responses.
 
-In ReVault, the concepts are similar, but there's a few key critical differences.
+In ReVault, the concepts are similar, but there are a few key critical differences.
 
 Each directory tracked by ReVault is internally given a few identifiers:
 - An [interval tree clock id](https://ferd.ca/interval-tree-clocks.html). This is a fancy data structure that can be used to create counters—one per file tracked—that lets us know which hosts have seen which files, and if modifications have logically be seen by which peers, and whether any could be conflicts.
-- A UUID that uniquely identifies directories across peers, such that if two nodes that talk to each other have a directory with the same alias, but which come from two distinct histories (one is the Peterson Family photoes and the other one is lots of cool memes) they don't try to synchronize and merge together (into a weird Peterson Family meme directory)
+- A UUID that uniquely identifies directories across peers, such that if two nodes that talk to each other have a directory with the same alias, but which come from two distinct histories (one is the Peterson Family photos and the other one is lots of cool memes) they don't try to synchronize and merge together (into a weird Peterson Family meme directory)
 
-Basically, any directory tracked needs to initially be tracked by a single node. That node will create the initial UUID and set the Interval Tree Clock (ITC) to 0.
+Basically, any directory tracked needs to initially be tracked by a single node. That node will create the initial UUID and set the Interval Tree Clock (ITC) to zero.
 
 A node that boots for the first time and sees it is asked to track a directory on which it has no metadata will create the ITC and UUID only if it is configured as a server.
 
-A node that is configured exclusively as a client will see the lack of metadata and go "oh, I have no authority here" and will sit idle, waiting to be told which server to talk to.
+A node that is configured exclusively as a client will see the lack of metadata and go "Oh, I have no authority here" and will sit idle, waiting to be told which server to talk to.
 
-When that happens, the client node with no state will connrct to the Server with the state, and the Client will ask for it to segment its ITC space to let it also modify the clock on its own. The server will do that, hand the ITC and UUID to the client, and end the transaction.
+When that happens, the client node with no state will connect to the server with the state, and the client will ask for it to segment its ITC space to let it also modify the clock on its own. The server will do that, hand the ITC and UUID to the client, and end the transaction.
 
 Now that the client node has the state, it can _also_ be its own server to other peers.
 
-Do note that in some cases, the choice of being a client or server isn't purely about information or who asks for it. For example, if you're running a node on your own laptop and another one on a hosted computer in the cloud, there's a real possibility that your Internet Service Provider or your home network's router only lets your laptop be the client; nobody from the outside world can initiate a connection from the internet to the laptop. In such a case (and if you don't want to set up a VPN or open a port range), the network's topology forces the laptop to run a client and the host-based peer to be the server.
+Do note that in some cases, the choice of being a client or server isn't purely about information or who asks for it. For example, if you're running a node on your own laptop and another one on a hosted computer in the cloud, there's a real possibility that your Internet Service Provider or your home network's router only lets your laptop be the client; nobody from the outside world can initiate a connection from the Internet to the laptop. In such a case (and if you don't want to set up a VPN or open a port range), the network's topology forces the laptop to run a client and the host-based peer to be the server.
 
-(ReVault has ways of letting you initiate a cloud-based host from a local one by doing part of the ID replication with a command line tool and then letting you place that on the remote host so it boots with the state as if it had talked as a client)
+(ReVault has ways of letting you initiate a cloud-based host from a local one by doing part of the ID replication with a command-line tool and then letting you place that on the remote host so it boots with the state as if it had talked as a client.)
 
 ### Certificate-Based Authentication
 
@@ -133,7 +133,7 @@ You can have multiple sets of [private and public keys](https://www.ssl.com/arti
 
 Put another way, ReVault does not use [Certificate Authorities](https://en.wikipedia.org/wiki/Certificate_authority); all certificates are self-signed and pinned. This has the obvious downside that you can't automatically trust or distrust peers wholesale, each one must be managed individually.
 
-It however has the advantage of being conceptually simple: just give each node its keypair, distribute the public keys to the peers you want to talk to and get theirs, write that in a config file, and that's it.
+It, however, has the advantage of being conceptually simple: just give each node its key pair, distribute the public keys to the peers you want to talk to and get theirs, write that in a config file, and that's it.
 
 ## Bootstrapping a Node
 
@@ -191,7 +191,7 @@ We just need these two keys to exist for the server to be able to eventually acc
 
 ### Creating the keys
 
-when we compiled the project, we also built command line tool that lets us manage and interact with ReVault instances:
+when we compiled the project, we also built a command-line tool that lets us manage and interact with ReVault instances:
 
 ```
 $ ./_build/prod/bin/revault_cli --help
@@ -282,7 +282,7 @@ Scanning music: {badrpc,
 
 Weird, the thing doesn't exist. It turns out ReVault is lazy and will only boot a process if something could ever talk to it. Since TLS synchronizing has peer-specific matching and we specified no peers, there's nothing to boot. We can cheat a bit for that by temporarily turning on the TCP server, but you can also wait until we bootstrap a peer:
 
-```
+```toml
 # ... rest of the config file
 
 [server.auth.tls.authorized]
@@ -315,7 +315,7 @@ For the sake of this demonstration, we are going to run multiple peer nodes from
 
 We're gonna need to first bootstrap a new peer by creating a new config file for it at `/home/ferd/.config/ReVault/config_peer_a.toml`:
 
-```
+```toml
 [db]
   path = "/home/ferd/revault-docs/revault/db_beta/"
 
@@ -352,7 +352,7 @@ Seeding music from revault: {error,sync_failed}
 
 The problem, of course, is that our initial node does not accept connections. Let's add the following to its configuration:
 
-```
+```toml
 # ... rest of the file elided ...
 [server.auth.tls.authorized]
     [server.auth.tls.authorized.beta]
@@ -362,7 +362,7 @@ The problem, of course, is that our initial node does not accept connections. Le
 
 ```
 
-This explicitly allows the `beta` certificate to synchronize the music directory.  Restart the initial node and re-try seeding. It should look like the following:
+This explicitly allows the `beta` certificate to synchronize the music directory.  Restart the initial node and retry seeding. It should look like the following:
 
 ```
 $ ./_build/prod/bin/revault_cli remote-seed -dirs music -node beta@vps.ferd.site -peer alpha
@@ -373,11 +373,11 @@ Scanning music: ok
 
 Note here that the peer name refers to the name written in the config (`alpha`). That name can be anything and is different from the `NODENAME` variable (which would be `revault@ferd.local` for the `alpha` peer).
 
-The node is now up and running, and can be [synchronized](#synchronizing-files)!
+The node is now running, and can be [synchronized](#synchronizing-files)!
 
 ### By Command Line Seeding
 
-The previous procedure works well when the new node can connect to the old node to get its initial metadata. It however doesn't work well when the new node can only be connected to but can't initiate connections the other way.
+The previous procedure works well when the new node can connect to the old node to get its initial metadata. It, however, doesn't work well when the new node can only be connected to but can't initiate connections the other way.
 
 This is a common pattern when you initialize the first node on your own computer, and want to synchronize with a new remote server that won't be able to connect to your home network. The `seed` command is useful for this:
 
@@ -409,9 +409,9 @@ $ ls /home/ferd/revault-docs/revault/db/music # show internal metadata
 id  tracker.snapshot  uuid
 ```
 
-You can see the path of the db directory being `db/$DIR` and having it contain both the `id` and the `uuid` files (`tracker.snapshot` exists only after having scanned files and should _not_ be used to seed a new host, and isn't included).
+You can see the path of the metadata directory being `db/$DIR` and having it contain both the `id` and the `uuid` files (`tracker.snapshot` exists only after having scanned files and should _not_ be used to seed a new host, and isn't included).
 
-Basically, you put the two "seed" files in the internal metadata directory of the remote host (through say `sftp` or `scp`) and when it boots it will have enough information to do everything without conflicting with other peers.
+Basically, you put the two "seed" files in the internal metadata directory of the remote host (through say `sftp` or`scp`) and when it boots it will have enough information to do everything without conflicting with other peers.
 
 ## Synchronizing Files
 
@@ -427,7 +427,7 @@ $ ls /tmp/revault-docs/music_beta/
 cool.mp3
 ```
 
-By default, the `node` value is `revault@your.local.hostname` (the default hostname ReVault will pick without custom values), so most commands actually look like this:
+By default, the `node` value is `revault@your.local.hostname` (the default host name ReVault will pick without custom values), so most commands actually look like this:
 
 ```
 $ ./_build/prod/bin/revault_cli sync -dirs music -peer alpha
@@ -437,7 +437,7 @@ Syncing music with alpha: ok
 
 ### Dealing with Conflicts
 
-Whenever two peers are believed to concurrently have edited two files in incomatible ways (they have different hashes) _at the same logical time_, we have a conflict.
+Whenever two peers are believed to concurrently have edited two files in incompatible ways (they have different hashes) _at the same logical time_, we have a conflict.
 
 What do we mean by logical time? Let's imagine two nodes, A and B, talking to each other.
 
@@ -462,7 +462,7 @@ b.txt.2159C7BC =>
 b.txt.D8AD1BDC =>
     this is B
 ```
-If you synchronize with another peer (say, C), the conflict will be propagated _as is_. If C also had received a conflicting edit, its conflict will be expanded to other peers as well.
+If you synchronize with another peer (say, C), the conflict will be propagated _as is_. If C had also received a conflicting edit, its conflict will be expanded to other peers as well.
 
 To resolve the conflict, edit the working file (`b.txt`). Once you are satisfied with its content, delete the marker file (`b.txt.conflict`) and either `scan` or `sync` the directory. This will resolve the conflict, and whatever was in `b.txt` at scan time is considered to be the conflict winner, which will be propagated on next synchronizations.
 
@@ -482,6 +482,8 @@ $ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://api.honeycomb.io" \
 
 This will automatically start publishing events for synchronization to your Honeycomb team, no collector required or anything (ReVault uses the Erlang OTel distribution which runs its own collector if configured).
 
+TODO: cover useful queries at this point in time
+
 ## Using S3 as a back-end
 
 TODO: make friendlier docs, this is more of a stream of a sparse list of elements.
@@ -490,7 +492,7 @@ ReVault uses AssumeRole as a way to make anything work.
 
 I suggest making a `ReVault` user with no console access. Once your host is authenticated with it, make sure you have the following Role Policy under the role `ReVault-s3`:
 
-```
+```json
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -515,7 +517,7 @@ I suggest making a `ReVault` user with no console access. Once your host is auth
 
 And give it the following trust policy:
 
-```
+```json
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -535,8 +537,7 @@ Basically, we define a role that can write to a specific S3 bucket within the ac
 
 When ReVault is configured with a file like follows, it will have an S3 back-end—it won't write to disk, only to the S3 bucket, using the custom role with temporary sessions:
 
-```
-$ cat ~/.config/ReVault/config_s3.toml
+```toml
 [db]
   path = "revault/db/"
 
