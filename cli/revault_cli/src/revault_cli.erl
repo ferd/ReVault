@@ -4,7 +4,7 @@
 %% API exports
 -export([main/1, cli/0]).
 %% Behaviour exports
--export([list/1, scan/1, sync/1, status/1, 'generate-keys'/1, seed/1]).
+-export([list/1, scan/1, sync/1, status/1, 'generate-keys'/1, seed/1, 'remote-seed'/1]).
 
 
 %% Name of the main running host, as specified in `config/vm.args'
@@ -69,6 +69,16 @@ cli() ->
                 #{name => dirs, nargs => nonempty_list , long => "dirs",
                   type => binary, help => "Name of the directories to fork."}
             ]
+        },
+        "remote-seed" => #{
+            arguments => [
+                #{name => node, nargs => 'maybe', type => {string, ".*@.*"}, default => ?DEFAULT_NODE,
+                  long => "node", help => "ReVault instance to connect to"},
+                #{name => peer, nargs => 1, type => binary,
+                  long => "peer", help => "ReVault peer name from which to seed."},
+                #{name => dirs, nargs => nonempty_list , long => "dirs",
+                  type => binary, help => "Name of the directories to fork."}
+            ]
         }
     }}.
 
@@ -119,7 +129,7 @@ sync(#{node := NodeStr, dirs := Dirs = [_|_], peer := [Peer]}) ->
     maybe
         ok ?= connect(Node),
         ok ?= revault_node(Node),
-        ok ?= all_ok(sync_dirs(Node, Peer, Dirs), Dirs)
+        ok ?= sync_dirs(Node, Peer, Dirs)
     else
         {error, no_dist} ->
             io:format("Erlang distribution seems to be off.~n");
@@ -157,6 +167,25 @@ seed(_Args = #{node := [NodeStr], path := Path, dirs := Dirs = [_|_]}) ->
         {error, Posix} ->
             io:format("Could not ensure path ~p, failed with ~p.~n", [Path, Posix])
     end.
+
+'remote-seed'(#{node := NodeStr, dirs := Dirs = [_|_], peer := [Peer]}) ->
+    Node = list_to_atom(NodeStr),
+    maybe
+        ok ?= connect(Node),
+        ok ?= revault_node(Node),
+        ok ?= all_ok(seed_dirs(Node, Peer, Dirs), Dirs)
+    else
+        {error, no_dist} ->
+            io:format("Erlang distribution seems to be off.~n");
+        {error, connection_failed} ->
+            io:format("Erlang distribution connection to ~p failed.~n", [Node])
+    end;
+'remote-seed'(Args = #{dirs := [_|_]}) ->
+    io:format("Received ~p~n", [Args]),
+    io:format("a -peer entry required to sync.~n");
+'remote-seed'(Args) ->
+    io:format("Received ~p~n", [Args]),
+    io:format("at least one -dirs entry required to sync.~n").
 
 %%%%%%%%%%%%%%%%
  %%% PRIVATE %%%
@@ -209,6 +238,14 @@ sync_dirs_(Node, Remote, [Name|Dirs]) ->
     io:format("~p~n", [Res]),
     [Res | sync_dirs_(Node, Remote, Dirs)].
 
+seed_dirs(_Node, _Remote, []) ->
+    [];
+seed_dirs(Node, Remote, [Name|Dirs]) ->
+    io:format("Seeding ~ts from ~ts: ", [Name, Remote]),
+    Res = rpc:call(Node, revault_fsm, id, [Name, Remote]),
+    io:format("~p~n", [Res]),
+    [Res | seed_dirs(Node, Remote, Dirs)].
+
 seed_fork(Node, Path, Dirs) ->
     [{fork, Name, Path,
       rpc:call(Node, revault_fsm, seed_fork, [Name, Path])}
@@ -221,13 +258,14 @@ show({config, Path, Config}) ->
 show({sync, Dir, Peer, Res}) ->
     io:format("Syncing ~ts with ~ts: ~p~n", [Dir, Peer, Res]);
 show({fork, Name, Path, Res}) ->
-    io:format("Forking ~ts in ~p: ~p~n", [Name, Path, Res]).
+    io:format("Seeding ~ts in ~p: ~p~n", [Name, Path, Res]).
 
 all_ok(L, Keys) -> all_ok(L, Keys, []).
 
 all_ok([], [], []) -> ok;
 all_ok([], [], Bad) -> {error, Bad};
 all_ok([ok|T], [_|Ks], Bad) -> all_ok(T, Ks, Bad);
+all_ok([{ok,_}|T], [_|Ks], Bad) -> all_ok(T, Ks, Bad);
 all_ok([H|T], [K|Ks], Bad) -> all_ok(T, Ks, [{K,H}|Bad]).
 
 %% Copied from revault_tls
