@@ -1,4 +1,6 @@
 %%% @doc
+%%% This module implements the following state machine:
+%%%
 %%% ```
 %%%                 .-------------INIT----.
 %%%                 |                     |
@@ -30,7 +32,10 @@
 %%%      |   CLIENT_SYNC_COMPLETE-------|
 %%%      |                              |
 %%%      '------------------------------'
-%%% ```
+%%% '''
+%%%
+%%% It supports both clients and servers within the same workflow.
+%%% @end
 -module(revault_fsm).
 -behaviour(gen_statem).
 -export([start_link/5, start_link/6,
