@@ -418,9 +418,13 @@ Basically, you put the two "seed" files in the internal metadata directory of th
 Assuming your hosts are all set up fine according to prior instructions, you can just synchronize them by using the CLI tool:
 
 ```
+$ ls /tmp/revault-docs/music_beta/
+
 $ ./_build/prod/bin/revault_cli sync -dirs music -node beta@vps.ferd.site -peer alpha
 Scanning music: ok
 Syncing music with alpha: ok
+$ ls /tmp/revault-docs/music_beta/
+cool.mp3
 ```
 
 By default, the `node` value is `revault@your.local.hostname` (the default hostname ReVault will pick without custom values), so most commands actually look like this:
