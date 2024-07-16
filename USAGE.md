@@ -95,7 +95,7 @@ Node is a really overloaded term that can mean many things, so we're just piling
 
 We'll make a distinction between a few words. A _host_ can refer to any machine or computer that runs code, contains files, and so on. A _node_ is specifically an instance of the Erlang virtual machine. Each virtual machine instance is given a name of the form `name@hostname`.
 
-There can therefore be multiple ReVault nodes running on a single host. We can say that nodes talk to each other, and the implication here is that oke node uses its own host's network stack to connect to another host that runs another node and communicate with it.
+There can therefore be multiple ReVault nodes running on a single host. We can say that nodes talk to each other, and the implication here is that one node uses its own host's network stack to connect to another host that runs another node and communicate with it.
 
 We will also use the terms _local_ and _remote_ as qualifiers for nodes: “local” just means whichever node's context and perspective we are adopting right now, and “remote” is the peer with whom the local node is communicating.
 
