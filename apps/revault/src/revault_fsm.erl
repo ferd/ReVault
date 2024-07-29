@@ -931,6 +931,9 @@ format_status(Status) ->
 format_status_msg({info, {revault, Marker, {file, F, Meta, Bin}}}) when byte_size(Bin) > 64 ->
     BinSize = integer_to_binary(byte_size(Bin)),
     {revault, Marker, {file, F, Meta, <<"[truncated: ", BinSize/binary, " bytes]">>}};
+format_status_msg({info, {revault, Marker, {file, F, Meta, PartNum, PartTotal, Bin}}}) when byte_size(Bin) > 64 ->
+    BinSize = integer_to_binary(byte_size(Bin)),
+    {revault, Marker, {file, F, Meta, PartNum, PartTotal, <<"[truncated: ", BinSize/binary, " bytes]">>}};
 format_status_msg(Term) -> Term.
 
 %%%%%%%%%%%%%%%
@@ -1137,6 +1140,7 @@ handle_multipart_file(MPState, F, Hash, PartNum, PartTotal, Bin) when PartNum ==
     %% use an unpredictable rand file since this may be one of many incidentally
     %% conflicting files sharing the same name, even if unlikely. Better to protect
     %% against overlapping runs.
+    ok = revault_file:ensure_dir(F),
     State = revault_file:multipart_init(F, PartTotal, Hash),
     {ok, NewState} = revault_file:multipart_update(State, F, PartNum, PartTotal, Hash, Bin),
     {new, MPState#{F => NewState}};
