@@ -6,6 +6,7 @@
 
 -include("revault_tls.hrl").
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
+-include("revault_otel.hrl").
 -define(str(T), unicode:characters_to_binary(io_lib:format("~tp", [T]))).
 -define(attrs(T), [{<<"module">>, ?MODULE},
                    {<<"function">>, ?FUNCTION_NAME},
@@ -66,7 +67,11 @@ handle_event({call, From}, {connect, {Peer,Auth}, Msg}, disconnected, Data) ->
         {ok, ConnData} ->
             NewData = case introspect(Msg) of
                 {peer, Dir, Attrs} ->
-                    maybe_add_ctx(Attrs, ConnData#client{dir=Dir});
+                    ?apply_propagation_data(maps:get(ctx, Attrs, [])),
+                    ?start_active_span(<<"tls_client">>),
+                    TmpConnData=ConnData#client{dir=Dir},
+                    ?set_attributes(?attrs(TmpConnData)),
+                    TmpConnData;
                 _ ->
                     ConnData
             end,
@@ -78,32 +83,34 @@ handle_event({call, From}, disconnect, disconnected, Data) ->
     {keep_state, Data, [{reply, From, ok}]};
 handle_event({call, From}, disconnect, connected, Data=#client{sock=Sock}) ->
     ssl:close(Sock),
+    ?end_active_span(),
     otel_ctx:clear(),
     {next_state, disconnected, Data#client{sock=undefined, dir=undefined},
      [{reply, From, ok}]};
 handle_event({call, From}, Msg, disconnected, Data=#client{peer=Peer, auth=Auth}) ->
     case connect(Data, Peer, Auth) of
-        {ok, TmpData} ->
-            NewData = start_span(<<"tls_client">>, TmpData),
-            set_attributes(?attrs(NewData)),
+        {ok, NewData} ->
+            ?start_active_span(<<"tls_client">>),
+            ?set_attributes(?attrs(NewData)),
             handle_event({call, From}, Msg, connected, NewData);
         {error, Reason} ->
             %% TODO: backoffs & retry, maybe add idle -> disconnected -> connected
             exit({error, Reason})
     end;
-handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, TmpData=#client{sock=Sock}) ->
-    Data = start_span(<<"fwd">>, TmpData),
-    set_attributes([{<<"msg">>, ?str(type(Msg))} | ?attrs(Data)]),
+handle_event({call, From}, {revault, Marker, _Msg}=Msg, connected, Data=#client{sock=Sock}) ->
+    ?start_active_span(<<"fwd">>),
+    ?set_attributes([{<<"msg">>, ?str(type(Msg))} | ?attrs(Data)]),
     Payload = revault_tls:wrap(Msg),
     Res = ssl:send(Sock, Payload),
-    NewData = end_span(Data),
+    ?end_active_span(),
     case Res of
         ok ->
             {next_state, connected, Data, [{reply, From, {ok, Marker}}]};
         {error, Reason} ->
             _ = ssl:close(Sock),
+            ?end_active_span(),
             otel_ctx:clear(),
-            {next_state, disconnected, NewData#client{sock=undefined, dir=undefined},
+            {next_state, disconnected, Data#client{sock=undefined, dir=undefined},
              [{reply, From, {error, Reason}}]}
     end;
 handle_event(info, {ssl_passive, Sock}, connected, Data=#client{name=Name, sock=Sock}) ->
@@ -118,7 +125,8 @@ handle_event(info, {pong, T}, connected, Data=#client{sock=Sock, active=Active})
     ssl:setopts(Sock, [{active, NewActive}]),
     {keep_state, Data#client{active=NewActive}, []};
 handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Sock, buf=Buf0}) ->
-    TmpData = maybe_start_unique_span(<<"recv">>, Data#client.recv, Data#client{recv=true}),
+    Data#client.recv orelse ?start_active_span(<<"recv">>, #{attributes => ?attrs(Data)}),
+    TmpData = Data#client{recv=true},
     Buf1 = revault_tls:buf_add(Bin, Buf0),
     {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
     [revault_tls:send_local(Name, Msg) || Msg <- Unwrapped],
@@ -126,11 +134,11 @@ handle_event(info, {ssl, Sock, Bin}, connected, Data=#client{name=Name, sock=Soc
         0 ->
             TmpData;
         MsgCount ->
-            set_attributes([{<<"msgs">>, MsgCount},
-                            {<<"buf">>, revault_tls:buf_size(Buf1)},
-                            {<<"buf_trail">>, revault_tls:buf_size(IncompleteBuf)}
-                            | ?attrs(TmpData)]),
-            end_span(TmpData#client{recv=false})
+            ?set_attributes([{<<"msgs">>, MsgCount},
+                             {<<"buf">>, revault_tls:buf_size(Buf1)},
+                             {<<"buf_trail">>, revault_tls:buf_size(IncompleteBuf)}]),
+            ?end_active_span(),
+            TmpData#client{recv=false}
     end,
     {next_state, connected, NewData#client{buf=IncompleteBuf}};
 handle_event(info, {ssl_error, Sock, _Reason}, connected, Data=#client{sock=Sock}) ->
@@ -212,37 +220,6 @@ sock_attrs(Sock) ->
         {error, _} ->
             []
     end.
-
-
-start_span(SpanName, Data=#client{ctx=Stack}) ->
-    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#client{ctx=[{SpanCtx,Token}|Stack]}.
-
-maybe_start_unique_span(SpanName, false, Data) ->
-    start_span(SpanName, Data);
-maybe_start_unique_span(_, true, Data) ->
-    Data.
-
-maybe_add_ctx(#{ctx:=SpanCtx}, Data=#client{ctx=Stack}) ->
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#client{ctx=[{SpanCtx,Token}|Stack]};
-maybe_add_ctx(_, Data) ->
-    Data.
-
-set_attributes(Attrs) ->
-    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
-    otel_span:set_attributes(SpanCtx, Attrs).
-
-end_span(Data=#client{ctx=[{SpanCtx,Token}|Stack]}) ->
-    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
-                                     otel_span:end_span(SpanCtx, undefined)),
-    otel_ctx:detach(Token),
-    Data#client{ctx=Stack}.
 
 type({revault, _, T}) when is_tuple(T) ->
     element(1,T);
