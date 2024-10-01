@@ -65,6 +65,8 @@
 -define(registry(N), ?registry(?MODULE, N)).
 
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
+-include("revault_otel.hrl").
+
 %% other tracing macros
 -define(str(T), unicode:characters_to_binary(io_lib:format("~tp", [T]))).
 -define(attrs(T), [{<<"module">>, ?MODULE},
@@ -278,11 +280,13 @@ client_init(_, _, Data) ->
 connecting(enter, _OldState, Data) ->
     {keep_state, Data};
 connecting(internal, {connect, Remote},
-           DataTmp=#data{name=Name, callback=Cb, sub=Conn, uuid=UUID}) ->
-    Data = start_span(<<"connect">>, DataTmp),
-    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
-    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{uuid=>UUID,
-                                                       ctx=>get_span(DataTmp)}]),
+           Data=#data{name=Name, callback=Cb, sub=Conn, uuid=UUID}) ->
+    OtelCtx = ?extract_propagation_data(),
+    ?start_active_span(<<"connect">>),
+    ?set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
+    {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote,
+                                       #{uuid=>UUID,
+                                         ctx=>OtelCtx}]),
     case Res of
         {ok, Marker} ->
             %% Await confirmation from the peer
@@ -293,11 +297,11 @@ connecting(internal, {connect, Remote},
         {error, Reason} ->
             %% Bail out
             ?add_event(<<"connection_failed">>, [{<<"error">>, Reason}]),
-            NewData = end_span(Data),
+            ?end_active_span(),
             otel_ctx:clear(),
             #connecting{fail_state=State, fail_payload=Payload} = Conn,
             {next_state, State,
-             NewData#data{callback=NewCb, sub=undefined},
+             Data#data{callback=NewCb, sub=undefined},
              [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
     end;
 connecting(cast, {ping, From, Payload}, Data) ->
@@ -307,43 +311,43 @@ connecting(info, {revault, Marker, ok},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
     %% Transition to a successful state
     ?add_event(<<"connection_successful">>, []),
-    NewData = end_span(Data),
+    ?end_active_span(),
     #connecting{next_state=State, next_payload=Payload, remote=Remote} = S,
     {next_state, State,
-     NewData#data{sub=undefined},
+     Data#data{sub=undefined},
      [{next_event, internal, {connect, Remote, Payload}}]};
 connecting(info, {revault, Marker, Err},
            Data=#data{sub=S=#connecting{marker=Marker}}) ->
     ?add_event(<<"connection_failed">>, [{<<"error">>, Err}]),
-    NewData = end_span(Data),
+    ?end_active_span(),
     otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload, remote=Remote} = S,
     Disconnect = #disconnect{
         next_state=State,
         next_actions=[{next_event, internal, {connect, Remote, Payload, Err}}]
     },
-    {next_state, disconnect, NewData#data{sub=Disconnect},
+    {next_state, disconnect, Data#data{sub=Disconnect},
      [{next_event, internal, {disconnect, Remote}}]};
 connecting(state_timeout, {connect, Remote}, Data=#data{sub=S}) ->
     %% We took too long, bail out, but first send an explicit unpeer call
     %% in case we had a race condition. We may end up with a FSM that receives
     %% a late {revault, Marker, ok} message out of this.
     ?add_event(<<"connection_timeout">>, []),
-    NewData = end_span(Data),
+    ?end_active_span(),
     otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload} = S,
     Disconnect = #disconnect{
         next_state=State,
         next_actions=[{next_event, internal, {connect, Remote, Payload, timeout}}]
     },
-    {next_state, disconnect, NewData#data{sub=Disconnect},
+    {next_state, disconnect, Data#data{sub=Disconnect},
      [{next_event, internal, {disconnect, Remote}}]};
 %% And now we unfortunately repeat the whole ordeal with the #uninit{} state record...
 %% There is one difference though, the uninitialized version does not pass a UUID for
 %% safety since until initialization, the client has none.
-connecting(internal, {connect, Remote}, DataTmp=#uninit{name=Name, callback=Cb, sub=Conn}) ->
-    Data = start_span(<<"connect">>, DataTmp),
-    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
+connecting(internal, {connect, Remote}, Data=#uninit{name=Name, callback=Cb, sub=Conn}) ->
+    ?start_active_span(<<"connect">>),
+    ?set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
     {Res, NewCb} = apply_cb(Cb, peer, [Name, Remote, #{}]),
     case Res of
         {ok, Marker} ->
@@ -355,47 +359,47 @@ connecting(internal, {connect, Remote}, DataTmp=#uninit{name=Name, callback=Cb, 
         {error, Reason} ->
             %% Bail out
             ?add_event(<<"connection_failed">>, [{<<"error">>, Reason}]),
-            NewData = end_span(Data),
+            ?end_active_span(),
             otel_ctx:clear(),
             #connecting{fail_state=State, fail_payload=Payload} = Conn,
             {next_state, State,
-             NewData#uninit{callback=NewCb, sub=undefined},
+             Data#uninit{callback=NewCb, sub=undefined},
              [{next_event, internal, {connect, Remote, Payload, {error, Reason}}}]}
     end;
 connecting(info, {revault, Marker, ok},
            Data=#uninit{sub=S=#connecting{marker=Marker}}) ->
     %% Transition to a successful state
     ?add_event(<<"connection_successful">>, []),
-    NewData = end_span(Data),
+    ?end_active_span(),
     #connecting{next_state=State, next_payload=Payload, remote=Remote} = S,
     {next_state, State,
-     NewData#uninit{sub=undefined},
+     Data#uninit{sub=undefined},
      [{next_event, internal, {connect, Remote, Payload}}]};
 connecting(info, {revault, Marker, Err},
            Data=#uninit{sub=S=#connecting{marker=Marker}}) ->
     ?add_event(<<"connection_failed">>, [{<<"error">>, Err}]),
-    NewData = end_span(Data),
+    ?end_active_span(),
     otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload, remote=Remote} = S,
     Disconnect = #disconnect{
         next_state=State,
         next_actions=[{next_event, internal, {connect, Remote, Payload, Err}}]
     },
-    {next_state, disconnect, NewData#uninit{sub=Disconnect},
+    {next_state, disconnect, Data#uninit{sub=Disconnect},
      [{next_event, internal, {disconnect, Remote}}]};
 connecting(state_timeout, {connect, Remote}, Data=#uninit{sub=S}) ->
     %% We took too long, bail out, but first disconnect
     %% in case we had a race condition. We may end up with a FSM that receives
     %% a late {revault, Marker, ok} message out of this.
     ?add_event(<<"connection_timeout">>, []),
-    NewData = end_span(Data),
+    ?end_active_span(),
     otel_ctx:clear(),
     #connecting{fail_state=State, fail_payload=Payload} = S,
     Disconnect = #disconnect{
         next_state=State,
         next_actions=[{next_event, internal, {connect, Remote, Payload, timeout}}]
     },
-    {next_state, disconnect, NewData#uninit{sub=Disconnect},
+    {next_state, disconnect, Data#uninit{sub=Disconnect},
      [{next_event, internal, {disconnect, Remote}}]};
 connecting(_, _, Data) ->
     {keep_state, Data, [postpone]}.
@@ -459,7 +463,7 @@ client_id_sync(_, _, Data) ->
 
 initialized(enter, _, Data=#data{name=Name, id=Id, path=Path,
                                  ignore=Ignore, interval=Interval, db_dir=DbDir}) ->
-    ?end_span(), % if any
+    ?end_active_span(), % if any
     _ = start_tracker(Name, Id, Path, Ignore, Interval, DbDir),
     {keep_state, Data};
 initialized({call, From}, id, Data=#data{id=Id}) ->
@@ -513,9 +517,9 @@ client({call, From}, id, Data=#data{id=Id}) ->
 client({call, From}, {id, _}, Data=#data{id=Id}) ->
     %% Ignore the call for a remote and just send the ID we already know
     {keep_state, Data, [{reply, From, {ok, Id}}]};
-client({call, From}, {sync, Remote}, DataTmp) ->
-    Data = start_span(<<"sync">>, DataTmp),
-    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
+client({call, From}, {sync, Remote}, Data) ->
+    ?start_active_span(<<"sync">>),
+    ?set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
     {next_state, connecting,
      Data#data{sub=#connecting{
         next_state=client_sync_manifest,
@@ -530,9 +534,9 @@ client(internal, {connect, _, {call, From}, Reason}, Data) ->
 
 client_sync_manifest(enter, _, Data) ->
     {keep_state, Data};
-client_sync_manifest(internal, {connect, Remote, {call,From}}, DataTmp=#data{callback=Cb}) ->
-    Data = start_span(<<"ask_manifest">>, DataTmp),
-    set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
+client_sync_manifest(internal, {connect, Remote, {call,From}}, Data=#data{callback=Cb}) ->
+    ?start_active_span(<<"ask_manifest">>),
+    ?set_attributes([{<<"peer">>, ?str(Remote)} | ?attrs(Data)]),
     {Res, NewCb} = apply_cb(Cb, send, [Remote, revault_data_wrapper:manifest()]),
     case Res of
         {ok, Marker} ->
@@ -550,31 +554,32 @@ client_sync_manifest(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_manifest(info, {revault, Marker, {manifest, RManifest}},
-                     DataTmp=#data{sub=S=#client_sync{marker=Marker, queue=Q},
+                     Data=#data{sub=S=#client_sync{marker=Marker, queue=Q},
                                    name=Name, id=Id}) ->
-    Data = start_span(<<"diff_manifest">>, end_span(DataTmp)),
+    ?end_active_span(),
+    ?start_active_span(<<"diff_manifest">>),
     LManifest = revault_dirmon_tracker:files(Name),
     {Local, Remote} = diff_manifests(Id, LManifest, RManifest),
     NewQ = send_next_scheduled(schedule_file_transfers(Q, Local, Remote)),
-    set_attributes([{<<"to_send">>, length(Local)},
-                    {<<"to_recv">>, length(Remote)} | ?attrs(Data)]),
-    NewData = end_span(Data),
+    ?set_attributes([{<<"to_send">>, length(Local)},
+                     {<<"to_recv">>, length(Remote)} | ?attrs(Data)]),
+    ?end_active_span(),
     {next_state, client_sync_files,
-     NewData#data{sub=S#client_sync{queue=NewQ}}};
+     Data#data{sub=S#client_sync{queue=NewQ}}};
 client_sync_manifest(_, _, Data) ->
     {keep_state, Data, [postpone]}.
 
 client_sync_files(enter, _, Data) ->
     {keep_state, Data};
 client_sync_files(cast, {send, File},
-                  DataTmp=#data{name=Name, path=Path,
-                                sub=S=#client_sync{remote=R, queue=Q}}) ->
-    Data = start_span(<<"schedule_file_send">>, DataTmp),
-    set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File} | ?attrs(Data)]),
+                  Data=#data{name=Name, path=Path,
+                             sub=S=#client_sync{remote=R, queue=Q}}) ->
+    ?start_active_span(<<"schedule_file_send">>),
+    ?set_attributes([{<<"peer">>, ?str(R)}, {<<"path">>, File} | ?attrs(Data)]),
     Q2 = send_file_schedule(Q, R, Name, Path, File),
-    NewData = end_span(Data),
+    ?end_active_span(),
     NewQ = send_next_scheduled(Q2),
-    {keep_state, NewData#data{sub=S#client_sync{queue=NewQ}}};
+    {keep_state, Data#data{sub=S#client_sync{queue=NewQ}}};
 client_sync_files(cast, {fetch, File},
                   Data=#data{callback=Cb,
                              sub=S=#client_sync{remote=R, queue=Q, acc=Acc}}) ->
@@ -588,17 +593,17 @@ client_sync_files(cast, {fetch, File},
                                    sub=S#client_sync{queue=NewQ, acc=[File|Acc]}}}
         end);
 client_sync_files(cast, {send, R, Transfer},
-                  DataTmp=#data{path=Path, callback=Cb,
-                                sub=S=#client_sync{remote=R, queue=Q}}) ->
-    Data = start_span(<<"file_send">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(R)} | ?attrs(Data)]),
+                  Data=#data{path=Path, callback=Cb,
+                             sub=S=#client_sync{remote=R, queue=Q}}) ->
+    ?start_active_span(<<"file_send">>),
+    ?set_attributes([{<<"remote">>, ?str(R)} | ?attrs(Data)]),
     Payload = wrap(Path, Transfer),
     %% TODO: track the success or failures of transfers, detect disconnections
     {_Marker, NewCb} = apply_cb(Cb, send, [R, Payload]),
-    NewData = end_span(Data),
+    ?end_active_span(),
     NewQ = send_next_scheduled(Q),
-    {keep_state, NewData#data{callback=NewCb,
-                              sub=S#client_sync{queue=NewQ}}};
+    {keep_state, Data#data{callback=NewCb,
+                           sub=S#client_sync{queue=NewQ}}};
 client_sync_files(cast, sync_complete, Data=#data{sub=#client_sync{acc=[]}}) ->
     #data{callback=Cb, sub=#client_sync{remote=R}} = Data,
     Payload = revault_data_wrapper:sync_complete(),
@@ -711,9 +716,9 @@ client_sync_complete(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 client_sync_complete(info, {revault, _Marker, sync_complete},
-                     DataTmp=#data{sub=#client_sync{from=From, remote=Remote}}) ->
+                     Data=#data{sub=#client_sync{from=From, remote=Remote}}) ->
     Disconnect = #disconnect{next_state=initialized},
-    Data = end_span(DataTmp),
+    ?end_active_span(),
     otel_ctx:clear(),
     {next_state, disconnect, Data#data{sub=Disconnect},
      [{reply, From, ok},
@@ -740,38 +745,40 @@ server(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=UUID}}},
-       DataTmp=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
+       Data=#data{sub=undefined, uuid=UUID, callback=Cb}) ->
     %% TODO: handle error
-    Data = start_span(<<"accept_peer">>, maybe_add_ctx(Attrs, DataTmp)),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
+    ?apply_propagation_data(maps:get(ctx, Attrs, [])),
+    ?start_active_span(<<"accept_peer">>),
+    ?set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
     {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
     {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb, sub=#server{remote=Remote}}};
-server(info, {revault, Marker, {peer, Remote, #{uuid:=BadUUID}}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
-    Data = start_span(<<"accept_peer">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, bad_uuid},
+    ?end_active_span(),
+    {keep_state, Data#data{callback=NewCb, sub=#server{remote=Remote}}};
+server(info, {revault, Marker, {peer, Remote, Attrs=#{uuid:=BadUUID}}}, Data=#data{sub=undefined, callback=Cb}) ->
+    ?apply_propagation_data(maps:get(ctx, Attrs, [])),
+    ?start_active_span(<<"accept_peer">>),
+    ?set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, bad_uuid},
                      {<<"peer_uuid">>, BadUUID} | ?attrs(Data)]),
     Payload = revault_data_wrapper:error({invalid_peer, BadUUID}),
     {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb}};
-server(info, {revault, Marker, {peer, Remote, _Attrs}}, DataTmp=#data{sub=undefined, callback=Cb}) ->
+    ?end_active_span(),
+    {keep_state, Data#data{callback=NewCb}};
+server(info, {revault, Marker, {peer, Remote, _Attrs}}, Data=#data{sub=undefined, callback=Cb}) ->
     %% TODO: handle error
-    Data = start_span(<<"accept_peer">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
+    ?start_active_span(<<"accept_peer">>),
+    ?set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, ok} | ?attrs(Data)]),
     {_, Cb2} = apply_cb(Cb, accept_peer, [Remote, Marker]),
     {_, NewCb} = apply_cb(Cb2, reply, [Remote, Marker, revault_data_wrapper:ok()]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb, sub=#server{remote=Remote}}};
-server(info, {revault, Marker, {peer, Remote, _}}, DataTmp=#data{callback=Cb}) ->
+    ?end_active_span(),
+    {keep_state, Data#data{callback=NewCb, sub=#server{remote=Remote}}};
+server(info, {revault, Marker, {peer, Remote, _}}, Data=#data{callback=Cb}) ->
     %% TODO: consider postponing the message to respond later?
-    Data = start_span(<<"accept_peer">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, busy} | ?attrs(Data)]),
+    ?start_active_span(<<"accept_peer">>),
+    ?set_attributes([{<<"remote">>, ?str(Remote)}, {<<"status">>, busy} | ?attrs(Data)]),
     Payload = revault_data_wrapper:error(peer_busy),
     {_, NewCb} = apply_cb(Cb, reply, [Remote, Marker, Payload]),
-    NewData = end_span(Data),
-    {keep_state, NewData#data{callback=NewCb}};
+    ?end_active_span(),
+    {keep_state, Data#data{callback=NewCb}};
 server(info, {revault, _Marker, ask}, Data=#data{sub=#server{}}) ->
     {next_state, server_id_sync, Data, [postpone]};
 server(info, {revault, _Marker, manifest}, Data=#data{sub=#server{}}) ->
@@ -801,9 +808,9 @@ server_sync(cast, {ping, From, Payload}, Data) ->
     gproc:send(From, {pong, Payload}),
     {keep_state, Data};
 server_sync(info, {revault, Marker, manifest},
-       DataTmp=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
-    Data = start_span(<<"server_sync">>, DataTmp),
-    set_attributes(?attrs(Data)),
+       Data=#data{name=Name, callback=Cb, sub=#server{remote=R}}) ->
+    ?start_active_span(<<"server_sync">>),
+    ?set_attributes(?attrs(Data)),
     ?with_span(<<"sent_manifest">>, #{attributes => ?attrs(Data)},
         fun(_SpanCtx) ->
             Manifest = revault_dirmon_tracker:files(Name),
@@ -879,25 +886,25 @@ server_sync_files(info, {revault, Marker, {fetch, F}},
     NewQ = send_next_scheduled(TmpQ),
     {keep_state, Data#data{sub=S#server{queue=NewQ}}};
 server_sync_files(cast, {send_reply, R, Marker, Transfer},
-                  DataTmp=#data{path=Path, callback=Cb,
-                                sub=S=#server{remote=R, queue=Q}}) ->
-    Data = start_span(<<"file_send">>, DataTmp),
-    set_attributes([{<<"remote">>, ?str(R)} | ?attrs(Data)]),
+                  Data=#data{path=Path, callback=Cb,
+                             sub=S=#server{remote=R, queue=Q}}) ->
+    ?start_active_span(<<"file_send">>),
+    ?set_attributes([{<<"remote">>, ?str(R)} | ?attrs(Data)]),
     Payload = wrap(Path, Transfer),
     %% TODO: track the success or failures of transfers, detect disconnections
     {_Marker, NewCb} = apply_cb(Cb, reply, [R, Marker, Payload]),
-    NewData = end_span(Data),
+    ?end_active_span(),
     NewQ = send_next_scheduled(Q),
-    {keep_state, NewData#data{callback=NewCb, sub=S#server{queue=NewQ}}};
+    {keep_state, Data#data{callback=NewCb, sub=S#server{queue=NewQ}}};
 server_sync_files(info, {revault, Marker, sync_complete},
-                  DataTmp=#data{name=Name, callback=Cb, scan=ScanNeeded,
-                                sub=#server{remote=R}}) ->
+                  Data=#data{name=Name, callback=Cb, scan=ScanNeeded,
+                             sub=#server{remote=R}}) ->
     if ScanNeeded ->
         %% force scan to ensure conflict files (if any) are tracked before
         %% users start modifying them. Might not be relevant when things like
         %% filesystem watchers are used, but I'm starting to like the idea of
         %% on-demand scan/sync only.
-        ?with_span(<<"force_scan">>, #{attributes => ?attrs(DataTmp)},
+        ?with_span(<<"force_scan">>, #{attributes => ?attrs(Data)},
             fun(_SpanCtx) ->
                 ok = revault_dirmon_event:force_scan(Name, infinity)
             end);
@@ -906,7 +913,7 @@ server_sync_files(info, {revault, Marker, sync_complete},
     end,
     NewPayload = revault_data_wrapper:sync_complete(),
     {_, Cb1} = apply_cb(Cb, reply, [R, Marker, NewPayload]),
-    Data = end_span(DataTmp),
+    ?end_active_span(),
     otel_ctx:clear(),
     Disconnect = #disconnect{next_state=initialized},
     {next_state, disconnect,
@@ -1221,33 +1228,33 @@ file_transfer_schedule(Name, Path, File) ->
 
 
 wrap(_Path, {deleted, File, Vsn}) ->
-    set_attribute(<<"path">>, File),
-    set_attribute(<<"transfer_type">>, <<"deleted">>),
+    ?set_attribute(<<"path">>, File),
+    ?set_attribute(<<"transfer_type">>, <<"deleted">>),
     revault_data_wrapper:send_deleted(File, Vsn);
 wrap(Path, {conflict_file, File, FHash, Ct, Meta}) ->
-    set_attribute(<<"path">>, FHash),
-    set_attribute(<<"transfer_type">>, <<"conflict_file">>),
-    set_attribute(<<"conflict.ct">>, Ct),
+    ?set_attribute(<<"path">>, FHash),
+    ?set_attribute(<<"transfer_type">>, <<"conflict_file">>),
+    ?set_attribute(<<"conflict.ct">>, Ct),
     {ok, Bin} = revault_file:read_file(filename:join(Path, FHash)),
     revault_data_wrapper:send_conflict_file(File, FHash, Ct, Meta, Bin);
 wrap(Path, {file, File, {Vsn, Hash}}) ->
-    set_attribute(<<"path">>, File),
-    set_attribute(<<"transfer_type">>, <<"file">>),
+    ?set_attribute(<<"path">>, File),
+    ?set_attribute(<<"transfer_type">>, <<"file">>),
     {ok, Bin} = revault_file:read_file(filename:join(Path, File)),
     revault_data_wrapper:send_file(File, Vsn, Hash, Bin);
 wrap(Path, {part, file, File, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts}) ->
-    set_attribute(<<"path">>, File),
-    set_attribute(<<"transfer_type">>, <<"multipart_file">>),
-    set_attribute(<<"part.num">>, NumPart),
-    set_attribute(<<"part.total">>, TotalParts),
+    ?set_attribute(<<"path">>, File),
+    ?set_attribute(<<"transfer_type">>, <<"multipart_file">>),
+    ?set_attribute(<<"part.num">>, NumPart),
+    ?set_attribute(<<"part.total">>, TotalParts),
     {ok, Bin} = revault_file:read_range(filename:join(Path, File), Offset, SizeBytes),
     revault_data_wrapper:send_multipart_file(File, Vsn, Hash, NumPart, TotalParts, Bin);
 wrap(Path, {part, {conflict_file, F, Ct}, FHash, Vsn, Hash, Offset, SizeBytes, NumPart, TotalParts}) ->
-    set_attribute(<<"path">>, FHash),
-    set_attribute(<<"transfer_type">>, <<"multipart_conflict_file">>),
-    set_attribute(<<"conflict.ct">>, Ct),
-    set_attribute(<<"part.num">>, NumPart),
-    set_attribute(<<"part.total">>, TotalParts),
+    ?set_attribute(<<"path">>, FHash),
+    ?set_attribute(<<"transfer_type">>, <<"multipart_conflict_file">>),
+    ?set_attribute(<<"conflict.ct">>, Ct),
+    ?set_attribute(<<"part.num">>, NumPart),
+    ?set_attribute(<<"part.total">>, TotalParts),
     {ok, Bin} = revault_file:read_range(filename:join(Path, FHash), Offset, SizeBytes),
     revault_data_wrapper:send_conflict_multipart_file(F, FHash, Ct, {Vsn, Hash}, NumPart, TotalParts, Bin).
 
@@ -1296,51 +1303,4 @@ pid_attrs() ->
        proplists:get_value(minor_gcs,
                            proplists:get_value(garbage_collection, PidInfo))}
     ].
-
-maybe_add_ctx(#{ctx:=SpanCtx}, Data=#data{ctx=Stack}) ->
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#data{ctx=[{SpanCtx,Token}|Stack]};
-maybe_add_ctx(_, Data) ->
-    Data.
-
-get_span(#data{ctx=[{SpanCtx,_}|_]}) ->
-    SpanCtx.
-
-start_span(SpanName, Data=#data{ctx=Stack}) ->
-    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#data{ctx=[{SpanCtx,Token}|Stack]};
-start_span(SpanName, Data=#uninit{ctx=Stack}) ->
-    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#uninit{ctx=[{SpanCtx,Token}|Stack]}.
-
-set_attributes(Attrs) ->
-    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
-    otel_span:set_attributes(SpanCtx, Attrs).
-
-set_attribute(Attr, Val) ->
-    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
-    otel_span:set_attribute(SpanCtx, Attr, Val).
-
-end_span(Data=#data{ctx=[]}) ->
-    Data;
-end_span(Data=#data{ctx=[{SpanCtx,Token}|Stack]}) ->
-    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
-                                     otel_span:end_span(SpanCtx, undefined)),
-    otel_ctx:detach(Token),
-    Data#data{ctx=Stack};
-end_span(Data=#uninit{ctx=[]}) ->
-    Data;
-end_span(Data=#uninit{ctx=[{SpanCtx,Token}|Stack]}) ->
-    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
-                                     otel_span:end_span(SpanCtx, undefined)),
-    otel_ctx:detach(Token),
-    Data#uninit{ctx=Stack}.
 

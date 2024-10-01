@@ -24,6 +24,8 @@
 
 -include("revault_tls.hrl").
 -include_lib("opentelemetry_api/include/otel_tracer.hrl").
+-include("revault_otel.hrl").
+
 -define(str(T), unicode:characters_to_binary(io_lib:format("~tp", [T]))).
 -define(attrs(T), [{<<"module">>, ?MODULE},
                    {<<"function">>, ?FUNCTION_NAME},
@@ -210,18 +212,25 @@ worker_dispatch(Names, C=#conn{sock=Sock, dirs=Dirs, buf=Buf}) ->
     #{<<"authorized">> := #{<<"sync">> := DirNames}} = Dirs,
     case Msg of
         {revault, Marker, {peer, Dir, Attrs}} ->
-            Cn = maybe_add_ctx(Attrs, C),
+            ?apply_propagation_data(maps:get(ctx, Attrs, [])),
+            ?start_active_span(<<"tls_serv">>),
             case lists:member(Dir, DirNames) of
                 true ->
                     #{Dir := Name} = Names,
                     ssl:setopts(Sock, [{active, 5}]),
                     revault_tls:send_local(Name, {revault, {self(),Marker},
                                                     {peer, self(), Attrs}}),
-                    worker_loop(Dir, Cn#conn{localname=Name, buf=NewBuf});
+                    NewC = C#conn{localname=Name, buf=NewBuf},
+                    ?set_attributes(?attrs(NewC)),
+                    worker_loop(Dir, NewC);
                 false ->
+                    ?set_attributes([{<<"error">>, <<"eperm">>}, {<<"dir">>, Dir}
+                                     | sock_attrs(Sock) ++ pid_attrs()]),
                     ssl:send(Sock, revault_tls:wrap({revault, Marker, {error, eperm}})),
                     ssl:close(Sock)
-            end;
+            end,
+            ?end_active_span(),
+            ok;
         _ ->
             Msg = {revault, internal, revault_data_wrapper:error(protocol)},
             ssl:send(Sock, revault_tls:wrap(Msg)),
@@ -241,6 +250,7 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0, active=Active}) ->
         disconnect ->
             ?with_span(<<"disconnect">>, #{attributes => ?attrs(C)},
                        fun(_SpanCtx) -> ssl:close(Sock) end),
+            ?end_active_span(),
             exit(normal);
         {ssl_passive, Sock} ->
             revault_fsm:ping(Name, self(), erlang:monotonic_time(millisecond)),
@@ -254,7 +264,9 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0, active=Active}) ->
             ssl:setopts(Sock, [{active, NewActive}]),
             worker_loop(Dir, C#conn{active=NewActive});
         {ssl, Sock, Data} ->
-            TmpC = maybe_start_unique_span(<<"recv">>, C#conn.recv, C#conn{recv=true}),
+            C#conn.recv orelse ?start_active_span(<<"recv">>),
+            ?set_attributes(attrs(C)),
+            TmpC = C#conn{recv=true},
             Buf1 = revault_tls:buf_add(Data, Buf0),
             {Unwrapped, IncompleteBuf} = revault_tls:unwrap_all(Buf1),
             [revault_tls:send_local(Name, {revault, {self(), Marker}, Msg})
@@ -263,16 +275,20 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0, active=Active}) ->
                 0 ->
                     TmpC;
                 MsgCount ->
-                    set_attributes([{<<"msgs">>, MsgCount},
+                    ?set_attributes([{<<"msgs">>, MsgCount},
                                     {<<"buf">>, revault_tls:buf_size(Buf1)},
                                     {<<"buf_trail">>, revault_tls:buf_size(IncompleteBuf)}
                                     | ?attrs(C)]),
-                    end_span(TmpC#conn{recv=false})
+                    ?end_active_span(),
+                    TmpC#conn{recv=false}
             end,
             worker_loop(Dir, NewC#conn{buf = IncompleteBuf});
         {ssl_error, Sock, Reason} ->
+            ?set_attribute(<<"error">>, ?str(Reason)),
+            ?end_active_span(),
             exit(Reason);
         {ssl_closed, Sock} ->
+            ?end_active_span(),
             exit(normal)
     end.
 
@@ -346,36 +362,6 @@ sock_attrs(Sock) ->
         {error, _} ->
             []
     end.
-
-start_span(SpanName, Data=#conn{ctx=Stack}) ->
-    SpanCtx = otel_tracer:start_span(?current_tracer, SpanName, #{}),
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#conn{ctx=[{SpanCtx,Token}|Stack]}.
-
-maybe_start_unique_span(SpanName, false, Data) ->
-    start_span(SpanName, Data);
-maybe_start_unique_span(_, true, Data) ->
-    Data.
-
-maybe_add_ctx(#{ctx:=SpanCtx}, Data=#conn{ctx=Stack}) ->
-    Ctx = otel_tracer:set_current_span(otel_ctx:get_current(), SpanCtx),
-    Token = otel_ctx:attach(Ctx),
-    set_attributes(attrs(Data)),
-    Data#conn{ctx=[{SpanCtx,Token}|Stack]};
-maybe_add_ctx(_, Data) ->
-    Data.
-
-set_attributes(Attrs) ->
-    SpanCtx = otel_tracer:current_span_ctx(otel_ctx:get_current()),
-    otel_span:set_attributes(SpanCtx, Attrs).
-
-end_span(Data=#conn{ctx=[{SpanCtx,Token}|Stack]}) ->
-    _ = otel_tracer:set_current_span(otel_ctx:get_current(),
-                                     otel_span:end_span(SpanCtx, undefined)),
-    otel_ctx:detach(Token),
-    Data#conn{ctx=Stack}.
 
 type({revault, _, T}) when is_tuple(T) ->
     element(1,T);
