@@ -320,7 +320,7 @@ translate_code(Code) -> Code.
 
 copy_raw(From, To) ->
     Source = filename:join([uri_string:quote(Part) || Part <- [bucket() | filename:split(From)]]),
-    aws_s3:copy_object(client(), bucket(), To, #{<<"CopySource">> => Source}).
+    aws_s3:copy_object(client(), bucket(), To, #{<<"CopySource">> => Source}, upload_opts()).
 
 scan_all(Bin) ->
     Str = unicode:characters_to_list([Bin, " "]),

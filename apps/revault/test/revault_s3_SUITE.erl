@@ -184,7 +184,7 @@ copy() ->
            "on data from the integration suite"}].
 copy(_Config) ->
     meck:expect(aws_s3, copy_object,
-                fun(_Cli, _Bucket, _To, #{<<"CopySource">> := _Path}) ->
+                fun(_Cli, _Bucket, _To, #{<<"CopySource">> := _Path}, _Opts) ->
                     {ok, #{}, {200, [], make_ref()}}
                 end),
     % TODO: mock and test a move from a non-existing file, maybe
@@ -385,7 +385,7 @@ multipart(_Config) ->
                      {200, [], make_ref()}}
                 end),
     meck:expect(aws_s3, copy_object,
-                fun(_Cli, _Bucket, _To, _Query) ->
+                fun(_Cli, _Bucket, _To, _Query, _Opts) ->
                     {ok, #{<<"CopyObjectResult">> => #{<<"ChecksumSHA256">> => CA}}, {200, []}}
                 end),
     meck:expect(aws_s3, delete_object,
@@ -431,7 +431,7 @@ multipart_hash(_Config) ->
                      {200, [], make_ref()}}
                 end),
     meck:expect(aws_s3, copy_object,
-                fun(_Cli, _Bucket, _To, _Query) ->
+                fun(_Cli, _Bucket, _To, _Query, _Opts) ->
                     {ok, #{<<"CopyObjectResult">> => #{<<"ChecksumSHA256">> => CA}}, {200, []}}
                 end),
     meck:expect(aws_s3, delete_object,
