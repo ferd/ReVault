@@ -9,10 +9,10 @@ all() -> [{group, api},
 
 groups() ->
     [{api, [sequence], [list_objects_empty, crud_object, rename_raw, pagination,
-                        multipart_upload, get_object_range]},
+                        multipart_upload, get_object_range, folder_object]},
      {abstraction, [sequence], [read_write_delete, hasht, copy, rename,
-                                find_hashes, consult, is_regular,
-                                multipart, read_range]},
+                                find_hashes, find_hashes_subdir, consult,
+                                is_regular, multipart, read_range]},
      {cache, [sequence], [find_hashes_cached]}
     ].
 
@@ -123,7 +123,6 @@ crud_object(Config) ->
     ?assertMatch({ok, #{}, _Http},
                  aws_s3:delete_object(Client, Bucket, Key, #{})),
     ok.
-
 rename_raw() ->
     [{doc, "Simulate a rename operation."}].
 rename_raw(Config) ->
@@ -323,6 +322,43 @@ get_object_range(Config) ->
                  aws_s3:delete_object(Client, Bucket, Key, #{})),
     ok.
 
+folder_object() ->
+    [{doc, "folder objects can be created, read, and deleted."}].
+folder_object(Config) ->
+    Client = ?config(aws_client, Config),
+    Bucket = ?config(bucket, Config),
+    Dir = ?config(bucket_dir, Config),
+    DirKey = <<Dir/binary, "/">>,
+    Key = filename:join([Dir, "crud_object"]),
+    Body = <<"v1">>,
+    Chk = hash(Body),
+    %% Start an empty directory object
+    ?assertMatch({ok, _, _},
+                 aws_s3:put_object(Client, Bucket, DirKey,
+                                   #{<<"ContentType">> => <<"application/x-directory; charset=UTF-8">>})),
+    %% Create, with SHA256
+    ?assertMatch({ok, #{<<"ChecksumSHA256">> := Chk}, _Http},
+                 aws_s3:put_object(Client, Bucket, Key,
+                                   #{<<"Body">> => Body,
+                                     <<"ChecksumAlgorithm">> => <<"SHA256">>,
+                                     <<"ChecksumSHA256">> => Chk})),
+    %% Head
+    ?assertMatch({ok, #{<<"ContentType">> := <<"application/x-directory; charset=UTF-8">>,
+                        <<"ContentLength">> := <<"0">>}, _Http},
+                 aws_s3:get_object(Client, Bucket, DirKey)),
+    %% Delete
+    ?assertMatch({ok, #{}, _Http},
+                 aws_s3:delete_object(Client, Bucket, DirKey, #{})),
+    %% The sub-element still exists and must be deleted alone
+    ?assertMatch({ok, #{<<"ChecksumSHA256">> := Chk,
+                        <<"ContentLength">> := <<"2">>}, _Http},
+                 aws_s3:head_object(Client, Bucket, Key,
+                                    #{<<"ChecksumMode">> => <<"ENABLED">>})),
+    ?assertMatch({ok, #{}, _Http},
+                 aws_s3:delete_object(Client, Bucket, Key, #{})),
+    ok.
+
+
 %%%%%%%%%%%%%%%%%%%%%%%%%
 %%% ABSTRACTION GROUP %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%
@@ -398,6 +434,50 @@ find_hashes(Config) ->
     ?assertEqual(ok, revault_s3:delete(PathA)),
     ?assertEqual(ok, revault_s3:delete(PathB)),
     ?assertEqual(ok, revault_s3:delete(PathC)),
+    ok.
+
+find_hashes_subdir() ->
+    [{doc, "exercise the hash-fetching functionality when a subdirectory "
+           "object was created."}].
+find_hashes_subdir(Config) ->
+    Dir = ?config(bucket_dir, Config),
+    DirA = <<Dir/binary, "/">>,
+    SubDirA = <<(filename:join([Dir, "subdir"]))/binary, "/">>,
+    PathA = filename:join([Dir, "subdir", "hash.txt"]),
+    PathB = filename:join([Dir, "hash.txt"]),
+    PathC = filename:join([Dir, "hash.ext"]),
+    %% Directory objects can't be created with revault, only manually, so
+    %% break the abstraction here.
+    ?assertMatch({ok, _, _},
+                 aws_s3:put_object(
+                    revault_s3_serv:get_client(),
+                    application:get_env(revault, bucket, undefined),
+                    DirA,
+                    #{<<"ContentType">> => <<"application/x-directory; charset=UTF-8">>}
+                 )),
+    ?assertMatch({ok, _, _},
+                 aws_s3:put_object(
+                    revault_s3_serv:get_client(),
+                    application:get_env(revault, bucket, undefined),
+                    SubDirA,
+                    #{<<"ContentType">> => <<"application/x-directory; charset=UTF-8">>}
+                 )),
+
+    ?assertEqual(ok, revault_s3:write_file(PathA, <<"a">>)),
+    ?assertEqual(ok, revault_s3:write_file(PathB, <<"b">>)),
+    ?assertEqual(ok, revault_s3:write_file(PathC, <<"c">>)),
+    ?assertEqual([{<<"subdir/hash.txt">>, revault_file:hash_bin(<<"a">>)},
+                  {<<"hash.txt">>, revault_file:hash_bin(<<"b">>)},
+                  {<<"hash.ext">>, revault_file:hash_bin(<<"c">>)}],
+                 lists:reverse(lists:sort(
+                    revault_s3:find_hashes_uncached(Dir, fun(_) -> true end)
+                 ))),
+    ?assertEqual(ok, revault_s3:delete(PathA)),
+    ?assertEqual(ok, revault_s3:delete(PathB)),
+    ?assertEqual(ok, revault_s3:delete(PathC)),
+    %% Directories can however be deleted like any object
+    ?assertEqual(ok, revault_s3:delete(DirA)),
+    ?assertEqual(ok, revault_s3:delete(SubDirA)),
     ok.
 
 consult() ->

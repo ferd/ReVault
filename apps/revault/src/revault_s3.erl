@@ -383,9 +383,9 @@ list_all_files(Dir, Continuation) ->
     case Res of
         {ok, Map=#{<<"ListBucketResult">> := #{<<"Contents">> := Contents}}, _} ->
             Files = if is_list(Contents) ->
-                           [fetch_content(C) || C <- Contents];
+                           [fetch_content(C) || C <- Contents, is_valid_content(C)];
                        is_map(Contents) ->
-                           [fetch_content(Contents)]
+                           [fetch_content(Contents) || is_valid_content(Contents)]
                     end,
             case Map of
                 #{<<"IsTruncated">> := <<"true">>, <<"NextContinuationToken">> := Next} ->
@@ -399,6 +399,15 @@ list_all_files(Dir, Continuation) ->
 
 fetch_content(#{<<"Key">> := Path, <<"LastModified">> := Stamp}) ->
     {Path, Stamp}.
+
+is_valid_content(#{<<"Key">> := Path}) ->
+    %% Ignore directory objects. These may have been created by API or through
+    %% the console UI.
+    %% S3 returns valid objects for directories, but with a different content
+    %% type. They also happen to end in a /, which is cheaper to check than
+    %% doing a HEAD request on each entry via `is_regular/1`. ReVault assumes
+    %% slashes aren't valid in file paths, the way they aren't in linux or osx.
+    binary:last(Path) =/= $/.
 
 %% @private standard options the AWS client expects to lengthen how long
 %% we have to upload parts or files.
