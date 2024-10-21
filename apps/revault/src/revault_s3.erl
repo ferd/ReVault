@@ -58,7 +58,11 @@ find_hashes(Dir, Pred) ->
     Files = list_all_files(Dir),
     revault_s3_cache:ensure_loaded(Dir),
     NewList = lists:foldl(fun({File,LastModified}, Acc) ->
-        case Pred(File) of
+        %% s3 returns valid objects for directories, but with a different content
+        %% type. They also happen to end in a /, which is cheaper to check than
+        %% doing a HEAD request on each entry via `is_regular/1`. ReVault assumes
+        %% slashes aren't valid in file paths, the way they aren't in linux or osx.
+        case binary:last(File) =/= $/ andalso Pred(File) of
             false ->
                 Acc;
             true ->
