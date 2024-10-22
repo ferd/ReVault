@@ -513,36 +513,49 @@ expect_consult(Bin) ->
 expect_list_objects_v2() ->
     meck:expect(aws_s3, list_objects_v2,
                 fun(_Cli, _Bucket, M=#{<<"prefix">> := _}, _) when not is_map_key(<<"continuation-token">>, M) ->
+                    %% start with a fake subdirectory, as if the server was created
+                    %% by hand.
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"0">>,
+                         <<"Contents">> => [
+                            #{<<"Key">> => <<"dir/">>, <<"LastModified">> => <<"123">>}
+                        ]}},
+                     {200, [], make_ref()}};
+                   (_Cli, _Bucket, #{<<"prefix">> := _,
+                                     <<"continuation-token">> := <<"0">>}, _) ->
+                    {ok,
+                     #{<<"ListBucketResult">> =>
+                       #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"a">>,
                          <<"Contents">> => [
                             #{<<"Key">> => <<"dir/a">>, <<"LastModified">> => <<"123">>}
-                        ]},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"a">>},
+                        ]}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"a">>}, _) ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"b">>,
                          <<"Contents">> => #{<<"Key">> => <<"dir/b">>,
-                                             <<"LastModified">> => <<"123">>}},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"b">>},
+                                             <<"LastModified">> => <<"123">>}}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"b">>}, _) ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"2">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"d">>,
                          <<"Contents">> => [
                             #{<<"Key">> => <<"dir/c">>, <<"LastModified">> => <<"123">>},
                             #{<<"Key">> => <<"dir/d">>, <<"LastModified">> => <<"123">>}
-                        ]},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"d">>},
+                        ]}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"d">>}, _) ->
