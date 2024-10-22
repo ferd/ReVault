@@ -381,7 +381,7 @@ list_all_files(Dir, Continuation) ->
     Res = aws_s3:list_objects_v2(client(), bucket(),
                                  BaseOpts#{<<"prefix">> => <<Dir/binary, "/">>}, #{}),
     case Res of
-        {ok, Map=#{<<"ListBucketResult">> := #{<<"Contents">> := Contents}}, _} ->
+        {ok, #{<<"ListBucketResult">> := Map=#{<<"Contents">> := Contents}}, _} ->
             Files = if is_list(Contents) ->
                            [fetch_content(C) || C <- Contents, is_valid_content(C)];
                        is_map(Contents) ->

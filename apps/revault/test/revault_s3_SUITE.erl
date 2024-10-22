@@ -518,44 +518,44 @@ expect_list_objects_v2() ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"0">>,
                          <<"Contents">> => [
                             #{<<"Key">> => <<"dir/">>, <<"LastModified">> => <<"123">>}
-                        ]},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"0">>},
+                        ]}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"0">>}, _) ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"a">>,
                          <<"Contents">> => [
                             #{<<"Key">> => <<"dir/a">>, <<"LastModified">> => <<"123">>}
-                        ]},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"a">>},
+                        ]}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"a">>}, _) ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"1">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"b">>,
                          <<"Contents">> => #{<<"Key">> => <<"dir/b">>,
-                                             <<"LastModified">> => <<"123">>}},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"b">>},
+                                             <<"LastModified">> => <<"123">>}}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"b">>}, _) ->
                     {ok,
                      #{<<"ListBucketResult">> =>
                        #{<<"KeyCount">> => <<"2">>,
+                         <<"IsTruncated">> => <<"true">>,
+                         <<"NextContinuationToken">> => <<"d">>,
                          <<"Contents">> => [
                             #{<<"Key">> => <<"dir/c">>, <<"LastModified">> => <<"123">>},
                             #{<<"Key">> => <<"dir/d">>, <<"LastModified">> => <<"123">>}
-                        ]},
-                       <<"IsTruncated">> => <<"true">>,
-                       <<"NextContinuationToken">> => <<"d">>},
+                        ]}},
                      {200, [], make_ref()}};
                    (_Cli, _Bucket, #{<<"prefix">> := _,
                                      <<"continuation-token">> := <<"d">>}, _) ->

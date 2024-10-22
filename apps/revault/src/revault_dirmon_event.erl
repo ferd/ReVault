@@ -89,6 +89,9 @@ initial_sync(tracker_manual, Name, _Dir, _Ignore, _Time) ->
     %% Send in a fake ref, which prevents any timer from ever running
     {Set, make_ref()};
 initial_sync(tracker, Name, _Dir, _Ignore, _Time) ->
+    %% Fake a message to rescan asap on start
+    Ref = make_ref(),
+    self() ! {timeout, Ref, poll},
     %% Normal stateful mode, where we load files and scan ASAP to avoid
     %% getting into modes where long delays mean we are unresponsive
     %% to filesystem changes long after boot.
@@ -97,7 +100,4 @@ initial_sync(tracker, Name, _Dir, _Ignore, _Time) ->
                                       %% ignore deletes from the history, they wouldn't
                                       %% come up in a file scan
                                       Hash =/= deleted]),
-    %% Fake a message to rescan asap on start
-    Ref = make_ref(),
-    self() ! {timeout, Ref, poll},
     {Set, Ref}.
