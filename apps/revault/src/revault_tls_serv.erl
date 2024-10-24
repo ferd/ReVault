@@ -259,7 +259,7 @@ worker_loop(Dir, C=#conn{localname=Name, sock=Sock, buf=Buf0, active=Active}) ->
             Now = erlang:monotonic_time(millisecond),
             NewActive = case Now - T > ?BACKOFF_THRESHOLD of
                 true -> max(Active div 2, ?MIN_ACTIVE);
-                false -> Active * 2
+                false -> min(Active * 2, ?MAX_ACTIVE)
             end,
             ssl:setopts(Sock, [{active, NewActive}]),
             worker_loop(Dir, C#conn{active=NewActive});

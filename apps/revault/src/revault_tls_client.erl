@@ -120,7 +120,7 @@ handle_event(info, {pong, T}, connected, Data=#client{sock=Sock, active=Active})
     Now = erlang:monotonic_time(millisecond),
     NewActive = case Now - T > ?BACKOFF_THRESHOLD of
         true -> max(Active div 2, ?MIN_ACTIVE);
-        false -> Active * 2
+        false -> min(Active * 2, ?MAX_ACTIVE)
     end,
     ssl:setopts(Sock, [{active, NewActive}]),
     {keep_state, Data#client{active=NewActive}, []};
