@@ -4,7 +4,7 @@
 -include_lib("cecho/include/cecho.hrl").
 
 %% Name of the main running host, as specified in `config/vm.args'
--define(DEFAULT_NODE, "revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@")))).
+-define(DEFAULT_NODE, list_to_atom("revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@"))))).
 -define(KEY_BACKSPACE, 127).
 -define(KEY_CTRLA, 1).
 -define(KEY_CTRLE, 5).
@@ -13,6 +13,14 @@
         (not(X < 32) andalso
          not(X >= 127 andalso X < 160))).
 
+-define(MAX_VALIDATION_DELAY, 150). % longest time to validate input, in ms
+-define(LOG(X),
+        ok).
+        %(fun() ->
+        %    {ok, IoH} = file:open("/tmp/revaultlogcli", [append]),
+        %    file:write(IoH, io_lib:format("~p~n", [X])),
+        %    file:close(IoH)
+        %end)()).
 
 
 %%    0    0    1    1    2    2    3    3    4    4    5    5    6    6 6
@@ -104,8 +112,31 @@ args() ->
         ]
     }.
 
-parse_list(_String, _State) ->
-    [].
+parse_list(String, State) ->
+    try
+        %% drop surrounding whitespace and split on commas
+        S = string:trim(String, both),
+        L = re:split(S, "[\\s]*,[\\s]*", [{return, binary}, trim]),
+        %% ignore empty results (<<>>) in returned value
+        {ok, [B || B <- L, B =/= <<>>], State}
+    catch
+        _:_ -> {error, invalid, State}
+    end.
+
+parse_regex(Re, String, State) ->
+    case re:run(String, Re, [{capture, first, list}]) of
+        {match, [Str]} -> {ok, Str, State};
+        nomatch -> {error, invalid, State}
+    end.
+
+parse_with_fun(node, F, Str, State) ->
+    maybe
+        {ok, NewStr, NewState} ?= F(Str, State),
+        Node = list_to_atom(NewStr),
+        {ok, Node, NewState}
+    end;
+parse_with_fun(_Type, F, Str, State) ->
+    F(Str, State).
 
 default_dirs(#{local_node := Node}) ->
     try config(Node) of
@@ -154,6 +185,7 @@ main(_) ->
     loop(select_menu(State, list)).
 
 setup() ->
+    logger:remove_handler(default),
     application:ensure_all_started(cecho),
     %% go in character-by-charcter mode
     cecho:cbreak(),
@@ -254,6 +286,7 @@ show_action(State = #{mode := action, menu := Action,
                           CurX >= 2, CurX =< MaxX ->
             ok;
         _ ->
+            %% Outside the box, move it to a known location
             case Ranges of
                 [] ->
                     mv({MinY, 2});
@@ -399,7 +432,8 @@ handle_action({input, ?KEY_BACKSPACE}, _Action, State = #{action_args := Args}) 
         false ->
             Str
     end,
-    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr}}),
+    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr},
+                                      unparsed => NewStr}),
     {ok, State#{action_args=>NewArgs}};
 handle_action({input, ?ceKEY_DEL}, _Action, State = #{action_args := Args}) ->
     {Y,X} = cecho:getyx(),
@@ -420,7 +454,8 @@ handle_action({input, ?ceKEY_DEL}, _Action, State = #{action_args := Args}) ->
         false ->
             Str
     end,
-    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr}}),
+    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr},
+                                      unparsed => NewStr}),
     {ok, State#{action_args=>NewArgs}};
 handle_action({input, ?KEY_CTRLD}, _Action, State = #{action_args := Args}) ->
     {Y,X} = cecho:getyx(),
@@ -439,7 +474,8 @@ handle_action({input, ?KEY_CTRLD}, _Action, State = #{action_args := Args}) ->
         false ->
             Str
     end,
-    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr}}),
+    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr},
+                                      unparsed => NewStr}),
     {ok, State#{action_args=>NewArgs}};
 handle_action({input, Char}, _Action, State = #{action_args := Args}) when ?KEY_TEXT_RANGE(Char) ->
     %% text input!
@@ -463,7 +499,8 @@ handle_action({input, Char}, _Action, State = #{action_args := Args}) when ?KEY_
         false ->
             Str
     end,
-    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr}}),
+    NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr},
+                                      unparsed => NewStr}),
     {ok, State#{action_args=>NewArgs}};
 handle_action({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
@@ -518,60 +555,79 @@ arg_output(State, Action, Args) ->
 
 arg_output(State, _, [], Acc) ->
     {State, lists:reverse(Acc)};
-arg_output(State, Action, [Arg=#{line := _}|Args], Acc) ->
-    %% already tracked
+arg_output(State, Action, [Arg|Args], Acc) when not is_map_key(val, Arg) ->
+    {NewState, NewArg} = arg_init(State, Action, Arg),
+    arg_output(NewState, Action, [NewArg|Args], Acc);
+arg_output(State, Action, [Arg=#{unparsed := Unparsed}|Args], Acc) ->
+    %% refresh data of pre-parsed elements.
+    %% with the new value in place, apply the transformation to its internal
+    %% format for further commands
+    #{type := TypeInfo} = Arg,
+    Ret = case TypeInfo of
+        {T, F} when is_function(F) ->
+            parse_with_fun(T, F, Unparsed, State);
+        {T, Regex} when is_list(Regex); is_binary(Regex) ->
+            F = fun(String, St) -> parse_regex(Regex, String, St) end,
+            parse_with_fun(T, F, Unparsed, State)
+    end,
+    %% Store it all!
+    ?LOG({?LINE, parsed, maps:get(name, Arg), element(2, Ret)}),
+    case Ret of
+        {ok, Val, NewState} ->
+            arg_output(NewState, Action,
+                       [maps:without([line, unparsed], Arg#{val => Val}) | Args], Acc);
+        {error, _Reason, NewState} ->
+            %% TODO: update status?
+            arg_output(NewState, Action, [maps:without([unparsed], Arg)|Args], Acc)
+    end;
+arg_output(State, Action, [Arg=#{line := _} | Args], Acc) ->
     arg_output(State, Action, Args, [Arg|Acc]);
-arg_output(State, Action, [#{type := {node, _Regex}}=Arg|Args], Acc) ->
-    #{name := Name, label := Label, default := Default} = Arg,
-    #{args := ArgMap} = State,
-    %% Assume the value here is parsed by some input handler
-    Val = maps:get(Name, ArgMap, Default),
-    NodeVal = list_to_atom(Val),
-    Status = case connect(NodeVal) of
+arg_output(State, Action, [#{type := {node, _}, label := Label, val := NodeVal}=Arg|Args], Acc) ->
+    Status = case connect_nonblocking(NodeVal) of
         ok ->
             case revault_node(NodeVal) of
                 ok -> "ok";
-                _ -> "?"
+                _ -> "?!"
             end;
+        timeout ->
+            "??";
         _ ->
-            "X"
+            "!!"
     end,
-    Line = {[Label, " (", Status, ")"], Val},
-    arg_output(State#{local_node => NodeVal}, Action, Args,
-               [Arg#{line => Line, val => NodeVal}|Acc]);
-arg_output(State, Action, [#{name := dirs, type := {list, _Fun}}=Arg|Args], Acc) ->
-    #{name := Name, label := Label, default := DefaultFun} = Arg,
-    #{args := ArgMap} = State,
-    %% Assume the value here is parsed by some input handler
-    DirList = maps:get(Name, ArgMap, DefaultFun(State)),
+    Line = {[Label, " (", Status, ")"], atom_to_list(NodeVal)},
+    arg_output(State#{local_node => NodeVal}, Action,
+               [Arg#{line => Line}|Args], Acc);
+arg_output(State, Action, [#{name := dirs, type := {list, _}, label := Label, val := DirList}=Arg|Args], Acc) ->
     Line = {Label, lists:join(", ", DirList)},
-    arg_output(State#{dir_list => DirList}, Action, Args,
-               [Arg#{line => Line, val => DirList}|Acc]);
-arg_output(State, Action, [#{type := {list, _Fun}}=Arg|Args], Acc) ->
-    #{name := Name, label := Label, default := DefaultFun} = Arg,
-    #{args := ArgMap} = State,
-    %% Assume the value here is parsed by some input handler
-    DirList = maps:get(Name, ArgMap, DefaultFun(State)),
-    Line = {Label, lists:join(", ", DirList)},
-    arg_output(State, Action, Args,
-               [Arg#{line => Line, val => DirList}|Acc]);
-arg_output(State, Action, [#{type := {string, _Regex}}=Arg|Args], Acc) ->
-    #{name := Name, label := Label, default := DefaultArg} = Arg,
-    #{args := ArgMap} = State,
-    Default = if is_function(DefaultArg, 1) -> DefaultArg(State);
-                 is_function(DefaultArg) -> error(bad_arity);
-                 true -> DefaultArg
-              end,
-    Val = maps:get(Name, ArgMap, Default),
+    arg_output(State#{dir_list => DirList}, Action,
+               [Arg#{line => Line}|Args], Acc);
+arg_output(State, Action, [#{type := {list, _}, label := Label, val := List}=Arg|Args], Acc) ->
+    Line = {Label, lists:join(", ", List)},
+    arg_output(State, Action, [Arg#{line => Line}|Args], Acc);
+arg_output(State, Action, [#{type := {string, _}, label := Label, val := Val}=Arg|Args], Acc) ->
     Line = {Label, Val},
-    arg_output(State, Action, Args,
-               [Arg#{line => Line, val => Val}|Acc]);
+    arg_output(State, Action, [Arg#{line => Line}|Args], Acc);
 arg_output(State, Action, [#{type := Unsupported}=Arg|Args], Acc) ->
     #{label := Label} = Arg,
     Line = {io_lib:format("[Unsupported] ~ts", [Label]),
             io_lib:format("~p", [Unsupported])},
-    arg_output(State, Action, Args,
-               [Arg#{line => Line}|Acc]).
+    arg_output(State, Action, [Arg#{line => Line}|Args], Acc).
+
+arg_init(State, _Action, Arg = #{type := {node, _}, default := Default}) ->
+    {State#{local_node => Default}, Arg#{val => Default}};
+arg_init(State, _Action, Arg = #{name := dirs, type := {list, _}, default := F}) ->
+    Default = F(State),
+    {State#{dir_list => Default}, Arg#{val => Default}};
+arg_init(State, _Action, Arg = #{type := {list, _}, default := F}) ->
+    {State, Arg#{val => F(State)}};
+arg_init(State, _Action, Arg = #{type := {string, _}, default := X}) ->
+    Default = if is_function(X, 1) -> X(State);
+                 is_function(X) -> error(bad_arity);
+                 true -> X
+              end,
+    {State, Arg#{val => Default}};
+arg_init(State, _Action, Arg = #{type := Unsupported}) ->
+    {State, Arg#{val => {error, Unsupported}}}.
 
 replace([H|T], H, R) -> [R|T];
 replace([H|T], S, R) -> [H|replace(T, S, R)].
@@ -586,6 +642,38 @@ connect(Node) ->
         false -> {error, connection_failed};
         true -> ok
     end.
+
+connect_nonblocking(Node) ->
+    timeout_call(?MAX_VALIDATION_DELAY, fun() -> connect(Node) end).
+
+%% small helper that defers a blocking call that can be long
+%% to another process, such that the validation step can have a
+%% ceiling for how long it takes before returning a value.
+%% If the process times out, it is killed brutally.
+timeout_call(Timeout, Fun) ->
+    P = self(),
+    R = make_ref(),
+    {Pid, Ref} = spawn_monitor(fun() ->
+        Res = Fun(),
+        P ! {R, Res}
+    end),
+    receive
+        {R, Res} ->
+            erlang:demonitor(R, [flush]),
+            Res;
+        {'DOWN', Ref, _, _, _} ->
+            {error, connection_attempt_failed}
+    after Timeout ->
+        erlang:exit(Pid, kill),
+        receive
+            {'DOWN', Ref, _, _, _} ->
+                timeout;
+            {R, Res} ->
+                erlang:demonitor(R, [flush]),
+                Res
+        end
+    end.
+
 
 -spec revault_node(atom()) -> ok | {error, term()}.
 revault_node(Node) ->
