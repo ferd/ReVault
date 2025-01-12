@@ -9,6 +9,7 @@
 -define(KEY_CTRLA, 1).
 -define(KEY_CTRLE, 5).
 -define(KEY_CTRLD, 4).
+-define(KEY_ENTER, 10).
 -define(KEY_TEXT_RANGE(X), % ignore control codes
         (not(X < 32) andalso
          not(X >= 127 andalso X < 160))).
@@ -51,63 +52,63 @@ menu_order() ->
 args() ->
     #{list => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "ReVault instance to connect to"}
       ],
       scan => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "Local ReVault instance to connect to"},
         #{name => dirs, label => "Dirs",
-          type => {list, fun parse_list/2}, default => fun default_dirs/1,
+          type => {list, fun parse_list/2, fun check_dirs/2}, default => fun default_dirs/1,
           help => "List of directories to scan"}
       ],
       sync => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "Local ReVault instance to connect to"},
         #{name => dirs, label => "Dirs",
-          type => {list, fun parse_list/2}, default => fun default_dirs/1,
+          type => {list, fun parse_list/2, fun check_dirs/2}, default => fun default_dirs/1,
           help => "List of directories to scan"},
         #{name => peer, label => "Peer Node",
-          type => {list, fun parse_list/2}, default => fun default_peers/1,
+          type => {string, "^(?:\\s*)?(.+)(?:\\s*)?$", fun check_peer/2}, default => fun default_peers/1,
           help => "List of peers"}
       ],
       status => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "ReVault instance to connect to"}
       ],
       'generate-keys' => [
         #{name => certname, label => "Certificate Name",
           % the string regex 'trims' leading and trailing whitespace
-          type => {string, "[^\\s]+.*[^\\s]+"}, default => "revault",
+          type => {string, "[^\\s]+.*[^\\s]+", fun check_ignore/2}, default => "revault",
           help => "Name of the key files generated"},
         #{name => path, label => "Certificate Directory",
-          type => {string, "[^\\s]+.*[^\\s]+"}, default => "./",
+          type => {string, "[^\\s]+.*[^\\s]+", fun check_ignore/2}, default => "./",
           help => "Directory where the key files will be placed"}
       ],
       seed => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "ReVault instance to connect to"},
         #{name => path, label => "Fork Seed Directory",
-          type => {string, "[^\\s]+.*[^\\s]+"}, default => "./forked/",
+          type => {string, "[^\\s]+.*[^\\s]+", fun check_ignore/2}, default => "./forked/",
           help => "path of the base directory where the forked data will be located."},
         #{name => dirs, label => "Dirs",
-          type => {list, fun parse_list/2}, default => fun default_dirs/1,
+          type => {list, fun parse_list/2, fun check_dirs/2}, default => fun default_dirs/1,
           help => "List of directories to fork"}
         ],
       'remote-seed' => [
         #{name => node, label => "Local Node",
-          type => {node, "[\\w.-]+@[\\w.-]+"}, default => ?DEFAULT_NODE,
+          type => {node, "[\\w.-]+@[\\w.-]+", fun check_connect/2}, default => ?DEFAULT_NODE,
           help => "ReVault instance to connect to"},
         #{name => peer, label => "Peer Node",
-          type => {string, "[^\\s]+[^,()]*[^\\s,()]+"}, default => fun default_peer/1,
+          type => {string, "^(?:\\s*)?(.+)(?:\\s*)?$", fun check_peer/2}, default => fun default_peers/1,
           help => "Peer from which to fork a seed"},
         #{name => dirs, label => "Dirs",
           %% TODO: replace list by 'peer_dirs'
-          type => {list, fun parse_list/2}, default => fun default_dirs/1,
+          type => {list, fun parse_list/2, fun check_dirs/2}, default => fun default_dirs/1,
           help => "List of directories to fork"}
         ]
     }.
@@ -116,15 +117,15 @@ parse_list(String, State) ->
     try
         %% drop surrounding whitespace and split on commas
         S = string:trim(String, both),
-        L = re:split(S, "[\\s]*,[\\s]*", [{return, binary}, trim]),
+        L = re:split(S, "[\\s]*,[\\s]*", [{return, binary}]),
         %% ignore empty results (<<>>) in returned value
-        {ok, [B || B <- L, B =/= <<>>], State}
+        {ok, [B || B <- L], State}
     catch
         _:_ -> {error, invalid, State}
     end.
 
 parse_regex(Re, String, State) ->
-    case re:run(String, Re, [{capture, first, list}]) of
+    case re:run(String, Re, [{capture, first, binary}]) of
         {match, [Str]} -> {ok, Str, State};
         nomatch -> {error, invalid, State}
     end.
@@ -132,7 +133,7 @@ parse_regex(Re, String, State) ->
 parse_with_fun(node, F, Str, State) ->
     maybe
         {ok, NewStr, NewState} ?= F(Str, State),
-        Node = list_to_atom(NewStr),
+        Node = binary_to_atom(NewStr),
         {ok, Node, NewState}
     end;
 parse_with_fun(_Type, F, Str, State) ->
@@ -153,23 +154,65 @@ default_peers(State = #{local_node := Node}) ->
         {config, _Path, Config} ->
             #{<<"peers">> := PeerMap} = Config,
             Needed = ordsets:from_list(DirList),
-            [Peer
-             || Peer <- maps:keys(PeerMap),
-                Dirs <- [maps:get(<<"sync">>, maps:get(Peer, PeerMap))],
-                ordsets:is_subset(Needed, ordsets:from_list(Dirs))]
+            Peers = [Peer
+                     || Peer <- maps:keys(PeerMap),
+                        Dirs <- [maps:get(<<"sync">>, maps:get(Peer, PeerMap))],
+                        ordsets:is_subset(Needed, ordsets:from_list(Dirs))],
+            lists:join(", ", Peers)
     catch
         _E:_R -> []
     end.
 
-default_peer(State) ->
-    %% Ignore dir lists for this call.
-    case default_peers(State#{dir_list => []}) of
-        [] -> "";
-        [H] -> H;
-        [H|T] ->
-            [H, " (", lists:join(", ", T), ")"]
+check_connect(_State, Node) ->
+    case connect_nonblocking(Node) of
+        ok ->
+            case revault_node(Node) of
+                ok -> ok;
+                _ -> {error, non_revault_node}
+            end;
+        timeout ->
+            {error, connection_timeout};
+        _ ->
+            {error, connection_failure}
     end.
 
+check_dirs(#{local_node := Node}, Dirs) ->
+    try config(Node) of
+        {config, _Path, Config} ->
+            #{<<"dirs">> := DirMap} = Config,
+            ValidDirs = maps:keys(DirMap),
+            case Dirs -- ValidDirs of
+                [] -> ok;
+                Others -> {error, {unknown_dirs, Others}}
+            end
+    catch
+        _E:_R -> []
+    end.
+
+check_peer(State = #{local_node := Node}, Peer) ->
+    DirList = maps:get(dir_list, State, []),
+    try config(Node) of
+        {config, _Path, Config} ->
+            #{<<"peers">> := PeerMap} = Config,
+            Peers = [ValidPeer
+                     || ValidPeer <- maps:keys(PeerMap)],
+            case lists:member(Peer, Peers) of
+                true ->
+                    Needed = ordsets:from_list(DirList),
+                    PeerDirs = maps:get(<<"sync">>, maps:get(Peer, PeerMap, #{}), []),
+                    case ordsets:is_subset(Needed, ordsets:from_list(PeerDirs)) of
+                        true -> ok;
+                        false -> {error, {mismatching_dirs, Peer, Needed, PeerDirs}}
+                    end;
+                false ->
+                    {error, {unknown_peer, Peer, Peers}}
+            end
+    catch
+        _E:_R -> []
+    end.
+
+check_ignore(_, _) ->
+    ok.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% DEFINING THE WHOLE UI THINGY %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -307,7 +350,8 @@ end_table(State=#{action_coords := {_, {Y,X}}}) ->
 show_status(State=#{status_init_pos := {Y,X},
                     menu_coords := {_, {_,Width}}},
             Str) ->
-    str(Y, X, lists:duplicate(Width-X, $ )),
+    {MaxY,_} = cecho:getmaxyx(),
+    [str(LY, X, lists:duplicate(Width-X, $\s)) || LY <- lists:seq(Y,MaxY)],
     str(Y, X, Str),
     State.
 
@@ -502,6 +546,53 @@ handle_action({input, Char}, _Action, State = #{action_args := Args}) when ?KEY_
     NewArgs = replace(Args, Arg, Arg#{line => {Label,NewStr},
                                       unparsed => NewStr}),
     {ok, State#{action_args=>NewArgs}};
+handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
+    %% revalidate all values in all ranges; if any error
+    %% is found, show it in the status line.
+    %% if none are found, extract as clean options, and
+    %% switch to execution mode.
+    {Errors, Status} = lists:foldl(
+        fun(Arg = #{line := {_Label, Str}}, {Acc, S}) ->
+            case parse_arg(TmpState, Action, Arg, Str) of
+                {ok, _, _} -> {Acc, S};
+                {error, Reason, _} -> {[{Arg, Reason}|Acc], error}
+            end
+        end,
+        {[], ok},
+        Args
+    ),
+    case Status of
+        ok ->
+            {Valid, Invalid} = lists:foldl(
+                fun(Arg = #{val := Val, type := {_,_,F}}, {V,I}) ->
+                    case F(TmpState, Val) of
+                        ok -> {[Arg|V], I};
+                        {error, Reason} -> {V, [{Arg, Reason}]}
+                    end
+                end,
+                {[],[]},
+                Args
+            ),
+            case {Valid, Invalid} of
+                {_, []} ->
+                    %% TODO: change state to execution
+                    State = show_status(TmpState, "ok."),
+                    {ok, State};
+                {_, [{#{line := {Label, _}}, Reason}|_]} ->
+                    State = show_status(
+                        TmpState,
+                        io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
+                    ),
+                    {ok, State}
+            end;
+        error ->
+            [{#{line := {Label, _}}, Reason}|_] = Errors,
+            State = show_status(
+                TmpState,
+                io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
+            ),
+            {ok, State}
+    end;
 handle_action({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
         TmpState,
@@ -562,14 +653,7 @@ arg_output(State, Action, [Arg=#{unparsed := Unparsed}|Args], Acc) ->
     %% refresh data of pre-parsed elements.
     %% with the new value in place, apply the transformation to its internal
     %% format for further commands
-    #{type := TypeInfo} = Arg,
-    Ret = case TypeInfo of
-        {T, F} when is_function(F) ->
-            parse_with_fun(T, F, Unparsed, State);
-        {T, Regex} when is_list(Regex); is_binary(Regex) ->
-            F = fun(String, St) -> parse_regex(Regex, String, St) end,
-            parse_with_fun(T, F, Unparsed, State)
-    end,
+    Ret = parse_arg(State, Action, Arg, Unparsed),
     %% Store it all!
     ?LOG({?LINE, parsed, maps:get(name, Arg), element(2, Ret)}),
     case Ret of
@@ -582,7 +666,7 @@ arg_output(State, Action, [Arg=#{unparsed := Unparsed}|Args], Acc) ->
     end;
 arg_output(State, Action, [Arg=#{line := _} | Args], Acc) ->
     arg_output(State, Action, Args, [Arg|Acc]);
-arg_output(State, Action, [#{type := {node, _}, label := Label, val := NodeVal}=Arg|Args], Acc) ->
+arg_output(State, Action, [#{type := {node, _, _}, label := Label, val := NodeVal}=Arg|Args], Acc) ->
     Status = case connect_nonblocking(NodeVal) of
         ok ->
             case revault_node(NodeVal) of
@@ -597,14 +681,14 @@ arg_output(State, Action, [#{type := {node, _}, label := Label, val := NodeVal}=
     Line = {[Label, " (", Status, ")"], atom_to_list(NodeVal)},
     arg_output(State#{local_node => NodeVal}, Action,
                [Arg#{line => Line}|Args], Acc);
-arg_output(State, Action, [#{name := dirs, type := {list, _}, label := Label, val := DirList}=Arg|Args], Acc) ->
+arg_output(State, Action, [#{name := dirs, type := {list, _, _}, label := Label, val := DirList}=Arg|Args], Acc) ->
     Line = {Label, lists:join(", ", DirList)},
     arg_output(State#{dir_list => DirList}, Action,
                [Arg#{line => Line}|Args], Acc);
-arg_output(State, Action, [#{type := {list, _}, label := Label, val := List}=Arg|Args], Acc) ->
+arg_output(State, Action, [#{type := {list, _, _}, label := Label, val := List}=Arg|Args], Acc) ->
     Line = {Label, lists:join(", ", List)},
     arg_output(State, Action, [Arg#{line => Line}|Args], Acc);
-arg_output(State, Action, [#{type := {string, _}, label := Label, val := Val}=Arg|Args], Acc) ->
+arg_output(State, Action, [#{type := {string, _, _}, label := Label, val := Val}=Arg|Args], Acc) ->
     Line = {Label, Val},
     arg_output(State, Action, [Arg#{line => Line}|Args], Acc);
 arg_output(State, Action, [#{type := Unsupported}=Arg|Args], Acc) ->
@@ -613,14 +697,14 @@ arg_output(State, Action, [#{type := Unsupported}=Arg|Args], Acc) ->
             io_lib:format("~p", [Unsupported])},
     arg_output(State, Action, [Arg#{line => Line}|Args], Acc).
 
-arg_init(State, _Action, Arg = #{type := {node, _}, default := Default}) ->
+arg_init(State, _Action, Arg = #{type := {node, _, _}, default := Default}) ->
     {State#{local_node => Default}, Arg#{val => Default}};
-arg_init(State, _Action, Arg = #{name := dirs, type := {list, _}, default := F}) ->
+arg_init(State, _Action, Arg = #{name := dirs, type := {list, _, _}, default := F}) ->
     Default = F(State),
     {State#{dir_list => Default}, Arg#{val => Default}};
-arg_init(State, _Action, Arg = #{type := {list, _}, default := F}) ->
+arg_init(State, _Action, Arg = #{type := {list, _, _}, default := F}) ->
     {State, Arg#{val => F(State)}};
-arg_init(State, _Action, Arg = #{type := {string, _}, default := X}) ->
+arg_init(State, _Action, Arg = #{type := {string, _, _}, default := X}) ->
     Default = if is_function(X, 1) -> X(State);
                  is_function(X) -> error(bad_arity);
                  true -> X
@@ -628,6 +712,15 @@ arg_init(State, _Action, Arg = #{type := {string, _}, default := X}) ->
     {State, Arg#{val => Default}};
 arg_init(State, _Action, Arg = #{type := Unsupported}) ->
     {State, Arg#{val => {error, Unsupported}}}.
+
+parse_arg(State, _Action, #{type := TypeInfo}, Unparsed) ->
+    case TypeInfo of
+        {T, F, _Validation} when is_function(F) ->
+            parse_with_fun(T, F, Unparsed, State);
+        {T, Regex, _Validation} when is_list(Regex); is_binary(Regex) ->
+            F = fun(String, St) -> parse_regex(Regex, String, St) end,
+            parse_with_fun(T, F, Unparsed, State)
+    end.
 
 replace([H|T], H, R) -> [R|T];
 replace([H|T], S, R) -> [H|replace(T, S, R)].
