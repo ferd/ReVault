@@ -186,7 +186,7 @@ check_dirs(#{local_node := Node}, Dirs) ->
                 Others -> {error, {unknown_dirs, Others}}
             end
     catch
-        _E:_R -> []
+        E:R -> {error, {E,R}}
     end.
 
 check_peer(State = #{local_node := Node}, Peer) ->
@@ -208,7 +208,7 @@ check_peer(State = #{local_node := Node}, Peer) ->
                     {error, {unknown_peer, Peer, Peers}}
             end
     catch
-        _E:_R -> []
+        E:R -> {error, {E,R}}
     end.
 
 check_ignore(_, _) ->
@@ -698,7 +698,8 @@ arg_output(State, Action, [#{type := Unsupported}=Arg|Args], Acc) ->
     arg_output(State, Action, [Arg#{line => Line}|Args], Acc).
 
 arg_init(State, _Action, Arg = #{type := {node, _, _}, default := Default}) ->
-    {State#{local_node => Default}, Arg#{val => Default}};
+    Val = maps:get(local_node, State, Default),
+    {State#{local_node => Val}, Arg#{val => Val}};
 arg_init(State, _Action, Arg = #{name := dirs, type := {list, _, _}, default := F}) ->
     Default = F(State),
     {State#{dir_list => Default}, Arg#{val => Default}};
