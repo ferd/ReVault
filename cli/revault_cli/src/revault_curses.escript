@@ -255,9 +255,10 @@ state(Old) ->
     %% Refresh the layout to show proper coordinates
     Tmp1 = show_menu(Tmp0),
     Tmp2 = show_action(Tmp1),
-    Tmp3 = end_table(Tmp2),
+    Tmp3 = show_exec(Tmp2),
+    Tmp4 = end_table(Tmp3),
     cecho:refresh(),
-    Tmp3.
+    Tmp4.
 
 
 show_menu(State) ->
@@ -300,11 +301,12 @@ show_menu(State) ->
     end,
     NewState.
 
-show_action(State = #{mode := menu,
-                      menu_coords := {_, End}}) ->
+show_action(State = #{mode := Mode,
+                      menu_coords := {_, End}}) when Mode == menu ->
     State#{action_coords => {End, End}};
-show_action(State = #{mode := action, menu := Action,
-                      menu_coords := {_, {MenuY, MaxX}}}) ->
+show_action(State = #{mode := Mode, menu := Action,
+                      menu_coords := {_, {MenuY, MaxX}}}) when Mode == action;
+                                                               Mode == exec ->
     MinY = MenuY,
     %% TODO: truncate lines that are too long
     {ArgState, Args} = arg_output(State, Action,
@@ -337,11 +339,40 @@ show_action(State = #{mode := action, menu := Action,
                     mv(First)
             end
     end,
-    ArgState#{action_coords => {{MinY,0}, {MaxY,MaxX}},
+    ExtraLines = case Mode of
+        action ->
+            0; % this is the last section
+        _ ->
+            %% terminate table section
+            BottomRow = ["╟", lists:duplicate(MaxX-1, "─"), "╢"],
+            str(MaxY+1, 0, BottomRow),
+            1
+    end,
+    ArgState#{action_coords => {{MinY,0}, {MaxY+ExtraLines,MaxX}},
               action_args => Ranges,
               action_init_pos => {MinY, 2}}.
 
-end_table(State=#{action_coords := {_, {Y,X}}}) ->
+show_exec(State=#{mode := Mode,
+                  action_coords := {_, {Y,X}}}) when Mode =/= exec ->
+    State#{exec_coords => {{Y,0},{Y,X}}};
+show_exec(State=#{mode := exec,
+                  menu := Action,
+                  action_coords := {_, {ActionY,MaxX}}}) ->
+    MinY = ActionY,
+    %% expect line-based output in a list
+    MaxLines = 15,
+    MaxCols = MaxX-4,
+    {ExecState, Strs} = render_exec(Action, MaxLines, MaxCols, State),
+    MaxY = MinY + MaxLines,
+    LinesY = lists:foldl(fun(Line, Y) ->
+        str(Y+1, 0, ["║ ", string:pad(Line, MaxX-3), " ║"]),
+        Y+1
+    end, MinY, Strs),
+    [str(LineY, 0, ["║", lists:duplicate(MaxX-1, " "), "║"])
+     || LineY <- lists:seq(LinesY+1, MaxY)],
+    ExecState#{exec_coords => {{MinY,0},{MaxY,MaxX}}}.
+
+end_table(State=#{exec_coords := {_, {Y,X}}}) ->
     str(Y+1, 0, ["╚", lists:duplicate(X-1, "═") ,"╝"]),
     str(Y+2, 0, "  ╰─ "),
     State#{status_coords => {{Y+1,0}, {Y+2,5}},
@@ -369,6 +400,13 @@ loop(OldState) ->
             receive
                 {input, Input} ->
                     {ok, NewState} = handle_action({input, Input}, Action, State),
+                    loop(NewState)
+            end;
+        exec ->
+            #{menu := Action} = State,
+            receive
+                {input, Input} ->
+                    {ok, NewState} = handle_exec({input, Input}, Action, State),
                     loop(NewState)
             end
     end.
@@ -577,7 +615,8 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
                 {_, []} ->
                     %% TODO: change state to execution
                     State = show_status(TmpState, "ok."),
-                    {ok, State};
+                    {ok, State#{mode => exec,
+                                exec_args => Args}};
                 {_, [{#{line := {Label, _}}, Reason}|_]} ->
                     State = show_status(
                         TmpState,
@@ -594,6 +633,26 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
             {ok, State}
     end;
 handle_action({input, UnknownChar}, Action, TmpState) ->
+    State = show_status(
+        TmpState,
+        io_lib:format("Unknown character in ~p: ~w", [Action, UnknownChar])
+    ),
+    {ok, State}.
+
+handle_exec({input, ?ceKEY_DOWN}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    {ok, State#{exec_state => ES#{offset => {Y+1, X}}}};
+handle_exec({input, ?ceKEY_UP}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    {ok, State#{exec_state => ES#{offset => {max(0,Y-1), X}}}};
+handle_exec({input, ?ceKEY_RIGHT}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    {ok, State#{exec_state => ES#{offset => {Y, X+1}}}};
+handle_exec({input, ?ceKEY_LEFT}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    {ok, State#{exec_state => ES#{offset => {Y, max(0,X-1)}}}};
+%% TODO: pgup, pgdwn
+handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
         TmpState,
         io_lib:format("Unknown character in ~p: ~w", [Action, UnknownChar])
@@ -722,6 +781,26 @@ parse_arg(State, _Action, #{type := TypeInfo}, Unparsed) ->
             F = fun(String, St) -> parse_regex(Regex, String, St) end,
             parse_with_fun(T, F, Unparsed, State)
     end.
+
+render_exec(list, MaxLines, MaxCols, State) ->
+    {ok, Path, Config, {OffY,OffX}} = case State of
+        #{exec_state := #{path := P, config := C, offset := Off}} ->
+            {ok, P, C, Off};
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {ok, P, C} = rpc:call(Node, maestro_loader, current, []),
+            {ok, P, C, {0,0}}
+    end,
+    Brk = io_lib:format("~n", []),
+    Str = io_lib:format("Config parsed from ~ts:~n~p~n", [Path, Config]),
+    %% Fit lines and the whole thing in a "box"
+    Lines = string:lexemes(Str, Brk),
+    Truncated = [string:slice(S, OffX, MaxCols)
+                 || S <- lists:sublist(Lines, OffY+1, MaxLines)],
+    {State#{exec_state => #{path => Path, config => Config, offset => {OffY,OffX}}},
+     Truncated};
+render_exec(Action, _MaxLines, _MaxCols, State) ->
+    {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
 replace([H|T], H, R) -> [R|T];
 replace([H|T], S, R) -> [H|replace(T, S, R)].
