@@ -14,6 +14,7 @@
         (not(X < 32) andalso
          not(X >= 127 andalso X < 160))).
 
+-define(EXEC_LINES, 15).
 -define(MAX_VALIDATION_DELAY, 150). % longest time to validate input, in ms
 -define(LOG(X),
         ok).
@@ -360,7 +361,7 @@ show_exec(State=#{mode := exec,
                   action_coords := {_, {ActionY,MaxX}}}) ->
     MinY = ActionY,
     %% expect line-based output in a list
-    MaxLines = 15,
+    MaxLines = ?EXEC_LINES,
     MaxCols = MaxX-4,
     {ExecState, Strs} = render_exec(Action, MaxLines, MaxCols, State),
     MaxY = MinY + MaxLines,
@@ -639,6 +640,11 @@ handle_action({input, UnknownChar}, Action, TmpState) ->
     ),
     {ok, State}.
 
+handle_exec({input, ?ceKEY_ESC}, _Action, TmpState) ->
+    %% clear up the arg list
+    State = maps:without([exec_state], TmpState#{mode => action}),
+    cecho:erase(),
+    {ok, State};
 handle_exec({input, ?ceKEY_DOWN}, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {Y+1, X}}}};
@@ -651,7 +657,15 @@ handle_exec({input, ?ceKEY_RIGHT}, list, State = #{exec_state:=ES}) ->
 handle_exec({input, ?ceKEY_LEFT}, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {Y, max(0,X-1)}}}};
-%% TODO: pgup, pgdwn
+handle_exec({input, ?ceKEY_PGDOWN}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    Shift = ?EXEC_LINES-1,
+    {ok, State#{exec_state => ES#{offset => {Y+Shift, X}}}};
+handle_exec({input, ?ceKEY_PGUP}, list, State = #{exec_state:=ES}) ->
+    {Y,X} = maps:get(offset, ES, {0, 0}),
+    Shift = ?EXEC_LINES-1,
+    {ok, State#{exec_state => ES#{offset => {max(0,Y-Shift), X}}}};
+%% TODO: ctrlA, ctrlE
 handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
         TmpState,
