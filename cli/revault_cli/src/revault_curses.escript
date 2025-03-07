@@ -730,6 +730,17 @@ handle_exec({input, ?KEY_ENTER}, sync, State) ->
     self() ! {input, ?ceKEY_ESC},
     self() ! {input, ?KEY_ENTER},
     {ok, State};
+%% Status
+handle_exec({revault, status, done}, status, State) ->
+    {ok, State};
+handle_exec({revault, status, {ok, Val}}, status, State=#{exec_state:=ES}) ->
+    {ok, State#{exec_state => ES#{status => Val}}};
+handle_exec({input, ?KEY_ENTER}, status, State) ->
+    %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
+    self() ! {revault, status, done},
+    self() ! {input, ?ceKEY_ESC},
+    self() ! {input, ?KEY_ENTER},
+    {ok, State};
 %% Generic exec
 handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
@@ -946,6 +957,19 @@ render_exec(sync, MaxLines, MaxCols, State) ->
              end] || {Dir, Status} <- LStatuses],
     {State#{exec_state => #{worker => Pid, peer => Peer, dirs => Statuses}},
      [Header | Strs]};
+render_exec(status, _MaxLines, _MaxCols, State) ->
+    {ok, Pid, Status} = case State of
+        #{exec_state := #{worker := P, status := V}} ->
+            {ok, P, V};
+        #{exec_args := Args} ->
+            self() ! init_scan,
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {status, Node}),
+            {ok, P, undefined}
+    end,
+    Strs = [io_lib:format("~p",[Status])],
+    {State#{exec_state => #{worker => Pid, status => Status}}, Strs};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
     {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
@@ -1017,7 +1041,9 @@ start_worker(ReplyTo, Call) ->
 worker(Parent, ReplyTo, {scan, Node, Dirs}) ->
     worker_scan(Parent, ReplyTo, Node, Dirs);
 worker(Parent, ReplyTo, {sync, Node, Peer, Dirs}) ->
-    worker_sync(Parent, ReplyTo, Node, Peer, Dirs).
+    worker_sync(Parent, ReplyTo, Node, Peer, Dirs);
+worker(Parent, ReplyTo, {status, Node}) ->
+    worker_status(Parent, ReplyTo, Node).
 
 worker_scan(Parent, ReplyTo, Node, Dirs) ->
     %% assume we are connected from arg validation time.
@@ -1110,3 +1136,29 @@ worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
         end
     end.
 
+worker_status(Parent, ReplyTo, Node) ->
+    process_flag(trap_exit, true),
+    ReqIds = erpc:send_request(Node,
+          maestro_loader, status, [],
+    status, erpc:reqids_new()),
+    worker_status_loop(Parent, ReplyTo,ReqIds).
+
+worker_status_loop(Parent, ReplyTo, ReqIds) ->
+    receive
+        {'EXIT', Parent, Reason} ->
+            exit(Reason);
+        stop ->
+            unlink(Parent),
+            exit(shutdown)
+    after 0 ->
+        case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
+            no_request ->
+                ReplyTo ! {revault, status, done},
+                exit(normal);
+            no_response ->
+                worker_status_loop(Parent, ReplyTo, ReqIds);
+            {{response, Res}, status, NewIds} ->
+                ReplyTo ! {revault, status, {ok, Res}},
+                worker_status_loop(Parent, ReplyTo, NewIds)
+        end
+    end.
