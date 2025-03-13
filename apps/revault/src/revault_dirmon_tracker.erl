@@ -382,8 +382,10 @@ conflict_marker(Dir, WorkingFile) ->
 write_conflict_marker(Dir, WorkingFile, {_, {conflict, Hashes, _}}) ->
     %% We don't care about the rename trick here, it's informational
     %% but all the critical data is tracked in the snapshot
+    F = conflict_marker(Dir, WorkingFile),
+    revault_file:ensure_dir(F),
     revault_file:write_file(
-        conflict_marker(Dir, WorkingFile),
+        F,
         lists:join($\n, [revault_conflict_file:hex(Hash) || Hash <- Hashes])
     ).
 
