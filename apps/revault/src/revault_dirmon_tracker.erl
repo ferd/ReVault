@@ -151,6 +151,14 @@ handle_call({conflict, Work, {NewStamp, deleted}}, _From,
             %% but note the deletion stamp as part of the conflict.
             CStamp = conflict_stamp(Id, Stamp, NewStamp),
             {CStamp, {conflict, ConflictHashes, WorkingHash}};
+        #{Work := {Stamp, deleted}} ->
+            %% This is a special case similar to having both files diverging
+            %% in stamps but having the same "hash" or value by virtue of being
+            %% deleted. Create an empty conflict file, assume further files might
+            %% come in as part of the sync or that this will properly carry
+            %% the state moving forward.
+            CStamp = conflict_stamp(Id, Stamp, NewStamp),
+            {CStamp, {conflict, [], deleted}};
         #{Work := {Stamp, WorkingHash}} ->
             %% No conflict, create it
             ConflictingWork = revault_conflict_file:conflicting(Work, WorkingHash),

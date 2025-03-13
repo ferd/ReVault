@@ -22,6 +22,7 @@ groups() ->
                   fork_server_save, seed_fork, basic_sync,
                   delete_sync, too_many_clients,
                   overwrite_sync_clash, conflict_sync,
+                  delete_sync_conflict,
                   prevent_server_clash,
                   multipart, double_conflict]}].
 
@@ -712,6 +713,70 @@ conflict_sync(Config) ->
     ),
     ?assertEqual({ok, <<"sh1">>}, file:read_file(filename:join([ClientPath2, "shared.D6BE7FB8"]))),
     ?assertEqual({ok, <<"sh2">>}, file:read_file(filename:join([ClientPath2, "shared.1C56416E"]))),
+    ok.
+
+delete_sync_conflict() ->
+    [{doc, "A deletion conflict can be sync'd to a third party"},
+        {timetrap, timer:seconds(5)}].
+delete_sync_conflict(Config) ->
+    Client = ?config(name, Config),
+    Server=?config(server, Config),
+    Remote = (?config(peer, Config))(Server),
+    ClientPath = ?config(path, Config),
+    ServerPath = ?config(server_path, Config),
+    {ok, _ServId1} = revault_fsm:id(Server),
+    {ok, _} = revault_fsm_sup:start_fsm(
+        ?config(db_dir, Config),
+        Client,
+        ClientPath,
+        ?config(ignore, Config),
+        ?config(interval, Config),
+        (?config(callback, Config))(Client)
+    ),
+    ok = revault_fsm:client(Client),
+    {ok, _ClientId} = revault_fsm:id(Client, Remote),
+    %% Set up a second client; because of how config works in the test, it needs
+    Client2 = Client ++ "_2",
+    Priv = ?config(priv_dir, Config),
+    DbDir2 = filename:join([Priv, "db_2"]),
+    ClientPath2 = filename:join([Priv, "data", "client_2"]),
+    filelib:ensure_dir(filename:join([DbDir2, "fakefile"])),
+    filelib:ensure_dir(filename:join([ClientPath2, "fakefile"])),
+    {ok, _} = revault_fsm_sup:start_fsm(DbDir2, Client2, ClientPath2,
+                                        ?config(ignore, Config),  ?config(interval, Config),
+                                        (?config(callback, Config))(Client2)),
+    ok = revault_fsm:client(Client2),
+    ?assertMatch({ok, _}, revault_fsm:id(Client2, Remote)),
+    %% now in initialized mode
+    %% Write files
+    ok = file:write_file(filename:join([ServerPath, "shared"]), "sh1"),
+    ok = file:write_file(filename:join([ClientPath, "shared"]), "sh2"),
+    %% Track em
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Delete em
+    ok = file:delete(filename:join([ServerPath, "shared"])),
+    ok = file:delete(filename:join([ClientPath, "shared"])),
+    %% Track the deletion
+    ok = revault_dirmon_event:force_scan(Client, 5000),
+    ok = revault_dirmon_event:force_scan(Server, 5000),
+    %% Sync em
+    ct:pal("SYNC", []),
+    ok = revault_fsm:sync(Client, Remote),
+    %% See the result
+    %% conflicting files are marked, with empty conflict files since nothing exists aside
+    %% from clashing deletions.
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ServerPath, "shared"]))),
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath, "shared"]))),
+    ?assertEqual({ok, <<"">>}, file:read_file(filename:join([ServerPath, "shared.conflict"])) ),
+    ?assertEqual({ok, <<"">>}, file:read_file(filename:join([ClientPath, "shared.conflict"])) ),
+
+    %% Now when client 2 syncs, it gets the files and conflict files as well
+    ct:pal("SECOND SYNC", []),
+    ok = revault_fsm:sync(Client2, Remote),
+    %% conflicting files are marked, but working files aren't sync'd since they didn't exist here
+    ?assertEqual({error, enoent}, file:read_file(filename:join([ClientPath2, "shared"]))),
+    ?assertEqual({ok, <<"">>}, file:read_file(filename:join([ClientPath2, "shared.conflict"])) ),
     ok.
 
 prevent_server_clash() ->
