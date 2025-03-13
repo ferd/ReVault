@@ -637,6 +637,25 @@ client_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}}, Data) ->
     NewQ = send_next_scheduled(Q),
     NewAcc = Acc -- [F],
     {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}};
+client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, deleted, CountLeft, Meta}}, Data) ->
+        #data{name=Name, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
+        ?with_span(
+            <<"conflict">>,
+            #{attributes => [{<<"path">>, WorkF}, {<<"meta">>, ?str(Meta)},
+                            {<<"count">>, CountLeft} | ?attrs(Data)]},
+            fun(_SpanCtx) ->
+                %% TODO: handle the file being corrupted vs its own hash
+                revault_dirmon_tracker:conflict(Name, WorkF, Meta)
+            end
+        ),
+        case CountLeft =:= 0 andalso Acc -- [WorkF] of
+            false ->
+                %% more of the same conflict file to come
+                {keep_state, Data#data{scan=true}};
+            NewAcc ->
+                NewQ = send_next_scheduled(Q),
+                {keep_state, Data#data{scan=true, sub=S#client_sync{queue=NewQ, acc=NewAcc}}}
+        end;
 client_sync_files(info, {revault, _Marker, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     #data{name=Name, sub=S=#client_sync{queue=Q, acc=Acc}} = Data,
     ?with_span(
@@ -853,6 +872,16 @@ server_sync_files(info, {revault, _Marker, {deleted_file, F, Meta}},
     ?with_span(<<"deleted">>, #{attributes => [{<<"path">>, F}, {<<"meta">>, ?str(Meta)}
                                                | ?attrs(Data)]},
                fun(_SpanCtx) -> handle_delete_sync(Name, Id, F, Meta) end),
+    {keep_state, Data#data{scan=true}};
+server_sync_files(info, {revault, _M, {conflict_file, WorkF, deleted, CountLeft, Meta}}, Data) ->
+    ?with_span(
+        <<"conflict">>,
+        #{attributes => [{<<"path">>, WorkF}, {<<"meta">>, ?str(Meta)},
+                        {<<"count">>, CountLeft} | ?attrs(Data)]},
+        fun(_SpanCtx) ->
+            revault_dirmon_tracker:conflict(Data#data.name, WorkF, Meta)
+        end
+    ),
     {keep_state, Data#data{scan=true}};
 server_sync_files(info, {revault, _M, {conflict_file, WorkF, F, CountLeft, Meta, Bin}}, Data) ->
     %% TODO: handle the file being corrupted vs its own hash
@@ -1202,6 +1231,11 @@ file_transfer_schedule(Name, Path, File) ->
     case revault_dirmon_tracker:file(Name, File) of
         {Vsn, deleted} ->
             [{deleted, File, Vsn}];
+        {Vsn, {conflict, [], deleted}} ->
+            %% Special deletion case where clashing deleted files
+            %% exist; there's no hash to send here, and no FHash;
+            %% explicitly call it as deleted.
+            [{conflict_file, File, deleted, 0, {Vsn, deleted}}];
         {Vsn, {conflict, Hashes, _}} ->
             {List, _} = lists:foldl(
                 fun(Hash, {Acc, Ct}) ->
@@ -1231,6 +1265,11 @@ wrap(_Path, {deleted, File, Vsn}) ->
     ?set_attribute(<<"path">>, File),
     ?set_attribute(<<"transfer_type">>, <<"deleted">>),
     revault_data_wrapper:send_deleted(File, Vsn);
+wrap(_Path, {conflict_file, File, deleted, Ct, Meta}) ->
+    ?set_attribute(<<"path">>, deleted),
+    ?set_attribute(<<"transfer_type">>, <<"conflict_file">>),
+    ?set_attribute(<<"conflict.ct">>, Ct),
+    revault_data_wrapper:send_conflict_deleted(File, Ct, Meta);
 wrap(Path, {conflict_file, File, FHash, Ct, Meta}) ->
     ?set_attribute(<<"path">>, FHash),
     ?set_attribute(<<"transfer_type">>, <<"conflict_file">>),
@@ -1303,4 +1342,3 @@ pid_attrs() ->
        proplists:get_value(minor_gcs,
                            proplists:get_value(garbage_collection, PidInfo))}
     ].
-
