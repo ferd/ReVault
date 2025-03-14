@@ -73,7 +73,7 @@ args() ->
           help => "List of directories to scan"},
         #{name => peer, label => "Peer Node",
           type => {string, "^(?:\\s*)?(.+)(?:\\s*)?$", fun check_peer/2}, default => fun default_peers/1,
-          help => "List of peers"}
+          help => "Peer to sync against"}
       ],
       status => [
         #{name => node, label => "Local Node",
@@ -118,7 +118,7 @@ parse_list(String, State) ->
     try
         %% drop surrounding whitespace and split on commas
         S = string:trim(String, both),
-        L = re:split(S, "[\\s]*,[\\s]*", [{return, binary}]),
+        L = re:split(S, "[\\s]*,[\\s]*", [{return, binary}, unicode]),
         %% ignore empty results (<<>>) in returned value
         {ok, [B || B <- L], State}
     catch
@@ -126,7 +126,7 @@ parse_list(String, State) ->
     end.
 
 parse_regex(Re, String, State) ->
-    case re:run(String, Re, [{capture, first, binary}]) of
+    case re:run(String, Re, [{capture, first, binary}, unicode]) of
         {match, [Str]} -> {ok, Str, State};
         nomatch -> {error, invalid, State}
     end.
@@ -159,7 +159,8 @@ default_peers(State = #{local_node := Node}) ->
                      || Peer <- maps:keys(PeerMap),
                         Dirs <- [maps:get(<<"sync">>, maps:get(Peer, PeerMap))],
                         ordsets:is_subset(Needed, ordsets:from_list(Dirs))],
-            lists:join(", ", Peers)
+            %% Flatten into a string, since peer data espects a string.
+            unicode:characters_to_binary(lists:join(", ", Peers))
     catch
         _E:_R -> []
     end.
