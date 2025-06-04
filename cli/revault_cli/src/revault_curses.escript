@@ -742,6 +742,14 @@ handle_exec({input, ?KEY_ENTER}, status, State) ->
     self() ! {input, ?ceKEY_ESC},
     self() ! {input, ?KEY_ENTER},
     {ok, State};
+%% Generate-Keys
+handle_exec({revault, 'generate-keys', {ok, Val}}, 'generate-keys', State=#{exec_state:=ES}) ->
+    {ok, State#{exec_state => ES#{status => Val}}};
+handle_exec({input, ?KEY_ENTER}, 'generate-keys', State) ->
+    %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
+    self() ! {input, ?ceKEY_ESC},
+    self() ! {input, ?KEY_ENTER},
+    {ok, State};
 %% Generic exec
 handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
@@ -971,6 +979,21 @@ render_exec(status, _MaxLines, _MaxCols, State) ->
     end,
     Strs = [io_lib:format("~p",[Status])],
     {State#{exec_state => #{worker => Pid, status => Status}}, Strs};
+render_exec('generate-keys', MaxLines, MaxCols, State) ->
+    {ok, Pid, Exists} = case State of
+        #{exec_state := #{worker := P, status := Status}} ->
+            %% Do wrapping of the status line
+            {ok, P, Status};
+        #{exec_args := Args} ->
+            self() ! generate_keys,
+            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
+            {value, #{val := File}} = lists:search(fun(#{name := N}) -> N == certname end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {generate_keys, Path, File}),
+            {ok, P, "generating keys..."}
+    end,
+    Strs = wrap(Exists, MaxCols, MaxLines),
+    {State#{exec_state => #{worker => Pid, status => Exists}}, Strs};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
     {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
@@ -1044,7 +1067,9 @@ worker(Parent, ReplyTo, {scan, Node, Dirs}) ->
 worker(Parent, ReplyTo, {sync, Node, Peer, Dirs}) ->
     worker_sync(Parent, ReplyTo, Node, Peer, Dirs);
 worker(Parent, ReplyTo, {status, Node}) ->
-    worker_status(Parent, ReplyTo, Node).
+    worker_status(Parent, ReplyTo, Node);
+worker(Parent, ReplyTo, {generate_keys, Path, File}) ->
+    worker_generate_keys(Parent, ReplyTo, Path, File).
 
 worker_scan(Parent, ReplyTo, Node, Dirs) ->
     %% assume we are connected from arg validation time.
@@ -1162,4 +1187,79 @@ worker_status_loop(Parent, ReplyTo, ReqIds) ->
                 ReplyTo ! {revault, status, {ok, Res}},
                 worker_status_loop(Parent, ReplyTo, NewIds)
         end
+    end.
+
+
+worker_generate_keys(Parent, ReplyTo, Path, File) ->
+    Res = make_selfsigned_cert(unicode:characters_to_list(Path),
+                               unicode:characters_to_list(File)),
+    %% we actually don't have a loop, everything is local
+    %% and has already be run, so we just wait for a shutdown signal.
+    ReplyTo ! {revault, 'generate-keys', {ok, Res}},
+    receive
+        {'EXIT', Parent, Reason} ->
+            exit(Reason);
+        stop ->
+            unlink(parent),
+            exit(shutdown)
+    end.
+
+%% Copied from revault_tls
+make_selfsigned_cert(Dir, CertName) ->
+    check_openssl_vsn(),
+
+    Key = filename:join(Dir, CertName ++ ".key"),
+    Cert = filename:join(Dir, CertName ++ ".crt"),
+    ok = filelib:ensure_dir(Cert),
+    Cmd = io_lib:format(
+        "openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes "
+        "-keyout '~ts' -out '~ts' -subj '/CN=example.org' "
+        "-addext 'subjectAltName=DNS:example.org,DNS:www.example.org,IP:127.0.0.1'",
+        [Key, Cert] % TODO: escape quotes
+    ),
+    os:cmd(Cmd).
+
+check_openssl_vsn() ->
+    Vsn = os:cmd("openssl version"),
+    VsnMatch = "(Open|Libre)SSL ([0-9]+)\\.([0-9]+)\\.([0-9]+)",
+    case re:run(Vsn, VsnMatch, [{capture, all_but_first, list}]) of
+        {match, [Type, Major, Minor, Patch]} ->
+            try
+                check_openssl_vsn(Type, list_to_integer(Major),
+                                  list_to_integer(Minor),
+                                  list_to_integer(Patch))
+            catch
+                error:bad_vsn ->
+                    error({openssl_vsn, Vsn})
+            end;
+        _ ->
+            error({openssl_vsn, Vsn})
+    end.
+
+%% Using OpenSSL >= 1.1.1 or LibreSSL >= 3.1.0
+check_openssl_vsn("Libre", A, B, _) when A > 3;
+                                         A == 3, B >= 1 ->
+    ok;
+check_openssl_vsn("Open", A, B, C) when A > 1;
+                                        A == 1, B > 1;
+                                        A == 1, B == 1, C >= 1 ->
+    ok;
+check_openssl_vsn(_, _, _, _) ->
+    error(bad_vsn).
+
+wrap(Str, Width, Lines) ->
+    wrap(Str, 0, Width, 0, Lines, [[]]).
+
+wrap(Str, Width, Width, Lines, Lines, Acc) ->
+    lists:reverse(Acc);
+wrap(Str, Width, Width, Ln, Lines, [L|Acc]) ->
+    wrap(Str, 0, Width, Ln+1, Lines, [[],lists:reverse(L)|Acc]);
+wrap(Str, W, Width, Ln, Lines, [L|Acc]) ->
+    case string:next_grapheme(Str) of
+        [Brk|Rest] when Brk == $\n; Brk == "\r\n" ->
+            wrap(Rest, 0, Width, Ln+1, Lines, [[], lists:reverse(L)|Acc]);
+        [C|Rest] ->
+            wrap(Rest, W+1, Width, Ln, Lines, [[C|L]|Acc]);
+        [] ->
+            lists:reverse([lists:reverse(L)|Acc])
     end.
