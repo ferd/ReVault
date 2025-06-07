@@ -899,7 +899,7 @@ render_exec(list, MaxLines, MaxCols, State) ->
             {ok, P, C, Off};
         #{exec_args := Args} ->
             {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {ok, P, C} = rpc:call(Node, maestro_loader, current, []),
+            {ok, P, C} = erpc:call(Node, maestro_loader, current, []),
             {ok, P, C, {0,0}}
     end,
     Brk = io_lib:format("~n", []),
@@ -1045,7 +1045,7 @@ timeout_call(Timeout, Fun) ->
 
 -spec revault_node(atom()) -> ok | {error, term()}.
 revault_node(Node) ->
-    try rpc:call(Node, maestro_loader, status, []) of
+    try erpc:call(Node, maestro_loader, status, []) of
         current -> ok;
         outdated -> ok;
         last_valid -> ok;
@@ -1055,7 +1055,7 @@ revault_node(Node) ->
     end.
 
 config(Node) ->
-    {ok, Path, Config} = rpc:call(Node, maestro_loader, current, []),
+    {ok, Path, Config} = erpc:call(Node, maestro_loader, current, []),
     {config, Path, Config}.
 
 start_worker(ReplyTo, Call) ->
