@@ -378,16 +378,27 @@ show_exec(State=#{mode := exec,
 end_table(State=#{exec_coords := {_, {Y,X}}}) ->
     str(Y+1, 0, ["╚", lists:duplicate(X-1, "═") ,"╝"]),
     str(Y+2, 0, "  ╰─ "),
-    State#{status_coords => {{Y+1,0}, {Y+2,5}},
-           status_init_pos => {Y+2,5}}.
-
-show_status(State=#{status_init_pos := {Y,X},
-                    menu_coords := {_, {_,Width}}},
-            Str) ->
+    %% Clear status area and render status if present
+    #{menu_coords := {_, {_,Width}}} = State,
+    {StatusY, StatusX} = {Y+2, 5},
+    %% Clear the entire status line
     {MaxY,_} = cecho:getmaxyx(),
-    [str(LY, X, lists:duplicate(Width-X, $\s)) || LY <- lists:seq(Y,MaxY)],
-    str(Y, X, Str),
-    State.
+    [str(LY, StatusX, lists:duplicate(Width-StatusX, $\s)) || LY <- lists:seq(StatusY,MaxY)],
+    %% Render status message if present
+    case State of
+        #{status_message := StatusMsg} ->
+            str(StatusY, StatusX, StatusMsg);
+        _ ->
+            ok
+    end,
+    State#{status_coords => {{Y+1,0}, {StatusY,StatusX}},
+           status_init_pos => {StatusY,StatusX}}.
+
+set_status(State, Str) ->
+    State#{status_message => Str}.
+
+clear_status(State) ->
+    maps:without([status_message], State).
 
 loop(OldState) ->
     State = #{mode := Mode} = state(OldState),
@@ -432,10 +443,10 @@ handle_menu({input, Key}, TmpState) ->
         $\n ->
             Menu = menu_at(TmpState, Pos),
             State = enter_menu(TmpState, Menu),
-            show_status(State, io_lib:format("Entering ~p", [Menu])),
+            set_status(State, io_lib:format("Entering ~p", [Menu])),
             {ok, State};
         UnknownChar ->
-            State = show_status(
+            State = set_status(
                 TmpState,
                 io_lib:format("Unknown menu character: ~w", [UnknownChar])
             ),
@@ -620,11 +631,11 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
             case {Valid, Invalid} of
                 {_, []} ->
                     %% TODO: change state to execution
-                    State = show_status(TmpState, "ok."),
+                    State = set_status(TmpState, "ok."),
                     {ok, State#{mode => exec,
                                 exec_args => Args}};
                 {_, [{#{line := {Label, _}}, Reason}|_]} ->
-                    State = show_status(
+                    State = set_status(
                         TmpState,
                         io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
                     ),
@@ -632,22 +643,22 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
             end;
         error ->
             [{#{line := {Label, _}}, Reason}|_] = Errors,
-            State = show_status(
+            State = set_status(
                 TmpState,
                 io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
             ),
             {ok, State}
     end;
 handle_action({input, UnknownChar}, Action, TmpState) ->
-    State = show_status(
+    State = set_status(
         TmpState,
         io_lib:format("Unknown character in ~p: ~w", [Action, UnknownChar])
     ),
     {ok, State}.
 
 handle_exec({input, ?ceKEY_ESC}, _Action, TmpState) ->
-    %% clear up the arg list
-    State = maps:without([exec_state], TmpState#{mode => action}),
+    %% clear up the arg list and status messages
+    State = clear_status(maps:without([exec_state], TmpState#{mode => action})),
     cecho:erase(),
     {ok, State};
 %% List exec
@@ -809,19 +820,19 @@ handle_exec({revault, 'remote-seed', {Dir, Status}}, 'remote-seed', State=#{exec
     {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
 %% Generic exec
 handle_exec({input, UnknownChar}, Action, TmpState) ->
-    State = show_status(
+    State = set_status(
         TmpState,
         io_lib:format("Unknown character in ~p: ~w", [Action, UnknownChar])
     ),
     {ok, State};
 handle_exec({revault, EventAct, Event}, Act, TmpState) ->
-    State = show_status(
+    State = set_status(
         TmpState,
         io_lib:format("Got unexpected ~p event in ~p: ~p", [EventAct, Act, Event])
     ),
     {ok, State};
 handle_exec(Msg, Action, TmpState) ->
-    State = show_status(
+    State = set_status(
         TmpState,
         io_lib:format("Got unexpected message in ~p: ~p", [Action, Msg])
     ),
