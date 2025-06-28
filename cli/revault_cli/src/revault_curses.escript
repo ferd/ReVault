@@ -51,6 +51,14 @@
 menu_order() ->
     [list, scan, sync, status, 'generate-keys', seed, 'remote-seed'].
 
+menu_help(list) -> "Show configuration and current settings";
+menu_help(scan) -> "Scan directories for changes";
+menu_help(sync) -> "Synchronize files with remote peer";
+menu_help(status) -> "Display current ReVault instance's configuration status";
+menu_help('generate-keys') -> "Generate TLS certificates for secure connections";
+menu_help(seed) -> "Create initial seed data to a directory, to use in a client";
+menu_help('remote-seed') -> "Create seed data as a client, from remote peer".
+
 args() ->
     #{list => [
         #{name => node, label => "Local Node",
@@ -294,15 +302,15 @@ show_menu(State) ->
                       menu_map => MenuMap,
                       menu_coord_map => CoordMap,
                       menu_init_pos => {1,2}},
-    %% set cursor if in menu mode
+    %% set cursor if in menu mode and show help for hovered item
     case {Mode, Hover} of
         {menu, Hover} ->
             MoveTo = menu_pos(NewState, Hover),
-            mv(MoveTo);
+            mv(MoveTo),
+            set_status(NewState, menu_help(Hover));
         _ ->
-            ok
-    end,
-    NewState.
+            NewState
+    end.
 
 show_action(State = #{mode := Mode,
                       menu_coords := {_, End}}) when Mode == menu ->
@@ -329,29 +337,33 @@ show_action(State = #{mode := Mode, menu := Action,
     end, {MinY, []}, Args),
     Ranges = lists:reverse(RevRanges),
     %% Set position
-    case cecho:getyx() of
+    CurrentY = case cecho:getyx() of
         {CurY, CurX} when CurY >= MinY, CurY =< MaxY,
                           CurX >= 2, CurX =< MaxX ->
-            ok;
+            CurY;
         _ ->
             %% Outside the box, move it to a known location
             case Ranges of
                 [] ->
-                    mv({MinY, 2});
+                    mv({MinY, 2}),
+                    MinY;
                 [#{range := {First, _Last}}|_] ->
-                    mv(First)
+                    mv(First),
+                    element(1, First)
             end
     end,
-    ExtraLines = case Mode of
+    {ExtraLines, TmpState} = case Mode of
         action ->
-            0; % this is the last section
+            NthArg = CurrentY - MinY,
+            #{help := Help} = lists:nth(NthArg, Args),
+            {0, maybe_set_status(ArgState, Help)}; % this is the last section
         _ ->
             %% terminate table section
             BottomRow = ["╟", lists:duplicate(MaxX-1, "─"), "╢"],
             str(MaxY+1, 0, BottomRow),
-            1
+            {1, ArgState}
     end,
-    ArgState#{action_coords => {{MinY,0}, {MaxY+ExtraLines,MaxX}},
+    TmpState#{action_coords => {{MinY,0}, {MaxY+ExtraLines,MaxX}},
               action_args => Ranges,
               action_init_pos => {MinY, 2}}.
 
@@ -379,11 +391,10 @@ end_table(State=#{exec_coords := {_, {Y,X}}}) ->
     str(Y+1, 0, ["╚", lists:duplicate(X-1, "═") ,"╝"]),
     str(Y+2, 0, "  ╰─ "),
     %% Clear status area and render status if present
-    #{menu_coords := {_, {_,Width}}} = State,
     {StatusY, StatusX} = {Y+2, 5},
     %% Clear the entire status line
-    {MaxY,_} = cecho:getmaxyx(),
-    [str(LY, StatusX, lists:duplicate(Width-StatusX, $\s)) || LY <- lists:seq(StatusY,MaxY)],
+    {MaxY,MaxX} = cecho:getmaxyx(),
+    [str(LY, StatusX, lists:duplicate(MaxX-StatusX, $\s)) || LY <- lists:seq(StatusY,MaxY)],
     %% Render status message if present
     case State of
         #{status_message := StatusMsg} ->
@@ -396,6 +407,9 @@ end_table(State=#{exec_coords := {_, {Y,X}}}) ->
 
 set_status(State, Str) ->
     State#{status_message => Str}.
+
+maybe_set_status(State=#{status_message := _}, _) -> State;
+maybe_set_status(State, Str) -> set_status(State, Str).
 
 clear_status(State) ->
     maps:without([status_message], State).
@@ -413,7 +427,7 @@ loop(OldState) ->
             #{menu := Action} = State,
             receive
                 {input, Input} ->
-                    {ok, NewState} = handle_action({input, Input}, Action, State),
+                    {ok, NewState} = handle_action({input, Input}, Action, clear_status(State)),
                     loop(NewState)
             end;
         exec ->
@@ -442,8 +456,7 @@ handle_menu({input, Key}, TmpState) ->
             {ok, State};
         $\n ->
             Menu = menu_at(TmpState, Pos),
-            State = enter_menu(TmpState, Menu),
-            set_status(State, io_lib:format("Entering ~p", [Menu])),
+            State = clear_status(enter_menu(TmpState, Menu)),
             {ok, State};
         UnknownChar ->
             State = set_status(
