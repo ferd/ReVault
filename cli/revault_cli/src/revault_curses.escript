@@ -951,34 +951,18 @@ parse_arg(State, _Action, #{type := TypeInfo}, Unparsed) ->
     end.
 
 render_exec(list, MaxLines, MaxCols, State) ->
-    {ok, Path, Config, {OffY,OffX}} = case State of
-        #{exec_state := #{path := P, config := C, offset := Off}} ->
-            {ok, P, C, Off};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {ok, P, C} = erpc:call(Node, maestro_loader, current, []),
-            {ok, P, C, {0,0}}
-    end,
+    NewState = ensure_exec_state(list, State),
+    #{exec_state := #{path := Path, config := Config, offset := {OffY,OffX}}} = NewState,
     Brk = io_lib:format("~n", []),
     Str = io_lib:format("Config parsed from ~ts:~n~p~n", [Path, Config]),
     %% Fit lines and the whole thing in a "box"
     Lines = string:lexemes(Str, Brk),
     Truncated = [string:slice(S, OffX, MaxCols)
                  || S <- lists:sublist(Lines, OffY+1, MaxLines)],
-    {State#{exec_state => #{path => Path, config => Config, offset => {OffY,OffX}}},
-     Truncated};
+    {NewState, Truncated};
 render_exec(scan, MaxLines, MaxCols, State) ->
-    {ok, Pid, Statuses} = case State of
-        #{exec_state := #{worker := P, dirs := DirsStatuses}} ->
-            {ok, P, DirsStatuses};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
-            %% TODO: replace with an alias
-            P = start_worker(self(), {scan, Node, Dirs}),
-            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
-            {ok, P, DirStatuses}
-    end,
+    NewState = ensure_exec_state(scan, State),
+    #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     %% TODO: support scrolling if you have more Dirs than MaxLines or
     %%       dirs that are too long.
@@ -991,20 +975,10 @@ render_exec(scan, MaxLines, MaxCols, State) ->
                  ok -> "ok";
                  _ -> "!!"
              end] || {Dir, Status} <- LStatuses],
-    {State#{exec_state => #{worker => Pid, dirs => Statuses}}, Strs};
+    {NewState, Strs};
 render_exec(sync, MaxLines, MaxCols, State) ->
-    {ok, Pid, Peer, Statuses} = case State of
-        #{exec_state := #{worker := W, peer := P, dirs := DirsStatuses}} ->
-            {ok, W, P, DirsStatuses};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
-            %% TODO: replace with an alias
-            W = start_worker(self(), {sync, Node, P, Dirs}),
-            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
-            {ok, W, P, DirStatuses}
-    end,
+    NewState = ensure_exec_state(sync, State),
+    #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     %% TODO: support scrolling if you have more Dirs than MaxLines or
     %%       dirs that are too long.
@@ -1019,48 +993,20 @@ render_exec(sync, MaxLines, MaxCols, State) ->
                  synced  -> "  ok    ok";
                  _       -> "  !!    !!"
              end] || {Dir, Status} <- LStatuses],
-    {State#{exec_state => #{worker => Pid, peer => Peer, dirs => Statuses}},
-     [Header | Strs]};
+    {NewState, [Header | Strs]};
 render_exec(status, _MaxLines, _MaxCols, State) ->
-    {ok, Pid, Status} = case State of
-        #{exec_state := #{worker := P, status := V}} ->
-            {ok, P, V};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            %% TODO: replace with an alias
-            P = start_worker(self(), {status, Node}),
-            {ok, P, undefined}
-    end,
+    NewState = ensure_exec_state(status, State),
+    #{exec_state := #{status := Status}} = NewState,
     Strs = [io_lib:format("~p",[Status])],
-    {State#{exec_state => #{worker => Pid, status => Status}}, Strs};
+    {NewState, Strs};
 render_exec('generate-keys', MaxLines, MaxCols, State) ->
-    {ok, Pid, Exists} = case State of
-        #{exec_state := #{worker := P, status := Status}} ->
-            %% Do wrapping of the status line
-            {ok, P, Status};
-        #{exec_args := Args} ->
-            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
-            {value, #{val := File}} = lists:search(fun(#{name := N}) -> N == certname end, Args),
-            %% TODO: replace with an alias
-            P = start_worker(self(), {generate_keys, Path, File}),
-            {ok, P, "generating keys..."}
-    end,
+    NewState = ensure_exec_state('generate-keys', State),
+    #{exec_state := #{status := Exists}} = NewState,
     Strs = wrap(Exists, MaxCols, MaxLines),
-    {State#{exec_state => #{worker => Pid, status => Exists}}, Strs};
+    {NewState, Strs};
 render_exec(seed, MaxLines, MaxCols, State) ->
-    {ok, Pid, Statuses} = case State of
-        #{exec_state := #{worker := P, dirs := S}} ->
-            %% Do wrapping of the status line
-            {ok, P, S};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
-            %% TODO: replace with an alias
-            P = start_worker(self(), {seed, Node, Path, Dirs}),
-            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
-            {ok, P, DirStatuses}
-    end,
+    NewState = ensure_exec_state(seed, State),
+    #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
     true = MaxLines >= length(LStatuses),
@@ -1071,21 +1017,10 @@ render_exec(seed, MaxLines, MaxCols, State) ->
                  ok -> "ok";
                  _ -> "!!"
              end] || {Dir, Status} <- LStatuses],
-    {State#{exec_state => #{worker => Pid, dirs => Statuses}}, Strs};
+    {NewState, Strs};
 render_exec('remote-seed', MaxLines, MaxCols, State) ->
-    {ok, Pid, Peer, Statuses} = case State of
-        #{exec_state := #{worker := W, peer := P, dirs := S}} ->
-            %% Do wrapping of the status line
-            {ok, W, P, S};
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
-            %% TODO: replace with an alias
-            W = start_worker(self(), {'remote-seed', Node, P, Dirs}),
-            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
-            {ok, W, P, DirStatuses}
-    end,
+    NewState = ensure_exec_state('remote-seed', State),
+    #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
     true = MaxLines >= length(LStatuses),
@@ -1096,10 +1031,95 @@ render_exec('remote-seed', MaxLines, MaxCols, State) ->
                     {ok, _ITC} -> "ok";
                     _ -> "!!"
                 end] || {Dir, Status} <- LStatuses],
-    {State#{exec_state => #{worker => Pid, peer => Peer, dirs => Statuses}},
-     Strs};
+    {NewState, Strs};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
     {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
+
+%% Helper function to ensure exec state is properly initialized
+ensure_exec_state(list, State) ->
+    case State of
+        #{exec_state := #{path := _, config := _, offset := _}} ->
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {ok, P, C} = erpc:call(Node, maestro_loader, current, []),
+            State#{exec_state => #{path => P, config => C, offset => {0,0}}}
+    end;
+ensure_exec_state(scan, State) ->
+    case State of
+        #{exec_state := #{worker := _, dirs := _}} ->
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {scan, Node, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            State#{exec_state => #{worker => P, dirs => DirStatuses}}
+    end;
+ensure_exec_state(sync, State) ->
+    case State of
+        #{exec_state := #{worker := _, peer := _, dirs := _}} ->
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            W = start_worker(self(), {sync, Node, P, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            State#{exec_state => #{worker => W, peer => P, dirs => DirStatuses}}
+    end;
+ensure_exec_state(status, State) ->
+    case State of
+        #{exec_state := #{worker := _, status := _}} ->
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {status, Node}),
+            State#{exec_state => #{worker => P, status => undefined}}
+    end;
+ensure_exec_state('generate-keys', State) ->
+    case State of
+        #{exec_state := #{worker := _, status := _}} ->
+            %% Do wrapping of the status line
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
+            {value, #{val := File}} = lists:search(fun(#{name := N}) -> N == certname end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {generate_keys, Path, File}),
+            State#{exec_state => #{worker => P, status => "generating keys..."}}
+    end;
+ensure_exec_state(seed, State) ->
+    case State of
+        #{exec_state := #{worker := _, dirs := _}} ->
+            %% Do wrapping of the status line
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {seed, Node, Path, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            State#{exec_state => #{worker => P, dirs => DirStatuses}}
+    end;
+ensure_exec_state('remote-seed', State) ->
+    case State of
+        #{exec_state := #{worker := _, peer := _, dirs := _}} ->
+            %% Do wrapping of the status line
+            State;
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            W = start_worker(self(), {'remote-seed', Node, P, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            State#{exec_state => #{worker => W, peer => P, dirs => DirStatuses}}
+    end.
 
 replace([H|T], H, R) -> [R|T];
 replace([H|T], S, R) -> [H|replace(T, S, R)].
