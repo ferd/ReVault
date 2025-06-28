@@ -2,6 +2,7 @@
 %%! -noinput -name ncurses_cli -setcookie revault_cookie
 -mode(compile).
 -include_lib("cecho/include/cecho.hrl").
+-export([main/1]).
 
 %% Name of the main running host, as specified in `config/vm.args'
 -define(DEFAULT_NODE, list_to_atom("revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@"))))).
@@ -750,6 +751,37 @@ handle_exec({input, ?KEY_ENTER}, 'generate-keys', State) ->
     self() ! {input, ?ceKEY_ESC},
     self() ! {input, ?KEY_ENTER},
     {ok, State};
+%% Seed exec
+handle_exec({revault, seed, done}, seed, State=#{exec_state:=ES}) ->
+    %% unset the workers
+    case maps:get(worker, ES, undefined) of
+        undefined ->
+            ok;
+        Pid ->
+            %% make sure the worker is torn down fully, even
+            %% if this is blocking
+            Pid ! done,
+            Ref = erlang:monitor(process, Pid),
+            receive
+                {'DOWN', Ref, process, _, _} ->
+                    ok
+            after 5000 ->
+                %% we ideally wouldn't wait more than ?MAX_VALIDATION_DELAY
+                %% so consider this a hard failure.
+                error(bad_worker_shutdown)
+            end
+    end,
+    {ok, State};
+handle_exec({revault, seed, {Dir, Status}}, seed, State=#{exec_state:=ES}) ->
+    #{dirs := Statuses} = ES,
+    {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
+% do not endlessly re-seed?
+% handle_exec({input, ?KEY_ENTER}, seed, State) ->
+%     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
+%     self() ! {revault, seed, done},
+%     self() ! {input, ?ceKEY_ESC},
+%     self() ! {input, ?KEY_ENTER},
+%     {ok, State};
 %% Generic exec
 handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
@@ -994,6 +1026,34 @@ render_exec('generate-keys', MaxLines, MaxCols, State) ->
     end,
     Strs = wrap(Exists, MaxCols, MaxLines),
     {State#{exec_state => #{worker => Pid, status => Exists}}, Strs};
+render_exec(seed, MaxLines, MaxCols, State) ->
+    {ok, Pid, Statuses} = case State of
+        #{exec_state := #{worker := P, dirs := S}} ->
+            %% Do wrapping of the status line
+            {ok, P, S};
+        #{exec_args := Args} ->
+            self() ! generate_keys,
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            P = start_worker(self(), {seed, Node, Path, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            {ok, P, DirStatuses}
+    end,
+    LStatuses = lists:sort(maps:to_list(Statuses)),
+    LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
+    true = MaxLines >= length(LStatuses),
+    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
+    Header = [string:pad("DIR", LongestDir+1, trailing, " "), " SEED"],
+    Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
+             case Status of
+                 pending -> "??";
+                 ok -> "ok";
+                 _ -> "!!"
+             end] || {Dir, Status} <- LStatuses],
+    {State#{exec_state => #{worker => Pid, dirs => Statuses}},
+     [Header | Strs]};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
     {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
@@ -1069,7 +1129,9 @@ worker(Parent, ReplyTo, {sync, Node, Peer, Dirs}) ->
 worker(Parent, ReplyTo, {status, Node}) ->
     worker_status(Parent, ReplyTo, Node);
 worker(Parent, ReplyTo, {generate_keys, Path, File}) ->
-    worker_generate_keys(Parent, ReplyTo, Path, File).
+    worker_generate_keys(Parent, ReplyTo, Path, File);
+worker(Parent, ReplyTo, {seed, Node, Path, Dirs}) ->
+    worker_seed(Parent, ReplyTo, Node, Path, Dirs).
 
 worker_scan(Parent, ReplyTo, Node, Dirs) ->
     %% assume we are connected from arg validation time.
@@ -1202,6 +1264,43 @@ worker_generate_keys(Parent, ReplyTo, Path, File) ->
         stop ->
             unlink(parent),
             exit(shutdown)
+    end.
+
+worker_seed(Parent, ReplyTo, Node, Path, Dirs) ->
+    %% assume we are connected from arg validation time.
+    %% We have multiple directories, so scan them in parallel.
+    %% This requires setting up sub-workers, which incidentally lets us
+    %% also listen for interrupts from the parent.
+    process_flag(trap_exit, true),
+    ReqIds = lists:foldl(fun(Dir, Ids) ->
+        erpc:send_request(Node,
+                          revault_fsm, seed_fork, [Dir, Path],
+                          Dir, Ids)
+    end, erpc:reqids_new(), Dirs),
+    worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds).
+
+worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds) ->
+    receive
+        {'EXIT', Parent, Reason} ->
+            %% clean up all the workers by being linked to them and dying
+            %% an unclean death.
+            exit(Reason);
+        stop ->
+            %% clean up all the workers by being linked to them and dying
+            %% an unclean death.
+            unlink(Parent),
+            exit(shutdown)
+    after 0 ->
+        case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
+            no_request ->
+                ReplyTo ! {revault, seed, done},
+                exit(normal);
+            no_response ->
+                worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds);
+            {{response, Res}, Dir, NewIds} ->
+                ReplyTo ! {revault, seed, {Dir, Res}},
+                worker_seed_loop(Parent, ReplyTo, Node, Dirs, NewIds)
+        end
     end.
 
 %% Copied from revault_tls
