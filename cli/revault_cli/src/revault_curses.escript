@@ -782,6 +782,31 @@ handle_exec({revault, seed, {Dir, Status}}, seed, State=#{exec_state:=ES}) ->
 %     self() ! {input, ?ceKEY_ESC},
 %     self() ! {input, ?KEY_ENTER},
 %     {ok, State};
+%% remote-seed exec
+handle_exec({revault, 'remote-seed', done}, 'remote-seed', State=#{exec_state:=ES}) ->
+    %% unset the workers
+    case maps:get(worker, ES, undefined) of
+        undefined ->
+            ok;
+        Pid ->
+            %% make sure the worker is torn down fully, even
+            %% if this is blocking
+            Pid ! done,
+            Ref = erlang:monitor(process, Pid),
+            receive
+                {'DOWN', Ref, process, _, _} ->
+                    ok
+            after 5000 ->
+                %% we ideally wouldn't wait more than ?MAX_VALIDATION_DELAY
+                %% so consider this a hard failure.
+                error(bad_worker_shutdown)
+            end
+    end,
+    {ok, State};
+handle_exec({revault, 'remote-seed', {Dir, Status}}, 'remote-seed', State=#{exec_state:=ES}) ->
+    #{dirs := Statuses} = ES,
+    file:write_file("/tmp/dbg", io_lib:format("~p~n", [{Dir, Status}])),
+    {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
 %% Generic exec
 handle_exec({input, UnknownChar}, Action, TmpState) ->
     State = show_status(
@@ -947,7 +972,6 @@ render_exec(scan, MaxLines, MaxCols, State) ->
         #{exec_state := #{worker := P, dirs := DirsStatuses}} ->
             {ok, P, DirsStatuses};
         #{exec_args := Args} ->
-            self() ! init_scan,
             {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
             {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
             %% TODO: replace with an alias
@@ -973,7 +997,6 @@ render_exec(sync, MaxLines, MaxCols, State) ->
         #{exec_state := #{worker := W, peer := P, dirs := DirsStatuses}} ->
             {ok, W, P, DirsStatuses};
         #{exec_args := Args} ->
-            self() ! init_scan,
             {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
             {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
             {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
@@ -1003,7 +1026,6 @@ render_exec(status, _MaxLines, _MaxCols, State) ->
         #{exec_state := #{worker := P, status := V}} ->
             {ok, P, V};
         #{exec_args := Args} ->
-            self() ! init_scan,
             {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
             %% TODO: replace with an alias
             P = start_worker(self(), {status, Node}),
@@ -1017,7 +1039,6 @@ render_exec('generate-keys', MaxLines, MaxCols, State) ->
             %% Do wrapping of the status line
             {ok, P, Status};
         #{exec_args := Args} ->
-            self() ! generate_keys,
             {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
             {value, #{val := File}} = lists:search(fun(#{name := N}) -> N == certname end, Args),
             %% TODO: replace with an alias
@@ -1032,7 +1053,6 @@ render_exec(seed, MaxLines, MaxCols, State) ->
             %% Do wrapping of the status line
             {ok, P, S};
         #{exec_args := Args} ->
-            self() ! generate_keys,
             {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
             {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
             {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
@@ -1045,15 +1065,39 @@ render_exec(seed, MaxLines, MaxCols, State) ->
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
     true = MaxLines >= length(LStatuses),
     true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
-    Header = [string:pad("DIR", LongestDir+1, trailing, " "), " SEED"],
     Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
              case Status of
                  pending -> "??";
                  ok -> "ok";
                  _ -> "!!"
              end] || {Dir, Status} <- LStatuses],
-    {State#{exec_state => #{worker => Pid, dirs => Statuses}},
-     [Header | Strs]};
+    {State#{exec_state => #{worker => Pid, dirs => Statuses}}, Strs};
+render_exec('remote-seed', MaxLines, MaxCols, State) ->
+    {ok, Pid, Peer, Statuses} = case State of
+        #{exec_state := #{worker := W, peer := P, dirs := S}} ->
+            %% Do wrapping of the status line
+            {ok, W, P, S};
+        #{exec_args := Args} ->
+            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
+            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            %% TODO: replace with an alias
+            W = start_worker(self(), {'remote-seed', Node, P, Dirs}),
+            DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
+            {ok, W, P, DirStatuses}
+    end,
+    LStatuses = lists:sort(maps:to_list(Statuses)),
+    LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
+    true = MaxLines >= length(LStatuses),
+    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
+    Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
+                case Status of
+                    pending -> "??";
+                    {ok, _ITC} -> "ok";
+                    _ -> "!!"
+                end] || {Dir, Status} <- LStatuses],
+    {State#{exec_state => #{worker => Pid, peer => Peer, dirs => Statuses}},
+     Strs};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
     {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
@@ -1131,7 +1175,9 @@ worker(Parent, ReplyTo, {status, Node}) ->
 worker(Parent, ReplyTo, {generate_keys, Path, File}) ->
     worker_generate_keys(Parent, ReplyTo, Path, File);
 worker(Parent, ReplyTo, {seed, Node, Path, Dirs}) ->
-    worker_seed(Parent, ReplyTo, Node, Path, Dirs).
+    worker_seed(Parent, ReplyTo, Node, Path, Dirs);
+worker(Parent, ReplyTo, {'remote-seed', Node, Peer, Dirs}) ->
+    worker_remote_seed(Parent, ReplyTo, Node, Peer, Dirs).
 
 worker_scan(Parent, ReplyTo, Node, Dirs) ->
     %% assume we are connected from arg validation time.
@@ -1303,6 +1349,43 @@ worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds) ->
         end
     end.
 
+worker_remote_seed(Parent, ReplyTo, Node, Peer, Dirs) ->
+    %% assume we are connected from arg validation time.
+    %% We have multiple directories, so scan them in parallel.
+    %% This requires setting up sub-workers, which incidentally lets us
+    %% also listen for interrupts from the parent.
+    process_flag(trap_exit, true),
+    ReqIds = lists:foldl(fun(Dir, Ids) ->
+        erpc:send_request(Node,
+                          revault_fsm, id, [Dir, Peer],
+                          Dir, Ids)
+    end, erpc:reqids_new(), Dirs),
+    worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds).
+
+worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
+    receive
+        {'EXIT', Parent, Reason} ->
+            %% clean up all the workers by being linked to them and dying
+            %% an unclean death.
+            exit(Reason);
+        stop ->
+            %% clean up all the workers by being linked to them and dying
+            %% an unclean death.
+            unlink(Parent),
+            exit(shutdown)
+    after 0 ->
+        case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
+            no_request ->
+                ReplyTo ! {revault, 'remote-seed', done},
+                exit(normal);
+            no_response ->
+                worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds);
+            {{response, Res}, Dir, NewIds} ->
+                ReplyTo ! {revault, 'remote-seed', {Dir, Res}},
+                worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, NewIds)
+        end
+    end.
+
 %% Copied from revault_tls
 make_selfsigned_cert(Dir, CertName) ->
     check_openssl_vsn(),
@@ -1349,7 +1432,7 @@ check_openssl_vsn(_, _, _, _) ->
 wrap(Str, Width, Lines) ->
     wrap(Str, 0, Width, 0, Lines, [[]]).
 
-wrap(Str, Width, Width, Lines, Lines, Acc) ->
+wrap(_Str, Width, Width, Lines, Lines, Acc) ->
     lists:reverse(Acc);
 wrap(Str, Width, Width, Ln, Lines, [L|Acc]) ->
     wrap(Str, 0, Width, Ln+1, Lines, [[],lists:reverse(L)|Acc]);
