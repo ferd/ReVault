@@ -619,43 +619,11 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
     %% is found, show it in the status line.
     %% if none are found, extract as clean options, and
     %% switch to execution mode.
-    {Errors, Status} = lists:foldl(
-        fun(Arg = #{line := {_Label, Str}}, {Acc, S}) ->
-            case parse_arg(TmpState, Action, Arg, Str) of
-                {ok, _, _} -> {Acc, S};
-                {error, Reason, _} -> {[{Arg, Reason}|Acc], error}
-            end
-        end,
-        {[], ok},
-        Args
-    ),
-    case Status of
+    case validate_args(TmpState, Action, Args) of
         ok ->
-            {Valid, Invalid} = lists:foldl(
-                fun(Arg = #{val := Val, type := {_,_,F}}, {V,I}) ->
-                    case F(TmpState, Val) of
-                        ok -> {[Arg|V], I};
-                        {error, Reason} -> {V, [{Arg, Reason}]}
-                    end
-                end,
-                {[],[]},
-                Args
-            ),
-            case {Valid, Invalid} of
-                {_, []} ->
-                    %% TODO: change state to execution
-                    State = set_status(TmpState, "ok."),
-                    {ok, State#{mode => exec,
-                                exec_args => Args}};
-                {_, [{#{line := {Label, _}}, Reason}|_]} ->
-                    State = set_status(
-                        TmpState,
-                        io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
-                    ),
-                    {ok, State}
-            end;
-        error ->
-            [{#{line := {Label, _}}, Reason}|_] = Errors,
+            State = set_status(TmpState, "ok."),
+            {ok, State#{mode => exec, exec_args => Args}};
+        {error, [{#{line := {Label, _}}, Reason}|_]} ->
             State = set_status(
                 TmpState,
                 io_lib:format("Validation issue in ~ts: ~p", [Label, Reason])
@@ -1489,3 +1457,40 @@ wrap(Str, W, Width, Ln, Lines, [L|Acc]) ->
         [] ->
             lists:reverse([lists:reverse(L)|Acc])
     end.
+
+validate_args(State, Action, Args) ->
+    %% Validate all the arguments
+    {Errors, Status} = lists:foldl(
+        fun(Arg = #{line := {_Label, Str}}, {Acc, S}) ->
+            case parse_arg(State, Action, Arg, Str) of
+                {ok, _, _} -> {Acc, S};
+                {error, Reason, _} -> {[{Arg, Reason}|Acc], error}
+            end
+        end,
+        {[], ok},
+        Args
+    ),
+    case Status of
+        error ->
+            {error, Errors};
+        ok ->
+            {_Valid, Invalid} = convert_args(State, Args),
+            case Invalid of
+                [] ->
+                    ok;
+                Invalid ->
+                    {error, Invalid}
+            end
+    end.
+
+convert_args(State, Args) ->
+    lists:foldl(
+        fun(Arg = #{val := Val, type := {_,_,F}}, {V,I}) ->
+            case F(State, Val) of
+                ok -> {[Arg|V], I};
+                {error, Reason} -> {V, [{Arg, Reason}]}
+            end
+        end,
+        {[],[]},
+        Args
+    ).
