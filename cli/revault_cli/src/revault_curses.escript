@@ -247,6 +247,8 @@ setup() ->
     cecho:noecho(),
     %% give keypad access
     cecho:keypad(?ceSTDSCR, true),
+    %% don't wait on ESC keys
+    cecho:set_escdelay(25),
     %% initial cursor position
     cecho:move(1,1),
     ok.
@@ -638,6 +640,7 @@ handle_action({input, UnknownChar}, Action, TmpState) ->
     {ok, State}.
 
 handle_exec({input, ?ceKEY_ESC}, _Action, TmpState) ->
+    %% TODO: clean up workers if any
     %% clear up the arg list and status messages
     State = clear_status(maps:without([exec_state], TmpState#{mode => action})),
     cecho:erase(),
