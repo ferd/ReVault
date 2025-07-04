@@ -321,7 +321,7 @@ show_action(State = #{mode := Mode, menu := Action,
                       menu_coords := {_, {MenuY, MaxX}}}) when Mode == action;
                                                                Mode == exec ->
     MinY = MenuY,
-    %% TODO: truncate lines that are too long
+    %% TODO: clip lines that are too long
     {ArgState, Args} = arg_output(State, Action,
                                   maps:get(action_args, State,
                                            maps:get(Action, args(), []))),
@@ -379,14 +379,21 @@ show_exec(State=#{mode := exec,
     %% expect line-based output in a list
     MaxLines = ?EXEC_LINES,
     MaxCols = MaxX-4,
-    {ExecState, Strs} = render_exec(Action, MaxLines, MaxCols, State),
     MaxY = MinY + MaxLines,
-    LinesY = lists:foldl(fun(Line, Y) ->
-        str(Y+1, 0, ["║ ", string:pad(Line, MaxX-3), " ║"]),
-        Y+1
-    end, MinY, Strs),
-    [str(LineY, 0, ["║", lists:duplicate(MaxX-1, " "), "║"])
-     || LineY <- lists:seq(LinesY+1, MaxY)],
+    {RenderMode, ExecState, Lines} = render_exec(Action, MaxLines, MaxCols, State),
+    case RenderMode of
+        raw ->
+            render_raw(Lines, {MinY,0}, {MaxY, MaxX});
+        wrap ->
+            render_raw(wrap(Lines, MaxLines, MaxCols),
+                       {MinY,0}, {MaxY, MaxX});
+        clip ->
+            render_raw(clip(Lines, {0,0}, MaxLines, MaxCols),
+                           {MinY,0}, {MaxY, MaxX});
+        {clip, Offsets} ->
+            render_raw(clip(Lines, Offsets, MaxLines, MaxCols),
+                            {MinY,0}, {MaxY, MaxX})
+    end,
     ExecState#{exec_coords => {{MinY,0},{MaxY,MaxX}}}.
 
 end_table(State=#{exec_coords := {_, {Y,X}}}) ->
@@ -415,6 +422,14 @@ maybe_set_status(State, Str) -> set_status(State, Str).
 
 clear_status(State) ->
     maps:without([status_message], State).
+
+render_raw(Lines, {MinY, MinX}, {MaxY, MaxX}) ->
+    LinesY = lists:foldl(fun(Line, Y) ->
+        str(Y+1, MinX, ["║ ", string:pad(Line, MaxX-MinX-3), " ║"]),
+        Y+1
+    end, MinY, Lines),
+    [str(LineY, MinX, ["║", lists:duplicate(MaxX-MinX-1, " "), "║"])
+    || LineY <- lists:seq(LinesY+1, MaxY)].
 
 loop(OldState) ->
     State = #{mode := Mode} = state(OldState),
@@ -945,41 +960,35 @@ parse_arg(State, _Action, #{type := TypeInfo}, Unparsed) ->
             parse_with_fun(T, F, Unparsed, State)
     end.
 
-render_exec(list, MaxLines, MaxCols, State) ->
+render_exec(list, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(list, State),
     #{exec_state := #{path := Path, config := Config, offset := {OffY,OffX}}} = NewState,
     Brk = io_lib:format("~n", []),
     Str = io_lib:format("Config parsed from ~ts:~n~p~n", [Path, Config]),
     %% Fit lines and the whole thing in a "box"
     Lines = string:lexemes(Str, Brk),
-    Truncated = [string:slice(S, OffX, MaxCols)
-                 || S <- lists:sublist(Lines, OffY+1, MaxLines)],
-    {NewState, Truncated};
-render_exec(scan, MaxLines, MaxCols, State) ->
+    {{clip, {OffY,OffX}}, NewState, Lines};
+render_exec(scan, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(scan, State),
     #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     %% TODO: support scrolling if you have more Dirs than MaxLines or
-    %%       dirs that are too long.
+    %%       dirs that are too long by tracking clipping offsets.
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
-    true = MaxLines >= length(LStatuses),
-    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
     Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
              case Status of
                  pending -> "??";
                  ok -> "ok";
                  _ -> "!!"
              end] || {Dir, Status} <- LStatuses],
-    {NewState, Strs};
-render_exec(sync, MaxLines, MaxCols, State) ->
+    {clip, NewState, Strs};
+render_exec(sync, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(sync, State),
     #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     %% TODO: support scrolling if you have more Dirs than MaxLines or
-    %%       dirs that are too long.
+    %%       dirs that are too long by tracking clipping offsets
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
-    true = MaxLines >= length(LStatuses),
-    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
     Header = [string:pad("DIR", LongestDir+1, trailing, " "), "  SCAN  SYNC"],
     Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
              case Status of
@@ -988,47 +997,42 @@ render_exec(sync, MaxLines, MaxCols, State) ->
                  synced  -> "  ok    ok";
                  _       -> "  !!    !!"
              end] || {Dir, Status} <- LStatuses],
-    {NewState, [Header | Strs]};
+    {clip, NewState, [Header | Strs]};
 render_exec(status, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(status, State),
     #{exec_state := #{status := Status}} = NewState,
     Strs = [io_lib:format("~p",[Status])],
-    {NewState, Strs};
-render_exec('generate-keys', MaxLines, MaxCols, State) ->
+    {wrap, NewState, Strs};
+render_exec('generate-keys', _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state('generate-keys', State),
     #{exec_state := #{status := Exists}} = NewState,
-    Strs = wrap(Exists, MaxCols, MaxLines),
-    {NewState, Strs};
-render_exec(seed, MaxLines, MaxCols, State) ->
+    {wrap, NewState, Exists};
+render_exec(seed, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(seed, State),
     #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
-    true = MaxLines >= length(LStatuses),
-    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
     Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
              case Status of
                  pending -> "??";
                  ok -> "ok";
                  _ -> "!!"
              end] || {Dir, Status} <- LStatuses],
-    {NewState, Strs};
-render_exec('remote-seed', MaxLines, MaxCols, State) ->
+    {clip, NewState, Strs};
+render_exec('remote-seed', _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state('remote-seed', State),
     #{exec_state := #{dirs := Statuses}} = NewState,
     LStatuses = lists:sort(maps:to_list(Statuses)),
     LongestDir = lists:max([string:length(D) || {D, _} <- LStatuses]),
-    true = MaxLines >= length(LStatuses),
-    true = MaxCols >= LongestDir + 4, % 4 chars for the status display room
     Strs = [[string:pad([Dir, ":"], LongestDir+1, trailing, " "), " ",
                 case Status of
                     pending -> "??";
                     {ok, _ITC} -> "ok";
                     _ -> "!!"
                 end] || {Dir, Status} <- LStatuses],
-    {NewState, Strs};
+    {clip, NewState, Strs};
 render_exec(Action, _MaxLines, _MaxCols, State) ->
-    {State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
+    {clip, State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
 %% Helper function to ensure exec state is properly initialized
 ensure_exec_state(list, State) ->
@@ -1444,7 +1448,7 @@ check_openssl_vsn("Open", A, B, C) when A > 1;
 check_openssl_vsn(_, _, _, _) ->
     error(bad_vsn).
 
-wrap(Str, Width, Lines) ->
+wrap(Str, Lines, Width) ->
     wrap(Str, 0, Width, 0, Lines, [[]]).
 
 wrap(_Str, Width, Width, Lines, Lines, Acc) ->
@@ -1460,6 +1464,10 @@ wrap(Str, W, Width, Ln, Lines, [L|Acc]) ->
         [] ->
             lists:reverse([lists:reverse(L)|Acc])
     end.
+
+clip(Lines, {OffY, OffX}, MaxLines, MaxCols) ->
+    [string:slice(S, OffX, MaxCols)
+        || S <- lists:sublist(Lines, OffY+1, MaxLines)].
 
 validate_args(State, Action, Args) ->
     %% Validate all the arguments
