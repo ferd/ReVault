@@ -2,6 +2,7 @@
  [{description, "An escript to interact with ReVault nodes"},
   {vsn, "0.1.0"},
   {registered, []},
+  {mod, {revault_cli_app, []}},
   {applications,
    [kernel,
     stdlib,
