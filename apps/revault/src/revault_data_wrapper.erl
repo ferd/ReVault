@@ -11,7 +11,8 @@
 -module(revault_data_wrapper).
 -export([peer/1, peer/2, new/0, ask/0, ok/0, error/1, fork/2]).
 -export([manifest/0, manifest/1,
-         send_file/4, send_multipart_file/6, send_deleted/2,
+         send_file/4, send_multipart_file/6,
+         send_deleted/2, send_conflict_deleted/3,
          send_conflict_file/5, send_conflict_multipart_file/7, fetch_file/1,
          sync_complete/0]).
 
@@ -72,6 +73,9 @@ send_multipart_file(Path, Vsn, Hash, M, N, Bin) when M >= 1, M =< N ->
 
 send_deleted(Path, Vsn) ->
     {deleted_file, ?VSN, Path, {Vsn, deleted}}.
+
+send_conflict_deleted(WorkPath, ConflictsLeft, Meta) ->
+    {conflict_file, ?VSN, WorkPath, deleted, ConflictsLeft, Meta}.
 
 send_conflict_file(WorkPath, Path, ConflictsLeft, Meta, Bin) ->
     {conflict_file, ?VSN, WorkPath, Path, ConflictsLeft, Meta, Bin}.

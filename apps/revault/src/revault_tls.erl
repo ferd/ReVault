@@ -138,6 +138,8 @@ unpack({file, ?VSN, Path, Meta, PartNum, PartTotal, Bin}) -> {file, Path, Meta, 
 unpack({fetch, ?VSN, Path}) -> {fetch, Path};
 unpack({sync_complete, ?VSN}) -> sync_complete;
 unpack({deleted_file, ?VSN, Path, Meta}) -> {deleted_file, Path, Meta};
+unpack({conflict_file, ?VSN, WorkPath, deleted, Count, Meta}) ->
+    {conflict_file, WorkPath, deleted, Count, Meta};
 unpack({conflict_file, ?VSN, WorkPath, Path, Count, Meta, Bin}) ->
     {conflict_file, WorkPath, Path, Count, Meta, Bin};
 unpack({conflict_multipart_file, ?VSN, WorkPath, Path, Count, Meta, PartNum, PartTotal, Bin}) ->

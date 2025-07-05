@@ -1,0 +1,3 @@
+-noinput
+-name ncurses_cli
+-setcookie revault_cookie
