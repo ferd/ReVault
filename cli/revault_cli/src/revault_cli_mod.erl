@@ -653,7 +653,7 @@ worker_generate_keys(Parent, ReplyTo, Path, File) ->
         {'EXIT', Parent, Reason} ->
             exit(Reason);
         stop ->
-            unlink(parent),
+            unlink(Parent),
             exit(shutdown)
     end.
 

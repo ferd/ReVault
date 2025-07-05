@@ -21,22 +21,30 @@
 -type max_cols() :: pos_integer().
 -type line() :: string().
 -type lines() :: [line()].
--type arg() :: #{name := type_name(),
+-type arg() :: #{name := menu_key(),
                  label := string(),
                  help := string(),
+                 default := term(),
                  type := val_type()}.
 -type exec_arg() :: #{type_name() := term()}.
 %% TODO: split internal state from callback state
 -type nstate() :: #{mode := menu | action | exec,
+                    menu := menu_key() | undefined,
                     hover_menu := menu_key(),
-                    peer := undefined | atom(),
-                    args := [arg(), ...],
-                    state := state()}.
+                    menu_map => #{menu_key() => pos()},
+                    menu_coord_map => #{pos() => menu_key()},
+                    action_args := [[arg(), ...], ...],
+                    state := state(),
+                    action_coords => {pos(), pos()},
+                    exec_coords => {pos(), pos()},
+                    status_coords => {pos(), pos()},
+                    status_init_pos => pos(),
+                    status_message => iodata()}.
 -type state() :: term().
 
 -callback menu_order() -> [menu_key(), ...].
 -callback menu_help(menu_key()) -> string().
--callback args() -> #{menu_key() := arg()}.
+-callback args() -> #{menu_key() := [arg(), ...]}.
 -callback init() -> state().
 -callback render_exec(menu_key(), exec_arg(), max_lines(), max_cols(), state()) ->
             {render_mode(), state(), lines()}.
@@ -59,6 +67,7 @@ init(Module) ->
     Pid = spawn_link(fun() -> main(Module) end),
     {ok, Pid, Module}.
 
+-spec main(module()) -> no_return().
 main(Module) ->
     setup(),
     State = state(Module, #{}),
@@ -92,9 +101,6 @@ state(Mod, Old) ->
         mode => menu,
         hover_menu => hd(Mod:menu_order()),
         menu => undefined,
-        peer => undefined,
-        dirs => undefined,
-        args => #{},
         state => Mod:init()
     },
     Tmp0 = maps:merge(Default, Old),
@@ -206,7 +212,7 @@ show_exec(_Mod, State=#{mode := Mode,
 show_exec(Mod, State=#{mode := exec,
                        menu := Action,
                        action_coords := {_, {ActionY,MaxX}},
-                       exec_args := Args,
+                       action_args := Args,
                        state := ModState}) ->
     MinY = ActionY,
     %% expect line-based output in a list
@@ -695,7 +701,7 @@ handle_action({input, ?KEY_ENTER}, Action, TmpState = #{action_args := Args}) ->
     case validate_args(TmpState, Action, Args) of
         ok ->
             State = set_status(TmpState, "ok."),
-            {ok, State#{mode => exec, exec_args => Args}};
+            {ok, State#{mode => exec}};
         {error, [{#{line := {Label, _}}, Reason}|_]} ->
             State = set_status(
                 TmpState,
@@ -722,9 +728,7 @@ handle_exec(Mod, {Type, Msg}, Action, State=#{state := ModState}) ->
                     {input, Char} ->
                         io_lib:format("Unknown character in ~p: ~w", [Action, Char]);
                     {event, _Event} ->
-                        io_lib:format("Got unexpected event in ~p: ~p", [Action, Msg]);
-                    _ ->
-                        io_lib:format("Got unexpected message in ~p: ~p", [Action, Msg])
+                        io_lib:format("Got unexpected event in ~p: ~p", [Action, Msg])
                 end,
                 {ok, set_status(State, Status)};
             _ ->
