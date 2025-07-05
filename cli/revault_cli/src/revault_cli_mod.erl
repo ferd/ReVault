@@ -6,7 +6,7 @@
 -define(DEFAULT_NODE, list_to_atom("revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@"))))).
 
 -export([menu_order/0, menu_help/1, args/0,
-         render_exec/4, handle_exec/4]).
+         init/0, render_exec/5, handle_exec/4]).
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -86,6 +86,11 @@ args() ->
         ]
     }.
 
+init() ->
+    #{}.
+
+render_exec(Action, Args, MaxLines, MaxCols, State) ->
+    render_exec(Action, MaxLines, MaxCols, State#{exec_args => Args}).
 
 render_exec(list, _MaxLines, _MaxCols, State) ->
     NewState = ensure_exec_state(list, State),
@@ -164,7 +169,7 @@ render_exec(Action, _MaxLines, _MaxCols, State) ->
 
 handle_exec(input, ?ceKEY_ESC, _Action, State) ->
     %% TODO: clean up workers if any
-    {done, State};
+    {done, maps:without([exec_state], State)};
 %% List exec
 handle_exec(input, ?ceKEY_DOWN, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
@@ -417,8 +422,7 @@ ensure_exec_state(list, State) ->
     case State of
         #{exec_state := #{path := _, config := _, offset := _}} ->
             State;
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+        #{exec_args := #{node := Node}} ->
             {ok, P, C} = erpc:call(Node, maestro_loader, current, []),
             State#{exec_state => #{path => P, config => C, offset => {0,0}}}
     end;
@@ -427,8 +431,8 @@ ensure_exec_state(scan, State) ->
         #{exec_state := #{worker := _, dirs := _}} ->
             State;
         #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            #{node := Node,
+              dirs := Dirs} = Args,
             %% TODO: replace with an alias
             P = start_worker(self(), {scan, Node, Dirs}),
             DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
@@ -439,9 +443,9 @@ ensure_exec_state(sync, State) ->
         #{exec_state := #{worker := _, peer := _, dirs := _}} ->
             State;
         #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            #{node := Node,
+              peer := P,
+              dirs := Dirs} = Args,
             %% TODO: replace with an alias
             W = start_worker(self(), {sync, Node, P, Dirs}),
             DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
@@ -451,8 +455,7 @@ ensure_exec_state(status, State) ->
     case State of
         #{exec_state := #{worker := _, status := _}} ->
             State;
-        #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
+        #{exec_args := #{node := Node}} ->
             %% TODO: replace with an alias
             P = start_worker(self(), {status, Node}),
             State#{exec_state => #{worker => P, status => undefined}}
@@ -463,8 +466,8 @@ ensure_exec_state('generate-keys', State) ->
             %% Do wrapping of the status line
             State;
         #{exec_args := Args} ->
-            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
-            {value, #{val := File}} = lists:search(fun(#{name := N}) -> N == certname end, Args),
+            #{path := Path,
+              certname := File} = Args,
             %% TODO: replace with an alias
             P = start_worker(self(), {generate_keys, Path, File}),
             State#{exec_state => #{worker => P, status => "generating keys..."}}
@@ -475,9 +478,9 @@ ensure_exec_state(seed, State) ->
             %% Do wrapping of the status line
             State;
         #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := Path}} = lists:search(fun(#{name := N}) -> N == path end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            #{node := Node,
+              path := Path,
+              dirs := Dirs} = Args,
             %% TODO: replace with an alias
             P = start_worker(self(), {seed, Node, Path, Dirs}),
             DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),
@@ -489,9 +492,9 @@ ensure_exec_state('remote-seed', State) ->
             %% Do wrapping of the status line
             State;
         #{exec_args := Args} ->
-            {value, #{val := Node}} = lists:search(fun(#{name := N}) -> N == node end, Args),
-            {value, #{val := P}} = lists:search(fun(#{name := N}) -> N == peer end, Args),
-            {value, #{val := Dirs}} = lists:search(fun(#{name := N}) -> N == dirs end, Args),
+            #{node := Node,
+              peer := P,
+              dirs := Dirs} = Args,
             %% TODO: replace with an alias
             W = start_worker(self(), {'remote-seed', Node, P, Dirs}),
             DirStatuses = maps:from_list([{Dir, pending} || Dir <- Dirs]),

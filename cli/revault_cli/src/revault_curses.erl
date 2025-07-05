@@ -25,13 +25,20 @@
                  label := string(),
                  help := string(),
                  type := val_type()}.
+-type exec_arg() :: #{type_name() := term()}.
 %% TODO: split internal state from callback state
--type state() :: map().
+-type nstate() :: #{mode := menu | action | exec,
+                    hover_menu := menu_key(),
+                    peer := undefined | atom(),
+                    args := [arg(), ...],
+                    state := state()}.
+-type state() :: term().
 
 -callback menu_order() -> [menu_key(), ...].
 -callback menu_help(menu_key()) -> string().
 -callback args() -> #{menu_key() := arg()}.
--callback render_exec(menu_key(), max_lines(), max_cols(), state()) ->
+-callback init() -> state().
+-callback render_exec(menu_key(), exec_arg(), max_lines(), max_cols(), state()) ->
             {render_mode(), state(), lines()}.
 -callback handle_exec(input, integer(), menu_key(), state()) -> {ok | done, state()};
                      (event, term(), menu_key(), state()) -> {ok | done, state()}.
@@ -87,7 +94,8 @@ state(Mod, Old) ->
         menu => undefined,
         peer => undefined,
         dirs => undefined,
-        args => #{}
+        args => #{},
+        state => Mod:init()
     },
     Tmp0 = maps:merge(Default, Old),
     %% Refresh the layout to show proper coordinates
@@ -197,13 +205,16 @@ show_exec(_Mod, State=#{mode := Mode,
     State#{exec_coords => {{Y,0},{Y,X}}};
 show_exec(Mod, State=#{mode := exec,
                        menu := Action,
-                       action_coords := {_, {ActionY,MaxX}}}) ->
+                       action_coords := {_, {ActionY,MaxX}},
+                       exec_args := Args,
+                       state := ModState}) ->
     MinY = ActionY,
     %% expect line-based output in a list
     MaxLines = ?EXEC_LINES,
     MaxCols = MaxX-4,
     MaxY = MinY + MaxLines,
-    {RenderMode, ExecState, Lines} = Mod:render_exec(Action, MaxLines, MaxCols, State),
+    ModArgs = maps:from_list([{N, V} || #{name := N, val := V} <- Args]),
+    {RenderMode, NewModState, Lines} = Mod:render_exec(Action, ModArgs, MaxLines, MaxCols, ModState),
     case RenderMode of
         raw ->
             render_raw(Lines, {MinY,0}, {MaxY, MaxX});
@@ -217,7 +228,8 @@ show_exec(Mod, State=#{mode := exec,
             render_raw(clip(Lines, Offsets, MaxLines, MaxCols),
                             {MinY,0}, {MaxY, MaxX})
     end,
-    ExecState#{exec_coords => {{MinY,0},{MaxY,MaxX}}}.
+    State#{exec_coords => {{MinY,0},{MaxY,MaxX}},
+           state => NewModState}.
 
 end_table(_Mod, State=#{exec_coords := {_, {Y,X}}}) ->
     str(Y+1, 0, ["╚", lists:duplicate(X-1, "═") ,"╝"]),
@@ -467,6 +479,7 @@ convert_args(State, Args) ->
 %%%%%%%%%%%%%%%%%%%%%
 %%% MAIN TUI LOOP %%%
 %%%%%%%%%%%%%%%%%%%%%
+-spec loop(module(), nstate()) -> no_return().
 loop(Mod, OldState) ->
     State = #{mode := Mode} = state(Mod, OldState),
     case Mode of
@@ -494,7 +507,7 @@ loop(Mod, OldState) ->
                     loop(Mod, NewState);
                 {done, TmpState} ->
                     %% clear up the arg list and status messages
-                    NewState = revault_curses:clear_status(maps:without([exec_state], TmpState#{mode => action})),
+                    NewState = revault_curses:clear_status(TmpState#{mode => action}),
                     cecho:erase(),
                     loop(Mod, NewState)
             end
@@ -697,9 +710,10 @@ handle_action({input, UnknownChar}, Action, TmpState) ->
     ),
     {ok, State}.
 
-handle_exec(Mod, {Type, Msg}, Action, State) ->
+handle_exec(Mod, {Type, Msg}, Action, State=#{state := ModState}) ->
     try
-        Mod:handle_exec(Type, Msg, Action, State)
+        {Key, NewModState} = Mod:handle_exec(Type, Msg, Action, ModState),
+        {Key, State#{state => NewModState}}
     catch
         error:function_clause:Stack ->
         case Stack of
