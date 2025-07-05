@@ -1,7 +1,7 @@
 -module(revault_curses).
 -include("revault_cli.hrl").
 -include_lib("cecho/include/cecho.hrl").
--export([start_link/1]).
+-export([start_link/1, send_input/2, send_event/2]).
 -export([init/1]).
 -export([parse_list/2, check_connect/2]).
 -export([clear_status/1, set_status/2]).
@@ -33,13 +33,20 @@
 -callback args() -> #{menu_key() := arg()}.
 -callback render_exec(menu_key(), max_lines(), max_cols(), state()) ->
             {render_mode(), state(), lines()}.
--callback handle_exec({input, integer()} | term(), menu_key(), state()) -> {ok, state()}.
+-callback handle_exec(input, integer(), menu_key(), state()) -> {ok | done, state()};
+                     (event, term(), menu_key(), state()) -> {ok | done, state()}.
 
 %%%%%%%%%%%%%%%%%
 %%% LIFECYCLE %%%
 %%%%%%%%%%%%%%%%%
 start_link(Module) ->
     supervisor_bridge:start_link(?MODULE, Module).
+
+send_input(Pid, Char) ->
+    Pid ! {input, Char}.
+
+send_event(Pid, Event) ->
+    Pid ! {event, Event}.
 
 init(Module) ->
     Pid = spawn_link(fun() -> main(Module) end),
@@ -478,12 +485,17 @@ loop(Mod, OldState) ->
             end;
         exec ->
             #{menu := Action} = State,
-            receive
-                {input, Input} ->
-                    {ok, NewState} = handle_exec(Mod, {input, Input}, Action, State),
+            Msg = receive
+                {input, Input} -> {input, Input};
+                {event, Other} -> {event, Other}
+            end,
+            case handle_exec(Mod, Msg, Action, State) of
+                {ok, NewState} ->
                     loop(Mod, NewState);
-                {revault, Action, _} = Event ->
-                    {ok, NewState} = handle_exec(Mod, Event, Action, State),
+                {done, TmpState} ->
+                    %% clear up the arg list and status messages
+                    NewState = revault_curses:clear_status(maps:without([exec_state], TmpState#{mode => action})),
+                    cecho:erase(),
                     loop(Mod, NewState)
             end
     end.
@@ -685,8 +697,26 @@ handle_action({input, UnknownChar}, Action, TmpState) ->
     ),
     {ok, State}.
 
-handle_exec(Mod, Event, Action, State) ->
-    Mod:handle_exec(Event, Action, State).
+handle_exec(Mod, {Type, Msg}, Action, State) ->
+    try
+        Mod:handle_exec(Type, Msg, Action, State)
+    catch
+        error:function_clause:Stack ->
+        case Stack of
+            [{Mod, handle_exec, _, _}|_] ->
+                Status = case {Type, Msg} of
+                    {input, Char} ->
+                        io_lib:format("Unknown character in ~p: ~w", [Action, Char]);
+                    {event, _Event} ->
+                        io_lib:format("Got unexpected event in ~p: ~p", [Action, Msg]);
+                    _ ->
+                        io_lib:format("Got unexpected message in ~p: ~p", [Action, Msg])
+                end,
+                {ok, set_status(State, Status)};
+            _ ->
+                erlang:raise(error, function_clause, Stack)
+        end
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%
 %%% NCURSES HELPERS %%%

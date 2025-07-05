@@ -6,7 +6,7 @@
 -define(DEFAULT_NODE, list_to_atom("revault@" ++ hd(tl(string:tokens(atom_to_list(node()), "@"))))).
 
 -export([menu_order/0, menu_help/1, args/0,
-         render_exec/4, handle_exec/3]).
+         render_exec/4, handle_exec/4]).
 
 %%%%%%%%%%%%%%%%%
 %%% CALLBACKS %%%
@@ -162,36 +162,33 @@ render_exec(Action, _MaxLines, _MaxCols, State) ->
     {clip, State, [[io_lib:format("Action ~p not implemented yet.", [Action])]]}.
 
 
-handle_exec({input, ?ceKEY_ESC}, _Action, TmpState) ->
+handle_exec(input, ?ceKEY_ESC, _Action, State) ->
     %% TODO: clean up workers if any
-    %% clear up the arg list and status messages
-    State = revault_curses:clear_status(maps:without([exec_state], TmpState#{mode => action})),
-    cecho:erase(),
-    {ok, State};
+    {done, State};
 %% List exec
-handle_exec({input, ?ceKEY_DOWN}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_DOWN, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {Y+1, X}}}};
-handle_exec({input, ?ceKEY_UP}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_UP, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {max(0,Y-1), X}}}};
-handle_exec({input, ?ceKEY_RIGHT}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_RIGHT, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {Y, X+1}}}};
-handle_exec({input, ?ceKEY_LEFT}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_LEFT, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     {ok, State#{exec_state => ES#{offset => {Y, max(0,X-1)}}}};
-handle_exec({input, ?ceKEY_PGDOWN}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_PGDOWN, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     Shift = ?EXEC_LINES-1,
     {ok, State#{exec_state => ES#{offset => {Y+Shift, X}}}};
-handle_exec({input, ?ceKEY_PGUP}, list, State = #{exec_state:=ES}) ->
+handle_exec(input, ?ceKEY_PGUP, list, State = #{exec_state:=ES}) ->
     {Y,X} = maps:get(offset, ES, {0, 0}),
     Shift = ?EXEC_LINES-1,
     {ok, State#{exec_state => ES#{offset => {max(0,Y-Shift), X}}}};
 %% TODO: ctrlA, ctrlE
 %% Scan exec
-handle_exec({revault, scan, done}, scan, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, scan, done}, scan, State=#{exec_state:=ES}) ->
     %% unset the workers
     case maps:get(worker, ES, undefined) of
         undefined ->
@@ -211,17 +208,17 @@ handle_exec({revault, scan, done}, scan, State=#{exec_state:=ES}) ->
             end
     end,
     {ok, State};
-handle_exec({revault, scan, {Dir, Status}}, scan, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, scan, {Dir, Status}}, scan, State=#{exec_state:=ES}) ->
     #{dirs := Statuses} = ES,
     {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
-handle_exec({input, ?KEY_ENTER}, scan, State) ->
+handle_exec(input, ?KEY_ENTER, scan, State) ->
     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
-    self() ! {revault, scan, done},
-    self() ! {input, ?ceKEY_ESC},
-    self() ! {input, ?KEY_ENTER},
+    revault_curses:send_event(self(), {revault, scan, done}),
+    revault_curses:send_input(self(), ?ceKEY_ESC),
+    revault_curses:send_input(self(), ?KEY_ENTER),
     {ok, State};
 %% Sync exec
-handle_exec({revault, sync, done}, sync, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, sync, done}, sync, State=#{exec_state:=ES}) ->
     %% unset the workers
     case maps:get(worker, ES, undefined) of
         undefined ->
@@ -241,36 +238,36 @@ handle_exec({revault, sync, done}, sync, State=#{exec_state:=ES}) ->
             end
     end,
     {ok, State};
-handle_exec({revault, sync, {Dir, Status}}, sync, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, sync, {Dir, Status}}, sync, State=#{exec_state:=ES}) ->
     #{dirs := Statuses} = ES,
     {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
-handle_exec({input, ?KEY_ENTER}, sync, State) ->
+handle_exec(input, ?KEY_ENTER, sync, State) ->
     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
-    self() ! {revault, scan, done},
-    self() ! {input, ?ceKEY_ESC},
-    self() ! {input, ?KEY_ENTER},
+    revault_curses:send_event(self(), {revault, sync, done}),
+    revault_curses:send_input(self(), ?ceKEY_ESC),
+    revault_curses:send_input(self(), ?KEY_ENTER),
     {ok, State};
 %% Status
-handle_exec({revault, status, done}, status, State) ->
+handle_exec(event, {revault, status, done}, status, State) ->
     {ok, State};
-handle_exec({revault, status, {ok, Val}}, status, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, status, {ok, Val}}, status, State=#{exec_state:=ES}) ->
     {ok, State#{exec_state => ES#{status => Val}}};
-handle_exec({input, ?KEY_ENTER}, status, State) ->
+handle_exec(input, ?KEY_ENTER, status, State) ->
     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
-    self() ! {revault, status, done},
-    self() ! {input, ?ceKEY_ESC},
-    self() ! {input, ?KEY_ENTER},
+    revault_curses:send_event(self(), {revault, status, done}),
+    revault_curses:send_input(self(), ?ceKEY_ESC),
+    revault_curses:send_input(self(), ?KEY_ENTER),
     {ok, State};
 %% Generate-Keys
-handle_exec({revault, 'generate-keys', {ok, Val}}, 'generate-keys', State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, 'generate-keys', {ok, Val}}, 'generate-keys', State=#{exec_state:=ES}) ->
     {ok, State#{exec_state => ES#{status => Val}}};
-handle_exec({input, ?KEY_ENTER}, 'generate-keys', State) ->
+handle_exec(input, ?KEY_ENTER, 'generate-keys', State) ->
     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
-    self() ! {input, ?ceKEY_ESC},
-    self() ! {input, ?KEY_ENTER},
+    revault_curses:send_input(self(), ?ceKEY_ESC),
+    revault_curses:send_input(self(), ?KEY_ENTER),
     {ok, State};
 %% Seed exec
-handle_exec({revault, seed, done}, seed, State=#{exec_state:=ES}) ->
+handle_exec(event, {revault, seed, done}, seed, State=#{exec_state:=ES}) ->
     %% unset the workers
     case maps:get(worker, ES, undefined) of
         undefined ->
@@ -290,18 +287,11 @@ handle_exec({revault, seed, done}, seed, State=#{exec_state:=ES}) ->
             end
     end,
     {ok, State};
-handle_exec({revault, seed, {Dir, Status}}, seed, State=#{exec_state:=ES}) ->
+handle_exec(event,{revault, seed, {Dir, Status}}, seed, State=#{exec_state:=ES}) ->
     #{dirs := Statuses} = ES,
     {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
-% do not endlessly re-seed?
-% handle_exec({input, ?KEY_ENTER}, seed, State) ->
-%     %% Do a refresh by exiting the menu and re-entering again. Quite hacky.
-%     self() ! {revault, seed, done},
-%     self() ! {input, ?ceKEY_ESC},
-%     self() ! {input, ?KEY_ENTER},
-%     {ok, State};
 %% remote-seed exec
-handle_exec({revault, 'remote-seed', done}, 'remote-seed', State=#{exec_state:=ES}) ->
+handle_exec(event,{revault, 'remote-seed', done}, 'remote-seed', State=#{exec_state:=ES}) ->
     %% unset the workers
     case maps:get(worker, ES, undefined) of
         undefined ->
@@ -321,29 +311,10 @@ handle_exec({revault, 'remote-seed', done}, 'remote-seed', State=#{exec_state:=E
             end
     end,
     {ok, State};
-handle_exec({revault, 'remote-seed', {Dir, Status}}, 'remote-seed', State=#{exec_state:=ES}) ->
+handle_exec(event,{revault, 'remote-seed', {Dir, Status}}, 'remote-seed', State=#{exec_state:=ES}) ->
     #{dirs := Statuses} = ES,
     file:write_file("/tmp/dbg", io_lib:format("~p~n", [{Dir, Status}])),
-    {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}};
-%% Generic exec
-handle_exec({input, UnknownChar}, Action, TmpState) ->
-    State = revault_curses:set_status(
-        TmpState,
-        io_lib:format("Unknown character in ~p: ~w", [Action, UnknownChar])
-    ),
-    {ok, State};
-handle_exec({revault, EventAct, Event}, Act, TmpState) ->
-    State = revault_curses:set_status(
-        TmpState,
-        io_lib:format("Got unexpected ~p event in ~p: ~p", [EventAct, Act, Event])
-    ),
-    {ok, State};
-handle_exec(Msg, Action, TmpState) ->
-    State = revault_curses:set_status(
-        TmpState,
-        io_lib:format("Got unexpected message in ~p: ~p", [Action, Msg])
-    ),
-    {ok, State}.
+    {ok, State#{exec_state => ES#{dirs => Statuses#{Dir => Status}}}}.
 
 
 %%%%%%%%%%%%%%%%%%%%
@@ -574,12 +545,12 @@ worker_scan_loop(Parent, ReplyTo, Node, Dirs, ReqIds) ->
     after 0 ->
         case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
             no_request ->
-                ReplyTo ! {revault, scan, done},
+                revault_curses:send_event(ReplyTo, {revault, scan, done}),
                 exit(normal);
             no_response ->
                 worker_scan_loop(Parent, ReplyTo, Node, Dirs, ReqIds);
             {{response, Res}, Dir, NewIds} ->
-                ReplyTo ! {revault, scan, {Dir, Res}},
+                revault_curses:send_event(ReplyTo, {revault, scan, {Dir, Res}}),
                 worker_scan_loop(Parent, ReplyTo, Node, Dirs, NewIds)
         end
     end.
@@ -611,7 +582,7 @@ worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
     after 0 ->
         case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
             no_request ->
-                ReplyTo ! {revault, sync, done},
+                revault_curses:send_event(ReplyTo, {revault, sync, done}),
                 exit(normal);
             no_response ->
                 worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds);
@@ -620,7 +591,7 @@ worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
                     ok -> scanned;
                     Other -> Other
                 end,
-                ReplyTo ! {revault, sync, {Dir, Status}},
+                revault_curses:send_event(ReplyTo, {revault, sync, {Dir, Status}}),
                 NewIds = erpc:send_request(
                     Node,
                     revault_fsm, sync, [Dir, Peer],
@@ -633,7 +604,7 @@ worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
                     ok -> synced;
                     Other -> Other
                 end,
-                ReplyTo ! {revault, sync, {Dir, Status}},
+                revault_curses:send_event(ReplyTo, {revault, sync, {Dir, Status}}),
                 worker_sync_loop(Parent, ReplyTo, Node, Peer, Dirs, NewIds)
         end
     end.
@@ -655,12 +626,12 @@ worker_status_loop(Parent, ReplyTo, ReqIds) ->
     after 0 ->
         case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
             no_request ->
-                ReplyTo ! {revault, status, done},
+                revault_curses:send_event(ReplyTo, {revault, status, done}),
                 exit(normal);
             no_response ->
                 worker_status_loop(Parent, ReplyTo, ReqIds);
             {{response, Res}, status, NewIds} ->
-                ReplyTo ! {revault, status, {ok, Res}},
+                revault_curses:send_event(ReplyTo, {revault, status, {ok, Res}}),
                 worker_status_loop(Parent, ReplyTo, NewIds)
         end
     end.
@@ -671,7 +642,7 @@ worker_generate_keys(Parent, ReplyTo, Path, File) ->
                                unicode:characters_to_list(File)),
     %% we actually don't have a loop, everything is local
     %% and has already be run, so we just wait for a shutdown signal.
-    ReplyTo ! {revault, 'generate-keys', {ok, Res}},
+    revault_curses:send_event(ReplyTo, {revault, 'generate-keys', {ok, Res}}),
     receive
         {'EXIT', Parent, Reason} ->
             exit(Reason);
@@ -707,12 +678,12 @@ worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds) ->
     after 0 ->
         case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
             no_request ->
-                ReplyTo ! {revault, seed, done},
+                revault_curses:send_event(ReplyTo, {revault, seed, done}),
                 exit(normal);
             no_response ->
                 worker_seed_loop(Parent, ReplyTo, Node, Dirs, ReqIds);
             {{response, Res}, Dir, NewIds} ->
-                ReplyTo ! {revault, seed, {Dir, Res}},
+                revault_curses:send_event(ReplyTo, {revault, seed, {Dir, Res}}),
                 worker_seed_loop(Parent, ReplyTo, Node, Dirs, NewIds)
         end
     end.
@@ -744,12 +715,12 @@ worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds) ->
     after 0 ->
         case erpc:wait_response(ReqIds, ?MAX_VALIDATION_DELAY, true) of
             no_request ->
-                ReplyTo ! {revault, 'remote-seed', done},
+                revault_curses:send_event(ReplyTo, {revault, 'remote-seed', done}),
                 exit(normal);
             no_response ->
                 worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, ReqIds);
             {{response, Res}, Dir, NewIds} ->
-                ReplyTo ! {revault, 'remote-seed', {Dir, Res}},
+                revault_curses:send_event(ReplyTo, {revault, 'remote-seed', {Dir, Res}}),
                 worker_remote_seed_loop(Parent, ReplyTo, Node, Peer, Dirs, NewIds)
         end
     end.
