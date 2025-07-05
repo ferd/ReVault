@@ -168,7 +168,10 @@ render_exec(Action, _MaxLines, _MaxCols, State) ->
 
 
 handle_exec(input, ?ceKEY_ESC, _Action, State) ->
-    %% TODO: clean up workers if any
+    case State of
+        #{exec_state := #{worker := P}} -> P ! stop;
+        _ -> ok
+    end,
     {done, maps:without([exec_state], State)};
 %% List exec
 handle_exec(input, ?ceKEY_DOWN, list, State = #{exec_state:=ES}) ->
