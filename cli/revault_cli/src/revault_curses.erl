@@ -244,7 +244,7 @@ end_table(_Mod, State=#{exec_coords := {_, {Y,X}}}) ->
     {StatusY, StatusX} = {Y+2, 5},
     %% Clear the entire status line
     {MaxY,MaxX} = cecho:getmaxyx(),
-    [str(LY, StatusX, lists:duplicate(MaxX-StatusX, $\s)) || LY <- lists:seq(StatusY,MaxY)],
+    [str(LY, StatusX, lists:duplicate(MaxX-StatusX, $\s)) || LY <- lists:seq(min(StatusY,MaxY), MaxY)],
     %% Render status message if present
     case State of
         #{status_message := StatusMsg} ->
