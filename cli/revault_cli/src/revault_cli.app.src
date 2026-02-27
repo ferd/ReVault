@@ -6,7 +6,6 @@
   {applications,
    [kernel,
     stdlib,
-    argparse,
     cecho
    ]},
   {env,[]},

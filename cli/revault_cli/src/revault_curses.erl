@@ -89,6 +89,10 @@ setup() ->
     cecho:keypad(?ceSTDSCR, true),
     %% don't wait on ESC keys
     cecho:set_escdelay(25),
+    %% catch terminal resize signals
+    gen_event:add_handler(erl_signal_server,
+                          {revault_signal_handler, self()}, self()),
+    os:set_signal(sigwinch, handle),
     %% initial cursor position
     cecho:move(1,1),
     ok.
@@ -491,6 +495,9 @@ loop(Mod, OldState) ->
     case Mode of
         menu ->
             receive
+                {signal, sigwinch} ->
+                    handle_resize(),
+                    loop(Mod, State);
                 {input, Input} ->
                     {ok, NewState} = handle_menu(Mod, {input, Input}, State),
                     loop(Mod, NewState)
@@ -498,6 +505,9 @@ loop(Mod, OldState) ->
         action ->
             #{menu := Action} = State,
             receive
+                {signal, sigwinch} ->
+                    handle_resize(),
+                    loop(Mod, State);
                 {input, Input} ->
                     {ok, NewState} = handle_action({input, Input}, Action, clear_status(State)),
                     loop(Mod, NewState)
@@ -505,21 +515,31 @@ loop(Mod, OldState) ->
         exec ->
             #{menu := Action} = State,
             Msg = receive
+                {signal, sigwinch} -> resize;
                 {input, Input} -> {input, Input};
                 {event, Other} -> {event, Other}
             end,
-            case handle_exec(Mod, Msg, Action, State) of
-                {ok, NewState} ->
-                    loop(Mod, NewState);
-                {done, TmpState} ->
-                    %% clear up the arg list and status messages
-                    NewState = revault_curses:clear_status(TmpState#{mode => action}),
-                    cecho:erase(),
-                    loop(Mod, NewState)
+            case Msg of
+                resize ->
+                    handle_resize(),
+                    loop(Mod, State);
+                _ ->
+                    case handle_exec(Mod, Msg, Action, State) of
+                        {ok, NewState} ->
+                            loop(Mod, NewState);
+                        {done, TmpState} ->
+                            %% clear up the arg list and status messages
+                            NewState = revault_curses:clear_status(TmpState#{mode => action}),
+                            cecho:erase(),
+                            loop(Mod, NewState)
+                    end
             end
     end.
 
 
+handle_menu(_Mod, {input, ?KEY_RESIZE}, State) ->
+    %% already handled via os:set_signal(sigwinch)
+    {ok, State};
 handle_menu(Mod, {input, Key}, TmpState) ->
     Pos = cecho:getyx(),
     case Key of
@@ -545,6 +565,9 @@ handle_menu(Mod, {input, Key}, TmpState) ->
     end.
 
 %% A little TUI editors for parameters.
+handle_action({input, ?KEY_RESIZE}, _Action, State) ->
+    %% already handled via os:set_signal(sigwinch)
+    {ok, State};
 handle_action({input, ?ceKEY_ESC}, _Action, TmpState = #{menu := _Menu}) ->
     %% exit the menu
     TmpState2 = TmpState#{mode => menu, menu => undefined},
@@ -716,6 +739,9 @@ handle_action({input, UnknownChar}, Action, TmpState) ->
     ),
     {ok, State}.
 
+handle_exec(_Mod, {input, ?KEY_RESIZE}, _Action, State) ->
+    %% already handled via os:set_signal(sigwinch)
+    {ok, State};
 handle_exec(Mod, {Type, Msg}, Action, State=#{state := ModState}) ->
     try
         {Key, NewModState} = Mod:handle_exec(Type, Msg, Action, ModState),
@@ -739,6 +765,11 @@ handle_exec(Mod, {Type, Msg}, Action, State=#{state := ModState}) ->
 %%%%%%%%%%%%%%%%%%%%%%%
 %%% NCURSES HELPERS %%%
 %%%%%%%%%%%%%%%%%%%%%%%
+handle_resize() ->
+    cecho:endwin(),
+    cecho:refresh(),
+    cecho:erase().
+
 str(Y, X, Str) ->
     {OrigY, OrigX} = cecho:getyx(),
     %% cecho expects a lists of bytes, so we gotta do some fun converting

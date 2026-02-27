@@ -7,5 +7,6 @@
         (not(X < 32) andalso
          not(X >= 127 andalso X < 160))).
 
+-define(KEY_RESIZE, 410).
 -define(EXEC_LINES, 15).
 -define(MAX_VALIDATION_DELAY, 150). % longest time to validate input, in ms
